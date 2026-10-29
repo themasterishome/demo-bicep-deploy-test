@@ -354,8 +354,8 @@ foreach ($i in 1..12) { $c = Copy-Object $net; $c.name = "rg-demo-network-$i"; $
 $many = @(@($manyUnits.units) | Where-Object { $_.kind -eq 'resourceGroup' -and -not (Get-HandRouteReason $_) } | Select-Object -First 13 | ForEach-Object { $_.template })
 $r = Resolve-AffectedUnits $many $manyUnits (Get-UnitFiles $manyUnits $repo)
 Assert-True (@($r.preview).Count -eq 0 -and (@($r.notes) -join ' ') -like '*more than the 12*') 'more than 12 units ask for a sweep'
-$changedUnits = Copy-Object $units; (@($changedUnits.units) | Where-Object { $_.name -eq 'rg-demo-network' }).enabled = $true
-Assert-Equal 'rg-demo-network' (@(Get-ChangedUnitEntries $units $changedUnits) -join ',') 'enabling a unit in units.json previews it'
+$changedUnits = Copy-Object $units; $flipUnit = (@($changedUnits.units) | Where-Object { $_.name -eq 'rg-demo-network' })[0]; $flipUnit.enabled = -not [bool]$flipUnit.enabled
+Assert-Equal 'rg-demo-network' (@(Get-ChangedUnitEntries $units $changedUnits) -join ',') 'switching a unit on or off in units.json previews it'
 $changedUnits = Copy-Object $units; $zwUnit = (@($changedUnits.units) | Where-Object { $_.name -eq 'rg-demo-network' })[0]; $zwUnit.resourceGroup = [string]$zwUnit.resourceGroup + $zw
 Assert-Equal 'rg-demo-network' (@(Get-ChangedUnitEntries $units $changedUnits) -join ',') 'a unit entry that changes only by a zero-width space is a changed entry'
 
