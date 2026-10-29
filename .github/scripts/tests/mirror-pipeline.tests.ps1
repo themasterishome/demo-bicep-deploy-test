@@ -320,6 +320,33 @@ $byHand = Copy-Object $units; @($byHand.units | Where-Object { $_.name -eq 'rg-d
 $r = Resolve-AffectedUnits @('infra/subscriptions/demo/resource-groups/rg-demo-routing.bicep') $byHand (Get-UnitFiles $byHand $repo)
 Assert-True (@($r.hand) -contains 'rg-demo-routing') 'a file of a by-hand unit touches that unit'
 Assert-True (@($r.preview) -notcontains 'rg-demo-routing') 'which is never previewed here'
+# This estate has no module, so the next tests take a small tree in a temporary folder: a shared module that a
+# subscription main.bicep calls, and a module that only a by-hand unit calls.
+$mt = Join-Path ([IO.Path]::GetTempPath()) ('mirror-modules-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path (Join-Path $mt 'infra/modules/governance') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $mt 'infra/subscriptions/demo/resource-groups') | Out-Null
+try {
+  [IO.File]::WriteAllText((Join-Path $mt 'infra/modules/governance/shared-policies.bicep'), "targetScope = 'subscription'`n")
+  [IO.File]::WriteAllText((Join-Path $mt 'infra/subscriptions/demo/main.bicep'), "targetScope = 'subscription'`nmodule p '../../modules/governance/shared-policies.bicep' = {`n  name: 'p'`n}`n")
+  [IO.File]::WriteAllText((Join-Path $mt 'infra/subscriptions/demo/resource-groups/rg-demo-network.bicep'), "output o string = 'x'`n")
+  [IO.File]::WriteAllText((Join-Path $mt 'infra/subscriptions/demo/network-gateways.bicep'), "targetScope = 'subscription'`nmodule g './resource-groups/rg-demo-network.vpn-gateways.bicep' = {`n  name: 'g'`n  scope: resourceGroup('rg-demo-network')`n}`n")
+  [IO.File]::WriteAllText((Join-Path $mt 'infra/subscriptions/demo/resource-groups/rg-demo-network.vpn-gateways.bicep'), "output o string = 'x'`n")
+  $mu = [pscustomobject]@{ units = @(
+    [pscustomobject]@{ name = 'demo-subscription'; kind = 'subscription'; subscription = 'demo'; template = 'infra/subscriptions/demo/main.bicep'; route = 'hand'; enabled = $false },
+    [pscustomobject]@{ name = 'rg-demo-network'; kind = 'resourceGroup'; subscription = 'demo'; resourceGroup = 'rg-demo-network'; template = 'infra/subscriptions/demo/resource-groups/rg-demo-network.bicep'; enabled = $false },
+    [pscustomobject]@{ name = 'demo-vpn-gateways'; kind = 'subscription'; subscription = 'demo'; template = 'infra/subscriptions/demo/network-gateways.bicep'; route = 'hand'; enabled = $false }) }
+  $mf = Get-UnitFiles $mu $mt
+  $r = Resolve-AffectedUnits @('infra/modules/governance/shared-policies.bicep') $mu $mf
+  Assert-True (@($r.preview) -contains 'demo-subscription') 'a shared module previews the subscription unit that calls it'
+  Assert-True (@($r.preview) -notcontains 'rg-demo-network') 'and not a resource group unit that does not call it'
+  Assert-Contains @($r.notes) '*previewed here for information and deployed by hand*demo-subscription*' 'the note says the subscription unit that calls the module deploys by hand'
+  Assert-True (@($r.hand) -notcontains 'demo-subscription') 'a subscription unit reached through a module is previewed, not set aside like the other by-hand units'
+  $r = Resolve-AffectedUnits @('infra/subscriptions/demo/resource-groups/rg-demo-network.vpn-gateways.bicep') $mu $mf
+  Assert-True (@($r.hand) -contains 'demo-vpn-gateways') 'a module file touches the by-hand unit that calls it'
+  Assert-True (@($r.preview) -notcontains 'demo-vpn-gateways' -and @($r.preview) -notcontains 'rg-demo-network') 'which is never previewed here, and no unit that does not call it is touched'
+} finally {
+  Remove-Item -LiteralPath $mt -Recurse -Force -ErrorAction SilentlyContinue
+}
 $r = Resolve-AffectedUnits @('deploy/boundaries.json', 'infra/subscriptions/demo/main.bicep') $units $files
 Assert-True ($r.sweep -and @($r.preview).Count -eq 0) 'boundaries.json asks for a sweep and previews nothing'
 $r = Resolve-AffectedUnits @('infra/tenant/governance.bicep') $units $files
