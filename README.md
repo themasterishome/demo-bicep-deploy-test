@@ -23,7 +23,7 @@ the plan, the approval, the deployment, the second check and the drift check.
 | Path | What it holds |
 |---|---|
 | `infra/subscriptions/demo/` | The Bicep code of the estate. One file per resource group, every resource written out in full. |
-| `deploy/units.json` | The deployment units, their order, the subscription and the identities that may deploy. |
+| `deploy/units.json` | The deployment units, their order, the subscription and the people who may run the scripts by hand. |
 | `deploy/boundaries.json` | The fields the gate accepts or stops on, the held resources and the expected Ignore records. All three lists are empty here. |
 | `pipelines/pilot/empty-rg.bicep` | The empty template of the pilot unit. |
 | `scripts/` | The deploy gate (`deploy-unit.ps1`), the preflight, the duplicate check, the drift check and the read-only sweeps. |

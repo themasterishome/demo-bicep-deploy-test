@@ -148,7 +148,7 @@ With one account, nobody can approve what that account started while Prevent sel
 - Step 3.7 sets **Required approvals** to 0 and leaves **Require review from Code Owners** off. A pull request is still required, and so are the six checks.
 - Step 3.11 lists only you as reviewer of `mirror-production-demo`, with Prevent self-review off. You then start every run and approve it yourself.
 
-Skip every item that says to approve the pull request as the second account (3.19 item 5, 4.2 item 3, 4.3 item 3, 4.5 item 3 and 4.7 item 2), and merge the pull request yourself. Where an item says to approve a deployment as the second account, you approve it yourself.
+Skip every item that says to approve the pull request as the second account (4.2 item 3, 4.3 item 3, 4.5 item 3 and 4.7 item 2), and merge the pull request yourself. Where an item says to approve a deployment as the second account, you approve it yourself.
 
 Everything else is the same. An earlier run of these steps used exactly this variant.
 
@@ -256,7 +256,7 @@ The output is two lines, `@SECOND_LOGIN` and `@themasterishome`.
    gh api --method PATCH repos/themasterishome/demo-bicep-deploy -f default_branch=master --jq .default_branch
    ```
 
-   Do this now, before step 3.7. Run workflow uses the default branch's copy of a workflow, and once the ruleset blocks force pushes, an administrator cannot change the default branch without a bypass.
+   Do this now, before step 3.7. **Run workflow** lists only workflows that exist on the default branch, and once the ruleset blocks force pushes, an administrator cannot change the default branch without a bypass.
 
 The push starts mirror-validate and mirror-deploy-unit. Every job of both shows as skipped, because the switch is not set yet (step 3.20). No runner starts and nothing signs in to Azure.
 
@@ -327,7 +327,7 @@ Check that `gh api repos/themasterishome/demo-bicep-deploy/rulesets --jq ".[].na
 
 ### 3.10 Turn on push protection
 
-Secret scanning already runs on every public repository for free. Push protection for the repository is off by default. In **Settings**, open **Advanced Security**, in the sidebar section **Security and quality** (**Security** in older layouts), and select **Enable** next to **Push protection**. The project needs GitHub Secret Protection in its plan for the same switch. In both, the Gitleaks scan of mirror-validate catches what push protection misses.
+Secret scanning already runs on every public repository for free. Push protection for the repository is off by default. In **Settings**, open **Advanced Security**, in the sidebar section **Security and quality** (**Security** in older layouts), and select **Enable** next to **Push protection**. If **Secret Protection** is not enabled yet, select **Enable** next to it first. The project needs GitHub Secret Protection in its plan for the same switch. In both, the Gitleaks scan of mirror-validate catches what push protection misses.
 
 ### 3.11 Create the 3 environments
 
@@ -436,16 +436,7 @@ The role adds `Microsoft.Resources/deployments/whatIf/action`, the one action Re
 
    ```powershell
    New-Item -ItemType Directory -Force -Path C:\demo-setup | Out-Null
-   @'
-   {
-     "Name": "Mirror What-If Reader",
-     "IsCustom": true,
-     "Description": "Preview deployments with what-if. Changes no resource.",
-     "Actions": [ "Microsoft.Resources/deployments/whatIf/action" ],
-     "NotActions": [],
-     "AssignableScopes": [ "/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7" ]
-   }
-   '@ | Set-Content -Path C:\demo-setup\mirror-whatif-reader.json -Encoding ascii
+   '{"Name":"Mirror What-If Reader","IsCustom":true,"Description":"Preview deployments with what-if. Changes no resource.","Actions":["Microsoft.Resources/deployments/whatIf/action"],"NotActions":[],"AssignableScopes":["/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7"]}' | Set-Content -Path C:\demo-setup\mirror-whatif-reader.json -Encoding ascii
    ```
 
 2. Create the role.
@@ -657,66 +648,50 @@ gh variable set AZURE_CLIENT_ID --env mirror-production-demo --body DEPLOY_CLIEN
 gh variable set AZURE_TENANT_ID --env mirror-production-demo --body d1a349ef-6ac8-4588-a88d-5dab272c700b --repo $repo
 ```
 
-Replace `READER_CLIENT` and `DEPLOY_CLIENT` with the client IDs from steps 3.14 and 3.15. Set them per environment, never at repository level.
+Replace `READER_CLIENT` and `DEPLOY_CLIENT` with the client IDs from steps 3.14 and 3.15. Set them per environment, never at repository or organization level. A value there reaches every job whose environment has none, so one identity's client ID would show up where it does not belong, and the apply job's check of step 3.19 would pass in an environment that has no identity of its own.
 
 Check each environment, for example with `gh variable list --env mirror-reader-dispatch --repo themasterishome/demo-bicep-deploy`. Each lists `AZURE_CLIENT_ID` and `AZURE_TENANT_ID`.
 
 Leave `MIRROR_RUNNER` and `MIRROR_MAX_PLAN_AGE_HOURS` unset. Every job then runs on `windows-2025`, apart from `portability`, which runs on `ubuntu-24.04`. A plan may wait 24 hours for its approval. The switch `MIRROR_PIPELINE_ENABLED` waits for step 3.20.
 
-### 3.19 Put the client IDs into allowedPrincipals
+### 3.19 Check the client IDs of the environments
 
-`deploy-unit.ps1` accepts only the identities listed under `allowedPrincipals` in `deploy/units.json`. The file holds one entry for the reader and one for the deploy identity, as the project's file does. Each has `"name": ""`, which never matches. A plan reads the file from the commit it deploys, so the real client IDs must be on `master` before the first plan.
+The client IDs of the two identities live in one place, the `AZURE_CLIENT_ID` variable of each environment (step 3.18). `deploy/units.json` does not hold them. `deploy-unit.ps1` accepts a service principal in a GitHub Actions job when its name equals the client ID that the workflow passes in `MIRROR_CLIENT_ID`, which is the environment's `AZURE_CLIENT_ID`. `allowedPrincipals` lists only the people who run the scripts by hand, so the file has one entry, of `"type": "user"`. Leave its name empty, because you run no script by hand in this demo.
 
-1. Create a branch.
+The check in the script is a guard against mistakes. The boundary is Entra and the identity's roles. Entra issues a token to a job only when the job's subject matches a federated credential of the identity, and the subject names one repository and one environment. If someone changes a variable to another identity's client ID, the sign-in fails unless that identity trusts the environment. A changed workflow could pass the script any client ID, so what stops it is the ruleset on `master` (step 3.7) and the rule of each environment that only `master` may use it (step 3.11). The `apply` job also stops in the step before the sign-in when its environment has no `AZURE_CLIENT_ID` or the value is not a GUID.
 
-   ```powershell
-   git switch --create fill-identities
-   ```
-
-2. Open `deploy/units.json` in an editor. Fill in the reader's client ID in the entry whose `use` starts with "The client ID of the reader identity", and the deploy identity's client ID in the entry whose `use` starts with "The client ID of the deploy identity". Filled in, the reader's entry looks like this, with your own client ID.
-
-   ```json
-   {
-     "type": "servicePrincipal",
-     "name": "11111111-2222-3333-4444-555555555555",
-     "use": "The client ID of the reader identity id-mirror-reader. Pull request previews, the plan of every deployment and drift checks sign in with it (environments mirror-reader and mirror-reader-dispatch). Fill in when the identity exists. An empty name never matches."
-   }
-   ```
-
-   Leave the entry of `"type": "user"` empty. It is only for running `deploy-unit.ps1` by hand.
-
-3. Commit the change and push the branch.
-
-   ```powershell
-   git commit --all --message "Fill in the client IDs of the pipeline identities"
-   git push -u origin fill-identities
-   ```
-
-4. Open the pull request.
-
-   ```powershell
-   gh pr create --repo themasterishome/demo-bicep-deploy --base master --head fill-identities --title "Fill in the client IDs of the pipeline identities" --body "Change: DEMO-0001"
-   ```
-
-   The output is the pull request's address.
-
-5. In the private window, as the second account, open the pull request, select **Files changed** > **Review changes** > **Approve** > **Submit review**. Its checks all show as skipped, because the switch is off.
-
-6. Squash-merge it and update your local `master`.
-
-   ```powershell
-   gh pr merge fill-identities --squash --delete-branch --repo themasterishome/demo-bicep-deploy
-   git switch master
-   git pull
-   ```
-
-Check the result.
+Nothing is edited in the code. Run this check once after step 3.18, and again after any change to an identity. It compares each environment's variable with the identity's client ID, and checks that the identity has a federated credential for exactly that environment.
 
 ```powershell
-git show origin/master:deploy/units.json | Select-String '"name": "[0-9a-f-]{36}"'
+$repo = 'themasterishome/demo-bicep-deploy'
+$sub = '77488719-1168-4d53-af9a-f5c3bc9291d7'
+$repoId = gh api "repos/$repo" --jq .id
+$pairs = @(
+  @('mirror-reader', 'id-mirror-reader'),
+  @('mirror-reader-dispatch', 'id-mirror-reader'),
+  @('mirror-production-demo', 'id-mirror-deploy-demo')
+)
+foreach ($pair in $pairs) {
+  $name = $pair[0]
+  $identity = $pair[1]
+  $variables = @(gh variable list --env $name --repo $repo --json name,value | Out-String | ConvertFrom-Json)
+  $variable = [string](($variables | ForEach-Object { $_ }) | Where-Object { $_.name -eq 'AZURE_CLIENT_ID' }).value
+  $client = az identity show --name $identity --resource-group rg-demo-identities --subscription $sub --query clientId -o tsv
+  $subjects = @(az identity federated-credential list --identity-name $identity --resource-group rg-demo-identities --subscription $sub --query "[].subject" -o tsv)
+  $expected = "repo:themasterishome@49098959/demo-bicep-deploy@${repoId}:environment:${name}"
+  $idOk = ($variable -eq $client)
+  $subjectOk = ($subjects -contains $expected)
+  Write-Host "$name -> $identity : client ID matches $idOk, credential for the environment $subjectOk"
+}
 ```
 
-The output is two lines, the reader's and the deploy identity's client ID.
+The output is three lines, and both values on every line are `True`. Then check that no repository-level variable of the same name exists.
+
+```powershell
+gh variable list --repo themasterishome/demo-bicep-deploy --json name | Out-String | ConvertFrom-Json | Where-Object { $_.name -eq 'AZURE_CLIENT_ID' }
+```
+
+The command prints nothing. If a line says `False`, or the second command prints a variable, correct the variable (step 3.18) or the credential (step 3.17) and run the check again. A client ID that does not match shows later as `AADSTS700213` or `AADSTS70021` at the sign-in (section 5).
 
 ### 3.20 Turn the pipeline on
 
@@ -898,7 +873,7 @@ This is project step 3.23 and sections 4.2 to 4.8. Project section 4.6, the chec
     gh run download RUN_ID --name reviewed-plan-pilot-empty-rg --dir C:\demo-setup\evidence-pilot\reviewed-plan --repo themasterishome/demo-bicep-deploy
     ```
 
-    Replace `RUN_ID` with the run's ID. The files sit in a subfolder of the artifact, under `C:\demo-setup\evidence-pilot`. This command finds them.
+    Replace `RUN_ID` with the run's ID. The files sit under `C:\demo-setup\evidence-pilot`, in the folders the artifact itself holds. This command finds them.
 
     ```powershell
     Get-ChildItem -Path C:\demo-setup\evidence-pilot -Recurse -Include approval.txt, post-summary.txt | Select-Object -ExpandProperty FullName
@@ -1032,7 +1007,7 @@ This is project section 5.3, with the repair of REFERENCE.md section 5.2.
 
    The summary lists `pilot-empty-rg`, `rg-demo-network` and `rg-demo-routing` as clean, and the run is green.
 
-2. Change something outside the code. In the portal, open the route table `rt-demo`. In its overview, next to **Tags**, select **Add tags** (or **change**), add the name `changedBy` with the value `portal`, and select **Save**.
+2. Change something outside the code. In the portal, open the route table `rt-demo`. In its left menu open **Tags**, add the name `changedBy` with the value `portal`, and select **Apply**.
 
 3. Run the drift check again with the same command. The run is red, and its summary lists `rg-demo-routing` as `DRIFT`, with a Modify on `rt-demo` that removes the tag `changedBy`. A failed run is the alert, and GitHub notifies the person who started it. The `drift` artifact holds each unit's evidence.
 
@@ -1070,7 +1045,7 @@ This is REFERENCE.md section 4.1. It takes the rule of section 4.5 out again.
 
 4. Approve it as the second account. The rollback worked when the gate step exits 0, the second check shows `nsg-demo` NoChange, and a drift run is clean. In the portal, `nsg-demo` has no rule of its own again.
 
-A rollback cannot remove a resource that a deployment created with `allowCreate`, because a deployment never deletes. Section 6 removes those by deleting the groups.
+A rollback cannot remove a resource that a deployment created with `allowCreate`, because a deployment never deletes. Section 6 removes those by deleting the groups. The project can later let a deployment stack delete a resource that the code no longer declares (PIPELINE.md section 8.4). The demo does not use that option.
 
 ## 5. What can go wrong
 
@@ -1082,9 +1057,10 @@ A rollback cannot remove a resource that a deployment created with `allowCreate`
 | The first deployment of a new resource passes, and the second check shows a Modify on a value nobody set, with exit 3 | The code left out a value Azure sets on create, so live has it and the code does not. An earlier run of these steps hit this with `privateEndpointVNetPolicies` on a virtual network, which the demo now declares | Keep the resource. Declare the live value in the resource group file through a code pull request, then start a new run. Do not retry the same commit |
 | A run started from Git Bash is refused, and the IDs read `C:/Program Files/Git/subscriptions/...` | Git Bash rewrites arguments that start with `/subscriptions/` into Windows paths | Run the command from PowerShell. In Git Bash, put `MSYS_NO_PATHCONV=1` in front of it |
 | `az policy assignment create` fails with `InvalidAuthenticationTokenTenant` | With `--scope`, the command signs in with the CLI default subscription, which is in another tenant | Run `az account set --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7` and try again (section 2) |
-| A sign-in fails with `AADSTS70021` | The federated credential's subject does not match the job's, or the credential is only a few minutes old | Compare the subject the `azure/login` step prints with step 3.17's read-back. If they match, wait a few minutes and start a new run |
-| Run workflow refuses with `no deploy identity is filled in for subscription 'demo'`, or a push plan says `No deploy identity is filled in`, or a plan fails with `identity '...' is not in allowedPrincipals` | Step 3.19 is not on `master`, so the names in `allowedPrincipals` of `units.json` are still empty | Merge the pull request of step 3.19, then start a new run |
-| **Run workflow** is missing, or a run starts an old copy of the workflow | Run workflow uses the default branch's copy, and the default branch is not `master` | Set the default branch as in step 3.5 |
+| A sign-in fails with `AADSTS70021` or `AADSTS700213` | The federated credential's subject does not match the job's, or the credential is only a few minutes old, or the environment's `AZURE_CLIENT_ID` names an identity whose credential does not name this repository and environment | Compare the subject the `azure/login` step prints with step 3.17's read-back, and run the check of step 3.19. If they match, wait a few minutes and start a new run |
+| The `apply` job fails in the step `Check the environment has a client ID`, with `has no AZURE_CLIENT_ID variable` or `is not a client ID` | The environment `mirror-production-demo` has no `AZURE_CLIENT_ID`, or it is empty or is not a GUID. Nothing was signed in or deployed | Set it (step 3.18), check it (step 3.19) and start a new run |
+| The gate step stops with exit 2 and `identity '...' (servicePrincipal) is neither in allowedPrincipals nor the client ID of this GitHub Actions job (MIRROR_CLIENT_ID)` | The identity that signed in is not the one in the job's `AZURE_CLIENT_ID`. This happens when a service principal signed in outside a GitHub Actions job | In a pipeline job, make sure the job signed in with `azure/login`. By hand, sign in as a person listed in `allowedPrincipals` |
+| **Run workflow** is missing, or a run starts an old copy of the workflow | The workflow file is not on the default branch, or the default branch is not `master` and holds an older copy | Set the default branch as in step 3.5 |
 | The apply refuses after the approval because `master` moved | Something was merged while the apply waited | Reject the old run under **Review deployments**, then start a new run and approve its plan |
 | A drift run fails on resource groups the code does not declare | `demo-subscription` was enabled. Its drift check lists every live group in the Visual Studio subscription, and the demo declares only its own three | Keep `demo-subscription` disabled |
 | `az policy assignment delete` fails with `ScopeLocked` | The CanNotDelete lock on `rg-demo-identities` covers the assignment | Remove the lock first, as section 6 does |
