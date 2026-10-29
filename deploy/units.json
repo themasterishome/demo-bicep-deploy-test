@@ -6,16 +6,6 @@
       "type": "user",
       "name": "",
       "use": "Interactive, reviewed runs by hand. Fill in your own sign-in name to run deploy-unit.ps1 yourself. An empty name never matches."
-    },
-    {
-      "type": "servicePrincipal",
-      "name": "",
-      "use": "The client ID of the reader identity id-mirror-reader. Pull request previews, the plan of every deployment and drift checks sign in with it (environments mirror-reader and mirror-reader-dispatch). Fill in when the identity exists. An empty name never matches."
-    },
-    {
-      "type": "servicePrincipal",
-      "name": "",
-      "use": "The client ID of the deploy identity for the demo subscription (environment mirror-production-demo). Fill in only for a subscription deployed from the pipeline. An empty name never matches."
     }
   ],
   "subscriptions": {

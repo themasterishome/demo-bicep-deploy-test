@@ -239,6 +239,7 @@ jobs:
         env:
           UNIT: ${{ matrix.unit }}
           PREVIEW_MODE: ${{ matrix.mode }}
+          MIRROR_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
         run: |
           & ./.github/scripts/mirror-pipeline.ps1 -Mode Preview -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'evidence')
           exit $LASTEXITCODE

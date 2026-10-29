@@ -63,15 +63,12 @@ function Copy-Object($o) { return (ConvertFrom-Json @MirrorJsonArgs -InputObject
 
 $units = ConvertFrom-Json @MirrorJsonArgs -InputObject ([IO.File]::ReadAllText((Join-Path $repo 'deploy/units.json')))
 $bounds = ConvertFrom-Json @MirrorJsonArgs -InputObject ([IO.File]::ReadAllText((Join-Path $repo 'deploy/boundaries.json')))
-# The tests judge an enabled pilot unit that has a deploy identity. They start from a copy of the file with every
-# deploy identity empty and the pilot unit disabled, whatever the checkout holds. So filling in a client ID or
-# enabling the pilot does not change what they prove.
-foreach ($p in @($units.allowedPrincipals)) { if ([string]$p.type -ceq 'servicePrincipal' -and [string]$p.use -like '*(environment mirror-production-*') { $p.name = '' } }
+# The tests judge an enabled pilot unit. They start from a copy of the file with the pilot unit disabled, whatever the
+# checkout holds. So enabling the pilot does not change what they prove.
 (@($units.units) | Where-Object { $_.name -eq 'pilot-empty-rg' }).enabled = $false
 $unitsOn = Copy-Object $units
 (@($unitsOn.units) | Where-Object { $_.name -eq 'pilot-empty-rg' }).enabled = $true
 $pilotSub = [string]@($unitsOn.units | Where-Object { $_.name -eq 'pilot-empty-rg' })[0].subscription
-foreach ($p in @($unitsOn.allowedPrincipals)) { if ([string]$p.use -like "*(environment mirror-production-$pilotSub)*") { $p.name = '11111111-1111-1111-1111-111111111111' } }
 $pilot = @($units.units | Where-Object { $_.name -eq 'pilot-empty-rg' })[0]
 # The tests judge a hold and a review boundary. They start from a copy of boundaries.json with one of each added,
 # whatever the checkout holds, and the gate runs below on a copy of the repository that holds this copy.
@@ -104,7 +101,8 @@ $e = @((Test-DeployRequest (New-Request) $unitsOn $bounds).errors)
 Assert-Equal 0 $e.Count "a good request passes ($($e -join '; '))"
 $e = @((Test-DeployRequest (New-Request) $units $bounds).errors)
 Assert-Contains $e '*is disabled*' 'a disabled unit is refused'
-Assert-Contains $e '*no deploy identity is filled in*' 'a subscription without a deploy identity is refused'
+Assert-True (@($e | Where-Object { $_ -like '*identity*' }).Count -eq 0) 'no deploy identity is looked for in deploy/units.json, the environment holds it'
+Assert-Equal 0 @($units.allowedPrincipals | Where-Object { [string]$_.type -ceq 'servicePrincipal' }).Count 'deploy/units.json lists no service principal, only people'
 Assert-Contains @((Test-DeployRequest (New-Request @{ unit = 'no-such-unit' }) $unitsOn $bounds).errors) '*is not in deploy/units.json*' 'an unknown unit is refused'
 $zw = [string][char]0x200B
 Assert-Contains @((Test-DeployRequest (New-Request @{ unit = 'pilot-empty-rg' + $zw }) $unitsOn $bounds).errors) 'unit must be a unit name*' 'a unit name with a zero-width space is refused'
@@ -136,9 +134,6 @@ Assert-Contains @((Test-DeployRequest (New-Request @{ unit = 'demo-subscription'
 $subMain = @(@($units.units) | Where-Object { Test-SubscriptionMainUnit $_ })
 Assert-Equal 1 $subMain.Count 'the 1 subscription unit is found by its main.bicep'
 Assert-Equal 0 @($subMain | Where-Object { [string]$_.route -ne 'hand' }).Count 'it is marked "route": "hand" in deploy/units.json'
-Assert-True (Test-DeployIdentity $unitsOn $pilotSub) 'a filled-in deploy identity is found by its environment'
-Assert-True (-not (Test-DeployIdentity $units $pilotSub)) 'an empty name is no deploy identity'
-Assert-True (-not (Test-DeployIdentity $unitsOn 'demo-other')) 'the identity of another subscription folder does not count'
 $o = Get-DeployOptions (New-Request @{ acknowledgeReview = $true; allowModify = [string[]]@($inScope) })
 Assert-True ($o.acknowledgeReview -and $o.allowModify.Count -eq 1 -and $o.allowCreate.Count -eq 0) 'the options are read from a request'
 
@@ -636,6 +631,8 @@ function Invoke-TestGit { $prev = $ErrorActionPreference; $ErrorActionPreference
 function Write-TestFile([string]$Rel, [string]$Text) { $p = Join-Path $g (ConvertTo-NativePath $Rel); New-Item -ItemType Directory -Force (Split-Path -Parent $p) | Out-Null; [IO.File]::WriteAllText($p, $Text) }
 try {
   Invoke-TestGit init -q -b master | Out-Null
+  # The checkout of the push has no service principal in allowedPrincipals, so a row for an enabled unit below proves a push plans without one.
+  Assert-Equal 0 @((ConvertFrom-Json @MirrorJsonArgs -InputObject (ConvertTo-Json $unitsOn -Depth 20)).allowedPrincipals | Where-Object { [string]$_.type -ceq 'servicePrincipal' }).Count 'the units.json of the push fixture has no service principal'
   Write-TestFile '.github/scripts/mirror-pipeline.ps1' ([IO.File]::ReadAllText($helper))
   Write-TestFile 'deploy/units.json' (ConvertTo-Json $unitsOn -Depth 20)
   Write-TestFile 'deploy/boundaries.json' ([IO.File]::ReadAllText((Join-Path $repo 'deploy/boundaries.json')))
@@ -701,6 +698,7 @@ exit $LASTEXITCODE
   Invoke-TestMode 'Select' @{ EVENT_NAME = 'push'; BEFORE = $c2; AFTER = $c3 } 'a push that touches no unit plans nothing' 0 'matrix=[]'
   Invoke-TestGit checkout -q --detach $c4 | Out-Null
   Invoke-TestMode 'Select' @{ EVENT_NAME = 'push'; BEFORE = $c3; AFTER = $c4 } 'a unit that is not enabled is not planned' 0 '1 unit(s) this push touches are not enabled'
+  Invoke-TestMode 'Select' @{ EVENT_NAME = 'push'; BEFORE = $c3; AFTER = $c4 } 'a unit that is not enabled gets no row in the matrix' 0 'matrix=[]'
   Invoke-TestGit checkout -q --detach $c2 | Out-Null
   Invoke-TestMode 'Select' @{ EVENT_NAME = 'push'; BEFORE = $c1; AFTER = $c2; GITHUB_REF = 'refs/heads/dev' } 'a run on another branch is refused' 1 'The deployment runs only on master'
   # Select, by Run workflow.

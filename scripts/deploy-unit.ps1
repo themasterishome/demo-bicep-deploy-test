@@ -10,7 +10,10 @@
        -WhatIfJson evaluation skips the enabled check, because it calls no Azure and never deploys.
     2. A deploy run has a committed tree (no uncommitted change under infra, deploy, pipelines or scripts,
        or in the bicepconfig.json at the root). A tree git cannot read counts as uncommitted.
-    3. The signed-in identity and tenant are in units.json (allowedPrincipals, tenantId).
+    3. The signed-in identity and tenant are right. A person is listed in units.json (allowedPrincipals) and the
+       tenant is its tenantId. A service principal is listed there too, or it is the identity of a GitHub Actions job:
+       GITHUB_ACTIONS is true and its name equals the client ID in MIRROR_CLIENT_ID, which the workflow takes from
+       the AZURE_CLIENT_ID variable of the job's environment.
     4. The Azure CLI runs Bicep 0.48.1 (az bicep version, recorded as Bicep: in pre-summary.txt), the
        unit's files compile, and a resource group file or subscription main declares no
        resource twice (find-duplicate-declarations.ps1). Azure would refuse such a deployment
@@ -1084,7 +1087,16 @@ function Assert-Identity {
   # Account names and types are matched without case, character by character (Test-SameName says why).
   $ok = @($udoc.allowedPrincipals | Where-Object { $_.name -and [string]::Equals([string]$_.type, $type, [StringComparison]::OrdinalIgnoreCase) -and
     [string]::Equals([string]$_.name, $name, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
-  if (-not $ok) { Fail 2 "identity '$name' ($type) is not in allowedPrincipals" }
+  # A pipeline job signs in with the client ID of its environment. The workflow passes that ID in MIRROR_CLIENT_ID, a
+  # name of its own so no Azure tool picks it up, and it is not typed again in units.json. The GITHUB_ACTIONS check
+  # guards against a mistake on a workstation. It is not a security boundary, because Entra and RBAC decide what the
+  # identity can do.
+  $job = $type -ieq 'servicePrincipal' -and $env:GITHUB_ACTIONS -ceq 'true' -and -not [string]::IsNullOrWhiteSpace($env:MIRROR_CLIENT_ID) -and
+    [string]::Equals($env:MIRROR_CLIENT_ID.Trim(), $name, [StringComparison]::OrdinalIgnoreCase)
+  if (-not $ok -and -not $job) {
+    if ($type -ieq 'servicePrincipal') { Fail 2 "identity '$name' ($type) is neither in allowedPrincipals nor the client ID of this GitHub Actions job (MIRROR_CLIENT_ID)" }
+    Fail 2 "identity '$name' ($type) is not in allowedPrincipals"
+  }
   return "$name ($type)"
 }
 $context.identity = Assert-Identity

@@ -478,18 +478,6 @@ function Compare-ReviewItems($ApprovedGate, $NowGate) {
 # The deployment request: what a push or Run workflow asks for, and what the plan and the apply check again.
 # ---------------------------------------------------------------------------------------------------------------
 
-# True when deploy/units.json holds a deploy identity for the subscription folder: a service principal entry whose
-# name is filled in and whose use names the mirror-production environment of that folder.
-function Test-DeployIdentity($UnitsDoc, [string]$Subscription) {
-  $marker = "(environment mirror-production-$Subscription)"
-  foreach ($p in @(Get-Prop $UnitsDoc 'allowedPrincipals')) {
-    if ($null -eq $p) { continue }
-    if ([string](Get-Prop $p 'type') -ceq 'servicePrincipal' -and -not [string]::IsNullOrWhiteSpace([string](Get-Prop $p 'name')) -and
-        ([string](Get-Prop $p 'use')).Contains($marker)) { return $true }
-  }
-  return $false
-}
-
 # The option fields of a request, with the ID lists as string arrays.
 function Get-DeployOptions($Request) {
   return [pscustomobject]@{
@@ -519,7 +507,6 @@ function Test-DeployRequest($Request, $UnitsDoc, $BoundariesDoc) {
       if (-not [bool](Get-Prop $unitDef 'enabled')) { $errors += "unit '$unitName' is disabled in deploy/units.json at this commit. Enable it in a code pull request first" }
       $sub = [string](Get-Prop $unitDef 'subscription')
       if (-not (Get-Prop (Get-Prop $UnitsDoc 'subscriptions') $sub)) { $errors += "unit '$unitName' names subscription '$sub', which is not in the subscriptions list" }
-      elseif (-not (Test-DeployIdentity $UnitsDoc $sub)) { $errors += "no deploy identity is filled in for subscription '$sub' in allowedPrincipals of deploy/units.json, so the apply could not sign in" }
       if ($null -ne (Get-Prop $unitDef 'parameterOverrides')) { $errors += "unit '$unitName' has parameterOverrides, which the pipeline does not preview. Deploy it by hand" }
     }
   }
@@ -1590,17 +1577,17 @@ function Invoke-SelectMode {
     }
     $res = Resolve-AffectedUnits @($paths | Where-Object { $_ -ne 'deploy/boundaries.json' }) $units (Get-UnitFiles $units $root) @($changedEntries + $scope) -AfterMerge
     $notes += @($res.notes)
-    $off = 0; $noId = @()
+    $off = 0
     foreach ($n in @($res.preview)) {
       $u = Find-UnitDef $units $n
       if (Get-HandRouteReason $u) { continue }
       if (-not [bool](Get-Prop $u 'enabled')) { $off++; continue }
-      if (-not (Test-DeployIdentity $units ([string]$u.subscription))) { $noId += $n; continue }
+      # The client ID of the deploy identity lives in the environment of the subscription, not in deploy/units.json.
+      # The apply job stops with a clear message when the environment has none, so the plan does not look for it.
       $rows += [ordered]@{ unit = $n; subscription = [string]$u.subscription; trigger = 'push'; apply = 'true'; startedBy = $actor
                            changeRef = ''; reason = ''; options = (ConvertTo-OptionsJson (Get-DeployOptions ([pscustomobject]@{}))) }
     }
     if ($off -gt 0) { $notes += "$off unit(s) this push touches are not enabled in deploy/units.json, so they are not planned." }
-    if ($noId.Count -gt 0) { $notes += "No deploy identity is filled in for the unit(s) $($noId -join ', '), so they are not planned. Start Run workflow with apply left off to look at one." }
     if ($rows.Count -gt 0) {
       $ticket = ''; $why = "Push to master, commit $($after.Substring(0, [Math]::Min(12, $after.Length)))"
       try {

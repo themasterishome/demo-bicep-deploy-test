@@ -38,10 +38,11 @@
 # environment, which only master may use (PIPELINE.md section 1.5).
 #
 # Variables per environment (none is secret): AZURE_CLIENT_ID, the client ID of that environment's identity, and
-# AZURE_TENANT_ID. One federated credential per environment. Its subject is copied from the subject a first run
-# of the repository presents, not typed from a pattern, because a repository created after July 2026 carries the owner
-# and repository IDs in it. Optional repository variable: MIRROR_MAX_PLAN_AGE_HOURS (24), the longest a plan may
-# wait for its apply.
+# AZURE_TENANT_ID. The client ID is not in deploy/units.json. The steps that run scripts/deploy-unit.ps1 pass it as
+# MIRROR_CLIENT_ID, which the script accepts as the signed-in identity of this job. One federated credential per
+# environment. Its subject is copied from the subject a first run of the repository presents, not typed from a
+# pattern, because a repository created after July 2026 carries the owner and repository IDs in it. Optional
+# repository variable: MIRROR_MAX_PLAN_AGE_HOURS (24), the longest a plan may wait for its apply.
 name: mirror-deploy-unit
 run-name: ${{ github.event_name == 'workflow_dispatch' && format('Deploy {0} ({1})', inputs.unit, inputs.changeRef) || format('Plan the units changed by the push {0}', github.sha) }}
 
@@ -257,6 +258,7 @@ jobs:
           REASON: ${{ matrix.reason }}
           APPLY: ${{ matrix.apply }}
           OPTIONS: ${{ matrix.options }}
+          MIRROR_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
         run: |
           & ./.github/scripts/mirror-pipeline.ps1 -Mode DeployPlan -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'plan')
           exit $LASTEXITCODE
@@ -403,6 +405,24 @@ jobs:
         run: |
           az version -o json
           az bicep version
+      - name: Check the environment has a client ID
+        # azure/login signs in with the client ID of this environment, and the gate accepts exactly that identity.
+        # An environment without the variable would fail later with a less clear message.
+        shell: pwsh
+        env:
+          ENVIRONMENT_NAME: mirror-production-${{ matrix.subscription }}
+          CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+        run: |
+          $guid = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z'
+          if ([string]::IsNullOrWhiteSpace($env:CLIENT_ID)) {
+            Write-Error "the environment $env:ENVIRONMENT_NAME has no AZURE_CLIENT_ID variable, so the apply cannot sign in. Set it as PIPELINE.md step 3.18 says and run the workflow again"
+            exit 1
+          }
+          if ($env:CLIENT_ID -notmatch $guid) {
+            Write-Error "the AZURE_CLIENT_ID variable of the environment $env:ENVIRONMENT_NAME is not a client ID. It must be the GUID alone, with no spaces or other text. Correct it as PIPELINE.md step 3.18 says and run the workflow again"
+            exit 1
+          }
+          Write-Host "The environment $env:ENVIRONMENT_NAME has an AZURE_CLIENT_ID."
       - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906  # v3.1.0
         # The sign-in lasts the whole job, because the Azure CLI cannot renew a federated sign-in, and a user-assigned
         # managed identity's token lasts about 24 hours (an app registration's about one hour).
@@ -416,6 +436,7 @@ jobs:
         shell: pwsh
         env:
           UNIT: ${{ matrix.unit }}
+          MIRROR_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
         run: |
           & ./.github/scripts/mirror-pipeline.ps1 -Mode ComparePlan -Dir (Join-Path $env:RUNNER_TEMP 'plan') -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'evidence' 'compare')
           exit $LASTEXITCODE
@@ -428,6 +449,7 @@ jobs:
         shell: pwsh
         env:
           UNIT: ${{ matrix.unit }}
+          MIRROR_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
         run: |
           $exitFile = Join-Path $env:RUNNER_TEMP 'gate-exit.txt'
           # The arguments are built first. If they cannot be built, nothing has signed in to a deployment (exit 2).
