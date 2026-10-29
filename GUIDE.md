@@ -130,7 +130,7 @@ Every `gh` command in this guide runs as `themasterishome`. The second account w
 
 ## 3. Set up once
 
-Do the steps in order, because each one needs the steps before it. Each step has the number it has in PIPELINE.md section 3, so you can show the project step next to the demo step. Every Azure command names `--subscription 77488719-1168-4d53-af9a-f5c3bc9291d7`, apart from the `az policy assignment` and `az role definition` commands. Those take `--scope` and rely on the default subscription set in section 2.
+Do the steps in order, because each one needs the steps before it. Each step has the number it has in PIPELINE.md section 3, so you can show the project step next to the demo step. Every Azure command names `--subscription 77488719-1168-4d53-af9a-f5c3bc9291d7`, apart from the `az policy assignment` commands and `az role definition list` and `delete`. Those take `--scope` and rely on the default subscription set in section 2.
 
 The placeholders used in this section:
 - `SECOND_LOGIN` is the second GitHub account's login.
@@ -415,7 +415,7 @@ The project puts the identities in a subscription of their own. The demo has one
 
       The output is the assignment in JSON, with `allowedRepoOwners` and `effect` under `parameters`. The owner value is the login, `@` and the owner ID, because the subjects of step 3.16 carry the ID.
 
-   Create the assignment with this command only. The portal gives a new assignment a GUID as its name, and steps 3.17 and section 6 find it by the name `mirror-fic-trusted-owners`. Use the portal only to show the assignment, under **Policy** > **Authoring** > **Assignments** with the scope `rg-demo-identities`.
+   Create the assignment with this command only. The portal gives a new assignment a GUID as its name, and step 3.17 and section 6 find it by the name `mirror-fic-trusted-owners`. Use the portal only to show the assignment, under **Policy** > **Authoring** > **Assignments** with the scope `rg-demo-identities`.
 
 4. Project item 4 (an eligible PIM assignment of Managed Identity Contributor) is left out. Your Owner on the subscription covers the demo.
 
@@ -898,7 +898,7 @@ This is project step 3.23 and sections 4.2 to 4.8. Project section 4.6, the chec
     gh run download RUN_ID --name reviewed-plan-pilot-empty-rg --dir C:\demo-setup\evidence-pilot\reviewed-plan --repo themasterishome/demo-bicep-deploy
     ```
 
-    Replace `RUN_ID` with the run's ID. The files sit in a subfolder that the download creates under `C:\demo-setup\evidence-pilot`. This command finds them.
+    Replace `RUN_ID` with the run's ID. The files sit in a subfolder of the artifact, under `C:\demo-setup\evidence-pilot`. This command finds them.
 
     ```powershell
     Get-ChildItem -Path C:\demo-setup\evidence-pilot -Recurse -Include approval.txt, post-summary.txt | Select-Object -ExpandProperty FullName
