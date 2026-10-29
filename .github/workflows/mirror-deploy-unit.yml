@@ -407,7 +407,9 @@ jobs:
           az bicep version
       - name: Check the environment has a client ID
         # azure/login signs in with the client ID of this environment, and the gate accepts exactly that identity.
-        # An environment without the variable would fail later with a less clear message.
+        # With no variable on the environment, the repository or the organization, the sign-in would fail later with
+        # a less clear message. The step cannot tell a repository or organization value from the environment's own,
+        # so the variable is set on the environments only.
         shell: pwsh
         env:
           ENVIRONMENT_NAME: mirror-production-${{ matrix.subscription }}
