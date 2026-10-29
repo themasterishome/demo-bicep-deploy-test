@@ -126,6 +126,8 @@ You also need:
    gh auth setup-git
    ```
 
+   The command writes a credential helper for github.com into your global git configuration. That is fine on your own machine. To see what it wrote, run `git config --global --get-regexp "credential.*helper"`. Section 6 removes it.
+
 Every `gh` command in this guide runs as `themasterishome`. The second account works in the browser only, so open a private browser window and sign it in there.
 
 ## 3. Set up once
@@ -161,7 +163,6 @@ gh api user --jq "{login: .login, plan: .plan.name}"
 ```
 
 The output names `themasterishome` and its plan, for example `free`. Any plan works for a public repository.
-
 ### 3.2 Check the approvers
 
 The project checks that the approvers team has at least two IT people. The demo's approvers are two users.
@@ -173,7 +174,7 @@ The project checks that the approvers team has at least two IT people. The demo'
    gh api users/SECOND_LOGIN --jq .id
    ```
 
-   Replace `SECOND_LOGIN` with the second account's login. The first command prints `49098959`. Keep the second number as `SECOND_ID`.
+   Replace `SECOND_LOGIN` with the second account's login. The first command prints `49098959`. Keep the second number as `SECOND_ID`. There is no browser route for this step, so use the commands.
 
 2. Check that you know who will act as which person in the demo. You, `themasterishome`, write the code, merge and start every run. The second account reviews pull requests and approves deployments.
 
@@ -187,7 +188,7 @@ The project checks that the approvers team has at least two IT people. The demo'
 
    The output ends with `https://github.com/themasterishome/demo-bicep-deploy`. The project creates a private repository in the organization.
 
-2. Invite the second account as a collaborator. In the repository, open **Settings** > **Collaborators** (under **Access**) > **Add people**, type `SECOND_LOGIN`, and select **Add SECOND_LOGIN to this repository**. Then accept the invitation in the private browser window. A collaborator on a personal repository has write access, which a code owner and a pull request reviewer need. The project gives the approvers team write access instead.
+2. Invite the second account as a collaborator. In your own browser window, open the repository `https://github.com/themasterishome/demo-bicep-deploy`. Select **Settings** > **Collaborators** (under **Access**) > **Add people**, type `SECOND_LOGIN`, and select **Add SECOND_LOGIN to this repository**. The invitation is sent by e-mail. In the private browser window, open the e-mail's link, or `https://github.com/themasterishome/demo-bicep-deploy/invitations`, and select **Accept invitation**. A collaborator on a personal repository has write access, which a code owner and a pull request reviewer need. The project gives the approvers team write access instead.
 
 3. Project items 3 and 4 (forking off, two-factor requirement) are organization settings. A personal account has neither. Forks of a public repository cannot be switched off, so step 3.6 limits what a fork's pull request can run.
 
@@ -250,11 +251,13 @@ The output is two lines, `@SECOND_LOGIN` and `@themasterishome`.
    gh api repos/themasterishome/demo-bicep-deploy --jq .default_branch
    ```
 
-   The output must be `master`. If it is not, set it and run the check again.
+   The output must be `master`. If it is not, set it and run the check again. An earlier run of these steps showed `main` after the first push, and this command fixed it.
 
    ```powershell
    gh api --method PATCH repos/themasterishome/demo-bicep-deploy -f default_branch=master --jq .default_branch
    ```
+
+   To show it in the browser, open the repository and select **Settings** > **General**. Under **Default branch**, select the switch icon to the right of the branch name. In the dropdown, select `master` and select **Update**. Read the warning, then select **I understand, update the default branch.**
 
    Do this now, before step 3.7. **Run workflow** lists only workflows that exist on the default branch, and once the ruleset blocks force pushes, an administrator cannot change the default branch without a bypass.
 
@@ -262,7 +265,7 @@ The push starts mirror-validate and mirror-deploy-unit. Every job of both shows 
 
 ### 3.6 Set the Actions settings
 
-In the repository, open **Settings** > **Actions** > **General** and set the following.
+In the repository, select **Settings**. In the left sidebar select **Actions**, then **General**. The page has one section per setting below, and each section has its own **Save** button. Set the following.
 
 | Setting | Value | Why |
 |---|---|---|
@@ -273,29 +276,33 @@ In the repository, open **Settings** > **Actions** > **General** and set the fol
 | Workflow permissions | **Read repository contents and packages permissions** | Each job asks for its few extra rights itself. |
 | Allow GitHub Actions to create and approve pull requests | Off | A workflow must never approve or merge a pull request. It is off by default on a personal repository. |
 
-Select **Save** under each section you change. To check, reopen the page and confirm each value.
+Under **Actions permissions**, select the option shown in the table. It adds the choices **Allow actions created by GitHub** and **Allow or block specified actions and reusable workflows**. Tick the first, type `azure/login@*` in the box of the second, and select **Save**. Separate several patterns with a comma. The setting **Require actions to be pinned to a full-length commit SHA** sits in the same section. The retention box is labeled **Check, workflow run, status, artifact and log retention**.
+
+Select **Save** under each section you change. To check, reload the page and confirm each value. A run of these steps checked the same values through the REST API on a public Free repository, and all of them held.
 
 ### 3.7 Create the branch ruleset protect-master
 
 The project's organization ruleset already blocks force pushes and branch deletion, so its repository ruleset adds only the code owner review and the checks. The demo has no organization ruleset, so its ruleset carries everything.
 
-1. Open **Settings** > **Rules** > **Rulesets** > **New ruleset** > **New branch ruleset**.
-2. Set the following.
+1. In the repository, select **Settings**. In the left sidebar, under "Code, planning, and automation", select **Rules**, then **Rulesets**. Select **New ruleset**, then **New branch ruleset**.
+2. Set the following. The page follows this order: the name, the enforcement status, the bypass list, the target branches, then the branch rules.
 
    | Setting | Value |
    |---|---|
    | Ruleset name | `protect-master` |
-   | Enforcement status | **Active**. A new ruleset starts as **Disabled** |
+   | Enforcement status | **Active**. A new ruleset starts as **Disabled**, so select **Disabled** and then **Active** |
    | Bypass list | Empty |
    | Target branches | **Add a target** > **Include default branch** |
    | Restrict deletions | On (on by default) |
    | Block force pushes | On (on by default) |
    | Require a pull request before merging | On, with **Required approvals** 1, or 0 when you run alone |
-   | Require review from Code Owners | On, or off when you run alone |
-   | Allowed merge methods | **Squash** only. The push run and the change ticket lookup expect one commit per pull request |
+   | Require review from Code Owners | On, or off when you run alone. It is one of the options under the pull request rule |
+   | Allowed merge methods | **Squash** only. It is also an option under the pull request rule. The push run and the change ticket lookup expect one commit per pull request |
    | Require status checks to pass before merging | On, with **Require branches to be up to date before merging** |
 
-3. Select **Create**.
+   The run of these steps on a public Free repository ended with the rules deletion, non-fast-forward and pull request (squash only) on the branch ruleset.
+
+3. Select **Create**. A ruleset in **Active** status takes effect at once.
 
 Leave the list of status checks empty for now. A check name is offered only after its job has run once, and step 3.21 adds the six names. Until step 3.20 every job is skipped, and GitHub treats a skipped required check as passed. So until then only the review holds a merge back, as in the project.
 
@@ -317,17 +324,17 @@ The project's push ruleset `protect-github-folder` lets only the approvers team 
 
 This stops anyone creating a tag that looks like a deployable reference, as in the project.
 
-1. In **Settings** > **Rules** > **Rulesets**, select **New ruleset** > **New tag ruleset**.
+1. Go back to **Settings** > **Rules** > **Rulesets** and select **New ruleset** > **New tag ruleset**.
 2. Name it `protect-tags` and set **Enforcement status** to **Active**.
 3. Leave the bypass list empty.
-4. Select **Add a target** > **Include all tags**.
+4. Under "Target tags", select **Add a target** > **Include all tags**.
 5. Turn on **Restrict creations**, **Restrict updates** and **Restrict deletions**, and select **Create**.
 
 Check that `gh api repos/themasterishome/demo-bicep-deploy/rulesets --jq ".[].name"` lists `protect-master` and `protect-tags`.
 
 ### 3.10 Turn on push protection
 
-Secret scanning already runs on every public repository for free. Push protection for the repository is off by default. In **Settings**, open **Advanced Security**, in the sidebar section **Security and quality** (**Security** in older layouts), and select **Enable** next to **Push protection**. If **Secret Protection** is not enabled yet, select **Enable** next to it first. The project needs GitHub Secret Protection in its plan for the same switch. In both, the Gitleaks scan of mirror-validate catches what push protection misses.
+Secret scanning already runs on every public repository for free. Push protection for the repository is off by default. In the repository, select **Settings**. In the left sidebar, in the section "Security and quality" ("Security" in older layouts), select **Advanced Security**. If **Secret Protection** is not enabled yet, select **Enable** to the right of it first. In the Secret Protection section, select **Enable** to the right of **Push protection**. The run of these steps confirmed that push protection was on afterwards. The project needs GitHub Secret Protection in its plan for the same switch. In both, the Gitleaks scan of mirror-validate catches what push protection misses.
 
 ### 3.11 Create the 3 environments
 
@@ -341,7 +348,7 @@ The project has 13 environments, one per subscription and two for the reader. Th
 
 Create all three before the switch. A workflow that names an environment that does not exist creates it without reviewers or branch rule.
 
-Create them in a PowerShell window.
+Create them in a PowerShell window. The commands are the main route. To show one environment in the browser, select **Settings** > **Environments** > **New environment**, type the name and select **Configure environment**. For `mirror-production-demo`, tick **Required reviewers**, search for and select both accounts, tick **Prevent self-review** and select **Save protection rules**. In the **Deployment branches** dropdown, select **Selected branches and tags**, select **Add deployment branch or tag rule**, keep the ref type **Branch**, type `master` and select **Add rule**.
 
 ```powershell
 $repo = 'themasterishome/demo-bicep-deploy'
@@ -373,7 +380,7 @@ gh api "repos/$repo/environments/mirror-reader-dispatch/deployment-branch-polici
 
 The first command lists the three names. The second shows a `required_reviewers` rule with `prevent_self_review` true and both users, and a `branch_policy` rule. The third and fourth print `master`.
 
-Keep **Allow administrators to bypass configured protection rules** on, as GitHub's default and as the project does. It is the break-glass route. You, as the repository's admin, can then use **Start all waiting jobs** on a waiting run, after a comment. The REST call has no field for it, so it is a setting under **Settings** > **Environments** > `mirror-production-demo` only.
+Keep **Allow administrators to bypass configured protection rules** on, as GitHub's default and as the project does. It is the break-glass route. You, as the repository's admin, can then use **Start all waiting jobs** on a waiting run, after a comment. The REST call has no field for it, so it is a setting under **Settings** > **Environments** > `mirror-production-demo` only. Check that the box **Allow administrators to bypass configured protection rules** is ticked, and leave it.
 
 ### 3.12 Create the resource group for the identities
 
@@ -466,7 +473,6 @@ The role adds `Microsoft.Resources/deployments/whatIf/action`, the one action Re
    ```
 
    The output is the identity in JSON. Keep `clientId` as `READER_CLIENT` and `principalId` as `READER_PRINCIPAL`.
-
 2. Grant Reader and Mirror What-If Reader on the subscription.
 
    ```powershell
@@ -525,7 +531,7 @@ Check that both identities exist.
 az identity list --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[].name" -o tsv
 ```
 
-The output lists `id-mirror-deploy-demo` and `id-mirror-reader`. To read an identity's IDs again later, run `az identity show --name IDENTITY_NAME --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "{clientId:clientId, principalId:principalId}" -o json`.
+The output lists both names, `id-mirror-deploy-demo` and `id-mirror-reader`, in no fixed order. To read an identity's IDs again later, run `az identity show --name IDENTITY_NAME --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "{clientId:clientId, principalId:principalId}" -o json`.
 
 ### 3.16 Read the subject the workflows present
 
@@ -599,14 +605,18 @@ Create them one at a time, because Azure refuses concurrent changes to one ident
 
    The output is two rows for the reader and one for the deploy identity, each with its subject, the issuer and the audience `api://AzureADTokenExchange`. If a value differs, run that credential's `create` command of item 1 again, with the same `--name` and the right value. It replaces the credential in place. Do not delete it, because the lock of step 3.12 refuses the delete.
 
-3. Check that the three credentials are compliant with the policy. The scan can take several minutes.
+   In the portal, search for **Managed Identities** and select it. Select `id-mirror-reader`, then, in the left menu under **Settings**, select **Federated credentials**. The list shows the credentials of that identity with their subject.
+
+3. Check that the three credentials are compliant with the policy. The first evaluation of a new assignment can take over an hour. In the run of these steps the listing stayed empty for about 45 minutes and showed all three credentials as `Compliant` about 90 minutes after the assignment. Start a scan, so Azure does not wait for its own schedule.
 
    ```powershell
-   az policy state trigger-scan --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7
+   az policy state trigger-scan --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --no-wait
    az policy state list --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --filter "policyAssignmentName eq 'mirror-fic-trusted-owners'" --query "[].{res:resourceId, state:complianceState}" -o table
    ```
 
-   The output lists the three credentials as `Compliant`. The portal shows the same under **Policy** > **Compliance**.
+   The `--no-wait` option returns at once, and the scan runs in the background. Run the second command again later. Once the evaluation is done, the output lists the three credentials as `Compliant`. An empty list means the evaluation has not finished, not that something is wrong. The faster proof is the Deny check of item 5.
+
+   In the browser, open the Azure portal, search for **Policy** and select it. Select **Compliance**, find the assignment `GitHub federated credentials only from themasterishome` and select its name. The **Resource compliance** tab lists the credentials with their **Compliance state**.
 
 4. Switch the policy to Deny.
 
@@ -618,7 +628,7 @@ Create them one at a time, because Azure refuses concurrent changes to one ident
 
    The output is the assignment in JSON, with `Deny` as the value of `effect`. Azure can take up to about 30 minutes to apply a changed assignment.
 
-5. Optionally, show the audience that Deny works. Do this only after the wait of item 4. If you run it too early, it creates the credential, and the lock keeps it until section 6. A credential for another owner is refused with `RequestDisallowedByPolicy`, and nothing is created.
+5. Show the audience that Deny works. This is the quicker proof than the compliance listing. Do this only after the wait of item 4. If you run it too early, it creates the credential, and the lock keeps it until section 6. A credential for another owner is refused with `RequestDisallowedByPolicy`, and nothing is created.
 
    ```powershell
    az identity federated-credential create --name deny-check --identity-name id-mirror-reader --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --issuer https://token.actions.githubusercontent.com --subject "repo:someone-else@1/other@2:environment:mirror-reader" --audiences api://AzureADTokenExchange
@@ -652,6 +662,8 @@ Replace `READER_CLIENT` and `DEPLOY_CLIENT` with the client IDs from steps 3.14 
 
 Check each environment, for example with `gh variable list --env mirror-reader-dispatch --repo themasterishome/demo-bicep-deploy`. Each lists `AZURE_CLIENT_ID` and `AZURE_TENANT_ID`.
 
+To show it in the browser, select **Settings** > **Environments** and the environment's name. Under **Environment variables**, select **Add variable**, type the name and the value, and select **Add variable** again. GitHub cannot store a variable with an empty value, so it refuses an empty one with the message "Variable value cannot be empty".
+
 Leave `MIRROR_RUNNER` and `MIRROR_MAX_PLAN_AGE_HOURS` unset. Every job then runs on `windows-2025`, apart from `portability`, which runs on `ubuntu-24.04`. A plan may wait 24 hours for its approval. The switch `MIRROR_PIPELINE_ENABLED` waits for step 3.20.
 
 ### 3.19 Check the client IDs of the environments
@@ -659,6 +671,14 @@ Leave `MIRROR_RUNNER` and `MIRROR_MAX_PLAN_AGE_HOURS` unset. Every job then runs
 The client IDs of the two identities live in one place, the `AZURE_CLIENT_ID` variable of each environment (step 3.18). `deploy/units.json` does not hold them. `deploy-unit.ps1` accepts a service principal in a GitHub Actions job when its name equals the client ID that the workflow passes in `MIRROR_CLIENT_ID`, which is the environment's `AZURE_CLIENT_ID`. `allowedPrincipals` lists only the people who run the scripts by hand, so the file has one entry, of `"type": "user"`. Leave its name empty, because you run no script by hand in this demo.
 
 The check in the script is a guard against mistakes. The boundary is Entra and the identity's roles. Entra issues a token to a job only when the job's subject matches a federated credential of the identity, and the subject names one repository and one environment. If someone changes a variable to another identity's client ID, the sign-in fails unless that identity trusts the environment. A changed workflow could pass the script any client ID, so what stops it is the ruleset on `master` (step 3.7) and the rule of each environment that only `master` may use it (step 3.11). The `apply` job also stops in the step before the sign-in when its environment has no `AZURE_CLIENT_ID` or the value is not a GUID.
+
+Entra is the boundary that holds when that check is passed. In the run of these steps, the reader's client ID was put into the deploy environment on purpose. It passed the GUID check, and `azure/login` then failed with the following message.
+
+```text
+AADSTS700213: No matching federated identity record found for presented assertion subject 'repo:OWNER@OWNER_ID/REPO@REPO_ID:environment:mirror-production-demo'
+```
+
+The reader's identity trusts only the two reader environments, so Entra refused the deploy environment's token.
 
 Nothing is edited in the code. Run this check once after step 3.18, and again after any change to an identity. It compares each environment's variable with the identity's client ID, and checks that the identity has a federated credential for exactly that environment.
 
@@ -701,7 +721,7 @@ The command prints nothing. If a line says `False`, or the second command prints
    gh variable set MIRROR_PIPELINE_ENABLED --body true --repo themasterishome/demo-bicep-deploy
    ```
 
-   Or open **Settings** > **Secrets and variables** > **Actions** > **Variables** > **New repository variable**, with the name `MIRROR_PIPELINE_ENABLED` and the value `true`.
+   In the browser, select **Settings**. In the "Security" section of the sidebar, select **Secrets and variables**, then **Actions**. Select the **Variables** tab and **New repository variable**. Type the name `MIRROR_PIPELINE_ENABLED` and the value `true`, and select **Add variable**.
 
 2. Check it.
 
@@ -727,9 +747,9 @@ To stop every job again, set the variable to `false`.
    gh pr create --repo themasterishome/demo-bicep-deploy --base master --head first-checks --title "First run of the checks" --body "Change: DEMO-0002"
    ```
 
-2. Wait for the checks. On the small demo tree the run takes a few minutes. The five jobs of mirror-validate are green: `secret-scan`, `actionlint`, `workflow-hygiene`, `portability` and `preflight`. mirror-pr shows `plan`, no `whatif` job and a green `pr-gate`, because no unit is touched. If a job fails, read its first error.
+2. Wait for the checks. To watch them, open the repository's **Pull requests** tab and select the pull request. The checks are listed at the bottom of the **Conversation** tab, and **Details** next to a check opens its run. On the small demo tree the run takes a few minutes. The five jobs of mirror-validate are green: `secret-scan`, `actionlint`, `workflow-hygiene`, `portability` and `preflight`. mirror-pr shows `plan`, no `whatif` job and a green `pr-gate`, because no unit is touched. If a job fails, read its first error.
 
-3. Add the six required checks to the ruleset. Open **Settings** > **Rules** > **Rulesets** > `protect-master`. Turn on **Require status checks to pass before merging** if step 3.7 left it off, with **Require branches to be up to date before merging**. Under that rule, type each check name, select it with **+**, and keep the source **GitHub Actions**: `secret-scan`, `actionlint`, `workflow-hygiene`, `portability`, `preflight` and `pr-gate`. Select **Save changes**. The check names are the job IDs, because none of these six jobs has a `name:` key.
+3. Add the six required checks to the ruleset. Select **Settings** > **Rules** > **Rulesets** and then `protect-master`. Turn on **Require status checks to pass before merging** if step 3.7 left it off, with **Require branches to be up to date before merging**. Under that rule, in the **Additional settings** section, type each check name and select the **+** button to add it. Keep the source **GitHub Actions**. The six names are `secret-scan`, `actionlint`, `workflow-hygiene`, `portability`, `preflight` and `pr-gate`. A name is offered only because its job has run once. Select **Save changes**. The check names are the job IDs, because none of these six jobs has a `name:` key. Without a check listed, the up-to-date box has no effect, so add the six first.
 
 4. Close the pull request without merging, and keep its branch for step 3.22.
 
@@ -750,9 +770,9 @@ This run proves the reader's sign-in through `mirror-reader-dispatch`. With ever
    gh workflow run mirror-drift.yml --ref master --repo themasterishome/demo-bicep-deploy
    ```
 
-   Or open **Actions** > **mirror-drift** > **Run workflow**, keep the branch `master` and select **Run workflow**.
+   In the browser, open the repository's **Actions** tab, select **mirror-drift** in the left sidebar and select the **Run workflow** button above the list of runs. In the **Branch** dropdown keep `master`, and select **Run workflow** in the pop-up. The workflow has no input boxes.
 
-2. Open the finished run. The `azure/login` step is green. The step "Drift sweep (read-only)" fails, and its last line starts with `STOP: no enabled unit to check in deploy/units.json`. The upload of the `drift` artifact then warns that no files were found.
+2. Open the finished run by selecting its name in the list. The `azure/login` step is green. The step "Drift sweep (read-only)" fails, and its last line starts with `STOP: no enabled unit to check in deploy/units.json`. The upload of the `drift` artifact then warns that no files were found.
 
 3. Check the branch rule. Start the workflow on the branch of step 3.21.
 
@@ -786,6 +806,8 @@ Each part says what to do and what the audience sees on screen. Nothing changes 
 ### 4.1 Before you start
 
 Prepare two browser windows side by side, the repository in your own window and the same repository in the private window of the second account. Keep a PowerShell window at the root of the local repository, on `master`.
+
+Do section 3 the day before, or at least two hours before the audience arrives. The policy of step 3.17 takes over an hour to show its first compliance result, and the Deny check needs its wait.
 
 **Check before the demo:**
 - [ ] Steps 3.1 to 3.22 are done, and the mirror-validate run of the step 3.21 pull request is green.
@@ -826,9 +848,9 @@ This is project step 3.23 and sections 4.2 to 4.8. Project section 4.6, the chec
    gh pr create --repo themasterishome/demo-bicep-deploy --base master --head enable-pilot --title "Enable the pilot unit" --body "Change: DEMO-0003"
    ```
 
-   On screen, the pull request runs mirror-validate and mirror-pr. mirror-pr has a job `whatif pilot-empty-rg`, the reader's first sign-in through `mirror-reader`. Its comment on the pull request shows the pilot's preview with the gate PASS and no records.
+   On screen, open the repository's **Pull requests** tab and select the pull request. The checks at the bottom of the **Conversation** tab show mirror-validate and mirror-pr. mirror-pr has a job `whatif pilot-empty-rg`, the reader's first sign-in through `mirror-reader`. Its comment on the pull request shows the pilot's preview with the gate PASS and no records. The comment says `Identity: not checked (offline)`.
 
-3. As the second account, approve the pull request (**Files changed** > **Review changes** > **Approve** > **Submit review**). Then, once every check is green, squash-merge it as yourself and update `master`. GitHub refuses the merge while a required check is still running.
+3. As the second account, approve the pull request. In the private window, open the pull request, select the **Files changed** tab, select **Review changes**, select **Approve** and select **Submit review**. Then, once every check is green, squash-merge it as yourself with the merge button on the **Conversation** tab, and update `master`. GitHub refuses the merge while a required check is still running.
 
    ```powershell
    gh pr merge enable-pilot --squash --delete-branch --repo themasterishome/demo-bicep-deploy
@@ -836,13 +858,13 @@ This is project step 3.23 and sections 4.2 to 4.8. Project section 4.6, the chec
    git pull
    ```
 
-4. Show the push run. Open **Actions** > **mirror-deploy-unit** and the newest run, named "Plan the units changed by the push" and the commit. Or list it.
+4. Show the push run. Open the repository's **Actions** tab, select **mirror-deploy-unit** in the left sidebar and select the newest run, named "Plan the units changed by the push" and the commit. Or list it.
 
    ```powershell
    gh run list --workflow mirror-deploy-unit.yml --branch master --limit 3 --repo themasterishome/demo-bicep-deploy
    ```
 
-   On screen, `select` lists `pilot-empty-rg`, and the job `plan pilot-empty-rg` signs in as the reader through `mirror-reader-dispatch`. Its summary shows "Gate PASS, approvable", with PASS in bold, and ends with "A push publishes this plan and deploys nothing. The plan holds no effective change, so nothing waits for a reviewer. A change is applied with Run workflow, which names the ticket, the reason and the options." There is no apply job. The merge deployed nothing.
+   On screen, `select` lists `pilot-empty-rg`, and the job `plan pilot-empty-rg` signs in as the reader through `mirror-reader-dispatch`. Its summary shows "Gate PASS, approvable", with PASS in bold, and ends with "A push publishes this plan and deploys nothing. The plan holds no effective change, so nothing waits for a reviewer. A change is applied with Run workflow, which names the ticket, the reason and the options." There is no apply job. The merge deployed nothing. The summary is on the run's page, under the job list.
 
 5. Start the deployment by hand.
 
@@ -850,13 +872,13 @@ This is project step 3.23 and sections 4.2 to 4.8. Project section 4.6, the chec
    gh workflow run mirror-deploy-unit.yml --ref master -f unit=pilot-empty-rg -f changeRef=DEMO-0003 -f reason="Pilot" -f apply=true --repo themasterishome/demo-bicep-deploy
    ```
 
-   Or open **Actions** > **mirror-deploy-unit** > **Run workflow**, keep the branch `master`, fill in `unit`, `changeRef` and `reason`, tick `apply`, and select **Run workflow**. The run is named "Deploy pilot-empty-rg (DEMO-0003)".
+   In the browser, open the **Actions** tab, select **mirror-deploy-unit** in the left sidebar and select the **Run workflow** button above the list of runs. In the **Branch** dropdown keep `master`. Fill in the boxes `unit` with `pilot-empty-rg`, `changeRef` with `DEMO-0003` and `reason` with `Pilot`, tick `apply`, and select **Run workflow** in the pop-up. The run is named "Deploy pilot-empty-rg (DEMO-0003)". The inputs `acknowledgeReview`, `allowCreate`, `allowModify` and `allowHeld` stay empty or unticked here.
 
-6. Show the waiting apply. After `plan pilot-empty-rg` and `collect`, the job `apply pilot-empty-rg` shows **Waiting**, for the environment `mirror-production-demo`. The plan's summary says it holds no effective change. Show the audience that the plan summary and the artifact `reviewed-plan-pilot-empty-rg` can be read while it waits.
+6. Show the waiting apply. Open the run from the **Actions** tab. After `plan pilot-empty-rg` and `collect`, the job `apply pilot-empty-rg` shows **Waiting**, for the environment `mirror-production-demo`. The plan's summary says it holds no effective change. Show the audience that the plan summary and the artifact `reviewed-plan-pilot-empty-rg` can be read while it waits. The artifacts are listed in the "Artifacts" section at the bottom of the run's page, and selecting a name downloads it as a zip file.
 
-7. Show Prevent self-review. In your own window, open the run. You started it, so you cannot approve it. The **Review deployments** button is missing, or GitHub does not let you tick the environment. Do not use **Start all waiting jobs** here. It is the administrators' bypass of step 3.11, and it would skip Prevent self-review in front of the audience. With the one-account variant, skip this item.
+7. Show Prevent self-review. In your own window, open the run. You started it, so GitHub does not let you approve it. The text of the refusal was not recorded in the run of these steps, so read what the page says and tell the audience that. Most likely the **Review deployments** button is missing, or GitHub does not let you tick the environment. Do not use **Start all waiting jobs** here. It is the administrators' bypass of step 3.11, and it would skip Prevent self-review in front of the audience. With the one-account variant, skip this item.
 
-8. Approve it as the second account. In the private window, open the run, select **Review deployments**, tick `mirror-production-demo`, write a comment that names `DEMO-0003`, and select **Approve and deploy**.
+8. Approve it as the second account. In the private window, open the repository's **Actions** tab and the run. The page shows a notice that the run is waiting for review. Select **Review deployments**, tick `mirror-production-demo`, write a comment that names `DEMO-0003`, and select **Approve and deploy**. The apply job then starts.
 
 9. Watch the apply.
 
@@ -864,9 +886,9 @@ This is project step 3.23 and sections 4.2 to 4.8. Project section 4.6, the chec
    gh run watch --repo themasterishome/demo-bicep-deploy
    ```
 
-   Choose the run when the GitHub CLI asks. On screen, the apply job checks that it is the first attempt, that `master` is still at the planned commit and that the plan is less than 24 hours old. It signs in as the deploy identity, compares a fresh preview with the plan and runs the gate step. Its summary ends with `Gate step exit: 0, deployed, and the second check passed.`
+   Choose the run when the GitHub CLI asks. On screen, the apply job checks that it is the first attempt, that `master` is still at the planned commit and that the plan is less than 24 hours old. It signs in as the deploy identity, compares a fresh preview with the plan and runs the gate step. The log shows `Identity ok: *** (servicePrincipal)`, because `azure/login` masks the client ID. The ID itself is visible in the inputs of the `azure/login` step, in the environment of the step "Check the environment has a client ID", and in `approval.txt` and `post-summary.txt` as `identity=<client ID> (servicePrincipal)`. Its summary ends with `Gate step exit: 0, deployed, and the second check passed.`
 
-10. Download the evidence. The run's ID is the long number after `/actions/runs/` in the run's address, not the `#N` number.
+10. Download the evidence. The run's ID is the long number after `/actions/runs/` in the run's address, not the `#N` number. In the browser, scroll to the "Artifacts" section of the run's page and select `evidence-deploy-pilot-empty-rg` to download it as a zip file. The commands below do the same and unpack the files.
 
     ```powershell
     gh run download RUN_ID --name evidence-deploy-pilot-empty-rg --dir C:\demo-setup\evidence-pilot --repo themasterishome/demo-bicep-deploy
@@ -879,7 +901,7 @@ This is project step 3.23 and sections 4.2 to 4.8. Project section 4.6, the chec
     Get-ChildItem -Path C:\demo-setup\evidence-pilot -Recurse -Include approval.txt, post-summary.txt | Select-Object -ExpandProperty FullName
     ```
 
-    Open `approval.txt`, which has a `deployed=` line, and `post-summary.txt`, the second check. In the project this goes on the change ticket, with the reviewer's name and comment from the run's **Review deployments** history.
+    Open `approval.txt`, which has a `deployed=` line, and `post-summary.txt`, the second check, which says Gate PASS. In the project this goes on the change ticket, with the reviewer's name and comment from the run's **Review deployments** history.
 
 11. Show the plan-only route, as project step 3.23, item 5 does.
 
@@ -907,7 +929,7 @@ This is project sections 4.2 to 4.8 and 4.10, for a unit that creates resources.
    gh pr create --repo themasterishome/demo-bicep-deploy --base master --head enable-waves --title "Enable the network and routing units" --body "Change: DEMO-0004"
    ```
 
-2. Show the preview on the pull request. mirror-pr runs `whatif rg-demo-network` and `whatif rg-demo-routing`. Each shows the gate FAIL with `Create=2`, marked for information. A new resource is a Create, and the gate refuses a Create that nobody named. `pr-gate` is green, because it fails only when a preview could not run.
+2. Show the preview on the pull request. mirror-pr runs `whatif rg-demo-network` and `whatif rg-demo-routing`. Each shows the gate FAIL with `Create=2`, marked for information. The two comments are on the **Conversation** tab of the pull request. A new resource is a Create, and the gate refuses a Create that nobody named. The check `pr-gate` is still green, because it fails only when a preview could not run.
 
 3. Approve the pull request as the second account, then squash-merge it once every check is green.
 
@@ -917,7 +939,7 @@ This is project sections 4.2 to 4.8 and 4.10, for a unit that creates resources.
    git pull
    ```
 
-4. Show the push run. It plans both units and shows red. Each plan is not approvable, because it holds two Creates. The summary names the option that would accept them, `allowCreate`, and gives the ready `gh workflow run` command with the resource IDs. Nothing waits and nothing deploys.
+4. Show the push run, as in 4.2 item 4. It plans both units and the plan jobs show red. Each plan is not approvable, because it holds two Creates. The summary names the option that would accept them, `allowCreate`, and gives the ready `gh workflow run` command with the resource IDs. Nothing waits and nothing deploys.
 
 5. Start the deployment of `rg-demo-network`, with the two resource IDs in `allowCreate`. Type it in PowerShell, or copy the command from the plan summary.
 
@@ -925,13 +947,13 @@ This is project sections 4.2 to 4.8 and 4.10, for a unit that creates resources.
    gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-network -f changeRef=DEMO-0004 -f reason="Wave 1, create the network" -f apply=true -f allowCreate="/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Network/networkSecurityGroups/nsg-demo,/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Network/virtualNetworks/vnet-demo" --repo themasterishome/demo-bicep-deploy
    ```
 
-   In the **Run workflow** form, paste the two IDs into `allowCreate`, separated by a comma and no space.
+   In the **Run workflow** form of the **Actions** tab, fill in `unit` with `rg-demo-network`, `changeRef` with `DEMO-0004` and `reason`, tick `apply`, and paste the two IDs into `allowCreate`, separated by a comma and no space.
 
 6. Show the plan. The summary of `plan rg-demo-network` shows the verdict approvable, the option `allowCreate` with both IDs, and the two Create records with their properties. `apply rg-demo-network` waits.
 
-7. Approve it as the second account (**Review deployments**, tick `mirror-production-demo`, a comment naming `DEMO-0004`, **Approve and deploy**).
+7. Approve it as the second account. In the private window, open the run, select **Review deployments**, tick `mirror-production-demo`, write a comment naming `DEMO-0004`, and select **Approve and deploy**.
 
-8. Watch the apply. The fresh preview matches the plan record for record, the gate step creates `nsg-demo` and `vnet-demo` with its subnet, and the second check shows both NoChange. The summary ends with `Gate step exit: 0, deployed, and the second check passed.` The audience can open the group in the portal and see the two resources.
+8. Watch the apply. The fresh preview matches the plan record for record, the gate step creates `nsg-demo` and `vnet-demo` with its subnet, and the second check ends with `NoChange=2`. The summary ends with `Gate step exit: 0, deployed, and the second check passed.` The audience can open the group in the portal and see the two resources. In the Azure portal, search for **Resource groups**, select `rg-demo-network` and read the list on the **Overview** page.
 
 9. Download the evidence as in wave 0, with `evidence-deploy-rg-demo-network` and `reviewed-plan-rg-demo-network`.
 
@@ -983,17 +1005,17 @@ This is project section 4.9. The resources now exist, and a real change names it
    gh pr create --repo themasterishome/demo-bicep-deploy --base master --head nsg-rule --title "Deny remote desktop from the internet on nsg-demo" --body "Change: DEMO-0006"
    ```
 
-   On screen, `whatif rg-demo-network` shows the gate FAIL with one Modify on `nsg-demo`, the new rule under `securityRules`, for information.
+   On screen, `whatif rg-demo-network` shows the gate FAIL with `Modify=1` on `nsg-demo`, the new rule under `securityRules`, for information. The comment is on the **Conversation** tab of the pull request.
 
 3. Approve it as the second account and squash-merge it once every check is green. The push run plans `rg-demo-network`, and the plan stops with a message that names the NSG's ID for `allowModify`. The merge deploys nothing.
 
-4. Start the deployment with that ID in `allowModify`.
+4. Start the deployment with that ID in `allowModify`. In the **Run workflow** form, fill in `unit` with `rg-demo-network`, `changeRef` with `DEMO-0006` and `reason`, tick `apply`, and paste the ID into `allowModify`.
 
    ```powershell
    gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-network -f changeRef=DEMO-0006 -f reason="Deny remote desktop from the internet" -f apply=true -f allowModify=/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Network/networkSecurityGroups/nsg-demo --repo themasterishome/demo-bicep-deploy
    ```
 
-5. On screen, the plan shows "Gate REVIEW, approvable", with REVIEW in bold, and each property change is marked "would be allowed with -AllowModify". Approve it as the second account. The gate step deploys only when its fresh preview shows exactly the planned property changes, and the second check shows `nsg-demo` NoChange.
+5. On screen, the plan shows "Gate REVIEW, approvable", with REVIEW in bold, and each property change is marked "would be allowed with -AllowModify". Approve it as the second account with **Review deployments**, as in 4.2 item 8. The gate step deploys only when its fresh preview shows exactly the planned property changes, and the second check ends with `NoChange=2`, with `nsg-demo` among them. To show the rule in the Azure portal, search for **Network security groups**, select `nsg-demo` and select **Inbound security rules**. The list shows `Deny-Internet-RDP` with the priority 100, besides the default rules.
 
 ### 4.6 Drift
 
@@ -1007,9 +1029,9 @@ This is project section 5.3, with the repair of REFERENCE.md section 5.2.
 
    The summary lists `pilot-empty-rg`, `rg-demo-network` and `rg-demo-routing` as clean, and the run is green.
 
-2. Change something outside the code. In the portal, open the route table `rt-demo`. In its left menu open **Tags**, add the name `changedBy` with the value `portal`, and select **Apply**.
+2. Change something outside the code. In the Azure portal, search for **Route tables** and select `rt-demo`. In its left menu select **Tags**, type the name `changedBy` and the value `portal`, and select **Apply**.
 
-3. Run the drift check again with the same command. The run is red, and its summary lists `rg-demo-routing` as `DRIFT`, with a Modify on `rt-demo` that removes the tag `changedBy`. A failed run is the alert, and GitHub notifies the person who started it. The `drift` artifact holds each unit's evidence.
+3. Run the drift check again with the same command. The run is red, and its summary lists `rg-demo-routing` as `DRIFT`, with a Modify on `rt-demo` that removes the tag `changedBy`. In the log of the drift step, the line reads `FAIL Modify .../rt-demo` and the next line reads `unclassified delta tags.changedBy (Delete)`. A failed run is the alert, and GitHub notifies the person who started it. The `drift` artifact holds each unit's evidence.
 
 4. Repair it by putting the code's value back. Start a deployment of `rg-demo-routing` with `rt-demo` in `allowModify`.
 
@@ -1017,7 +1039,7 @@ This is project section 5.3, with the repair of REFERENCE.md section 5.2.
    gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-routing -f changeRef=DEMO-0007 -f reason="Undo the drift on rt-demo" -f apply=true -f allowModify=/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-routing/providers/Microsoft.Network/routeTables/rt-demo --repo themasterishome/demo-bicep-deploy
    ```
 
-   The plan shows the tag going away. Approve it as the second account. After the deployment, run the drift check again. All three units are clean.
+   The plan shows the tag going away. Approve it as the second account with **Review deployments**. After the deployment, run the drift check again. All three units are clean, and the log says "No drift found" for each.
 
    The other repair is to keep the live value. You then copy the tag into `rg-demo-routing.bicep` through a code pull request, and the next drift check is clean with nothing deployed.
 
@@ -1043,7 +1065,7 @@ This is REFERENCE.md section 4.1. It takes the rule of section 4.5 out again.
 
 3. Start the deployment with the NSG in `allowModify`, as in section 4.5, item 4, with `changeRef=DEMO-0008` and the reason `Roll back the remote desktop rule`.
 
-4. Approve it as the second account. The rollback worked when the gate step exits 0, the second check shows `nsg-demo` NoChange, and a drift run is clean. In the portal, `nsg-demo` has no rule of its own again.
+4. Approve it as the second account with **Review deployments**. The rollback worked when the gate step exits 0, the second check shows `nsg-demo` NoChange, and a drift run is clean with "No drift found" for all three units. In the Azure portal, open `nsg-demo` and select **Inbound security rules**. The list holds only the default rules again.
 
 A rollback cannot remove a resource that a deployment created with `allowCreate`, because a deployment never deletes. Section 6 removes those by deleting the groups. The project can later let a deployment stack delete a resource that the code no longer declares (PIPELINE.md section 8.4). The demo does not use that option.
 
@@ -1058,12 +1080,20 @@ A rollback cannot remove a resource that a deployment created with `allowCreate`
 | A run started from Git Bash is refused, and the IDs read `C:/Program Files/Git/subscriptions/...` | Git Bash rewrites arguments that start with `/subscriptions/` into Windows paths | Run the command from PowerShell. In Git Bash, put `MSYS_NO_PATHCONV=1` in front of it |
 | `az policy assignment create` fails with `InvalidAuthenticationTokenTenant` | With `--scope`, the command signs in with the CLI default subscription, which is in another tenant | Run `az account set --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7` and try again (section 2) |
 | A sign-in fails with `AADSTS70021` or `AADSTS700213` | The federated credential's subject does not match the job's, or the credential is only a few minutes old, or the environment's `AZURE_CLIENT_ID` names an identity whose credential does not name this repository and environment | Compare the subject the `azure/login` step prints with step 3.17's read-back, and run the check of step 3.19. If they match, wait a few minutes and start a new run |
-| The `apply` job fails in the step `Check the environment has a client ID`, with `has no AZURE_CLIENT_ID variable` or `is not a client ID` | The environment `mirror-production-demo` has no `AZURE_CLIENT_ID`, or it is empty or is not a GUID. Nothing was signed in or deployed | Set it (step 3.18), check it (step 3.19) and start a new run |
+| The `apply` job fails in the step `Check the environment has a client ID`, with one of the two messages after this table | The environment `mirror-production-demo` has no `AZURE_CLIENT_ID`, or its value is not a GUID. GitHub cannot store an empty value (HTTP 422, "Variable value cannot be empty"), so a variable is either missing or holds some text. Nothing was signed in or deployed | Set it (step 3.18), check it (step 3.19) and start a new run |
 | The gate step stops with exit 2 and `identity '...' (servicePrincipal) is neither in allowedPrincipals nor the client ID of this GitHub Actions job (MIRROR_CLIENT_ID)` | The identity that signed in is not the one in the job's `AZURE_CLIENT_ID`. This happens when a service principal signed in outside a GitHub Actions job | In a pipeline job, make sure the job signed in with `azure/login`. By hand, sign in as a person listed in `allowedPrincipals` |
 | **Run workflow** is missing, or a run starts an old copy of the workflow | The workflow file is not on the default branch, or the default branch is not `master` and holds an older copy | Set the default branch as in step 3.5 |
 | The apply refuses after the approval because `master` moved | Something was merged while the apply waited | Reject the old run under **Review deployments**, then start a new run and approve its plan |
 | A drift run fails on resource groups the code does not declare | `demo-subscription` was enabled. Its drift check lists every live group in the Visual Studio subscription, and the demo declares only its own three | Keep `demo-subscription` disabled |
 | `az policy assignment delete` fails with `ScopeLocked` | The CanNotDelete lock on `rg-demo-identities` covers the assignment | Remove the lock first, as section 6 does |
+| The policy compliance list stays empty after step 3.17 | The first evaluation of a new assignment can take over an hour | Run `az policy state trigger-scan` with `--no-wait` as step 3.17 shows, and use the Deny check as the quicker proof |
+
+The apply job logs the two messages of the client ID check as follows.
+
+```text
+the environment mirror-production-demo has no AZURE_CLIENT_ID variable, so the apply cannot sign in. Set it as PIPELINE.md step 3.18 says and run the workflow again
+the AZURE_CLIENT_ID variable of the environment mirror-production-demo is not a client ID. It must be the GUID alone, with no spaces or other text. Correct it as PIPELINE.md step 3.18 says and run the workflow again
+```
 
 ## 6. Clean up
 
@@ -1128,7 +1158,7 @@ Remove everything in the order Azure needs. Your CLI default is still the Visual
    gh repo delete themasterishome/demo-bicep-deploy --yes
    ```
 
-   Or open the repository's **Settings** > **General**, and at the end of the page select **Delete this repository**. Deleting it also removes the second account's access. To run the demo again, recreate it from step 3.3, because a new repository has a new ID and so new subjects.
+   In the browser, open the repository's **Settings** > **General**, scroll to the end of the page and select **Delete this repository**. Deleting it also removes the second account's access. To run the demo again, recreate it from step 3.3, because a new repository has a new ID and so new subjects.
 
 8. Set the Azure CLI default back to the subscription you use day to day.
 
@@ -1137,3 +1167,17 @@ Remove everything in the order Azure needs. Your CLI default is still the Visual
    ```
 
    Replace `SUBSCRIPTION_ID` with that subscription. You can also delete `C:\demo-setup`, which holds the role file and the evidence you downloaded.
+
+9. Remove the git credential helper that the command `gh auth setup-git` wrote in section 2. Skip this item if you want to keep using the GitHub CLI's sign-in for git. First read what it wrote.
+
+   ```powershell
+   git config --global --get-all credential.https://github.com.helper
+   ```
+
+   The output shows the helper values of that key, one of which names `gh auth git-credential`. To remove them, run the following. The command removes every value of that key from your global git configuration, so do not run it if you set another helper for github.com yourself.
+
+   ```powershell
+   git config --global --unset-all credential.https://github.com.helper
+   ```
+
+   Run the first command again. It prints nothing and exits with code 1. If the earlier `--get-regexp` check of section 2 listed a helper for another host, such as `gist.github.com`, remove that key in the same way.
