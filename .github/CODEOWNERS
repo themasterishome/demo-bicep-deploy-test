@@ -1,0 +1,21 @@
+# Code owners. GitHub asks the owner to review every pull request that touches these paths, and the branch
+# ruleset on master requires that approval before a merge ("Require review from Code Owners"). The last matching
+# line wins.
+#
+# The owner is the account named below. Every member is a code owner of every path, so
+# keep it to the people who review code, or name a smaller child team here instead. The same team is the required
+# reviewer of the mirror-production environments, where a member who did not start a deployment approves it. So
+# the team needs at least two people, each with write access to the repository. A team without write access is
+# silently ignored, and nobody is asked to review.
+# A review covers pull requests only. A push ruleset on the path .github/** (every branch, bypass for this team
+# and Dependabot only) stops anyone else from pushing a changed workflow or script to any branch, where a pull
+# request into that branch would run it. The organization's own ruleset on master carries the pull request rules
+# for every repository.
+*                             @themasterishome
+/infra/                       @themasterishome
+/deploy/                      @themasterishome
+/scripts/                     @themasterishome
+/pipelines/                   @themasterishome
+/.github/                     @themasterishome
+/bicepconfig.json             @themasterishome
+/.gitleaks.toml               @themasterishome

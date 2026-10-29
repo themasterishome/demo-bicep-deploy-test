@@ -1,0 +1,32 @@
+{
+  "analyzers": {
+    "core": {
+      "enabled": true,
+      "verbose": false,
+      "rules": {
+        "no-hardcoded-env-urls": { "level": "warning" },
+        "no-hardcoded-location": { "level": "error" },
+        "no-unnecessary-dependson": { "level": "warning" },
+        "no-unused-params": { "level": "warning" },
+        "no-unused-vars": { "level": "warning" },
+        "outputs-should-not-contain-secrets": { "level": "error" },
+        "protect-commandtoexecute-secrets": { "level": "error" },
+        "secure-parameter-default": { "level": "error" },
+        "secure-params-in-nested-deploy": { "level": "error" },
+        "secure-params-in-parameters-file": { "level": "error" },
+        "secure-secrets-in-params": { "level": "error" },
+        "use-description-params": { "level": "warning" },
+        "use-parent-property": { "level": "warning" },
+        "use-recent-api-versions": {
+          "level": "warning",
+          "maxAgeInDays": 730,
+          "gracePeriodInDays": 90
+        },
+        "use-resource-symbol-reference": { "level": "warning" },
+        "use-secure-value-for-secure-inputs": { "level": "error" },
+        "use-stable-resource-identifiers": { "level": "error" },
+        "what-if-short-circuiting": { "level": "error" }
+      }
+    }
+  }
+}

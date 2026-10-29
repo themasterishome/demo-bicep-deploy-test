@@ -1,0 +1,10 @@
+{
+  "overall": "fail",
+  "problems": [ "what-if status is 'Failed', not Succeeded" ],
+  "counts": { "Modify": 1 },
+  "failed": 1,
+  "review": 0,
+  "decisions": [
+    { "resourceId": "/subscriptions/s/resourceGroups/r/providers/Microsoft.Storage/storageAccounts/a", "type": "Microsoft.Storage/storageAccounts", "changeType": "Modify", "verdict": "fail", "notes": [ "unclassified delta properties.x (Modify)" ] }
+  ]
+}

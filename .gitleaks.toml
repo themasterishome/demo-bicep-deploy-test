@@ -1,0 +1,74 @@
+# Secret scan settings for the validate workflow, .github/workflows/mirror-validate.yml (Gitleaks 8.30.1).
+#   gitleaks detect --redact --no-banner --no-git --source . --config .gitleaks.toml
+# The default Gitleaks rules apply, plus three Azure patterns they do not cover. Any finding fails
+# the run. The only folder left out is reports/work/ at the root of the repository, the local working
+# folder that is never committed (sweep output and deployment evidence). The Application Insights rule
+# has one file exception, described at that rule.
+
+title = "Estate mirror secret scan"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "azure-storage-account-key"
+description = "Azure storage account key in a connection string"
+regex = '''(?i)AccountKey=[A-Za-z0-9+/]{86}=='''
+keywords = ["accountkey="]
+
+[[rules]]
+id = "azure-sas-signature"
+description = "Azure shared access signature (sig= parameter of a SAS token)"
+regex = '''(?i)[?&]sig=[A-Za-z0-9%+/]{40,}(?:=|%3D){0,2}'''
+keywords = ["sig="]
+
+[[rules]]
+id = "azure-app-insights-key"
+description = "Application Insights instrumentation key or connection string"
+regex = '''(?i)(?:InstrumentationKey=|app-insights-instrumentation-key['"]?\s*[:=]\s*['"]?)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'''
+keywords = ["instrumentationkey=", "app-insights-instrumentation-key"]
+# One file, the resource group file of rg-demo-web, carries the live hidden-link tags of two web apps
+# and the two slots of app-demo-web, which hold the instrumentation key and connection string of their Application Insights
+# components. The code mirrors live tags exactly, and Bicep cannot compute a tag from another resource
+# (BCP120). Microsoft documents the instrumentation key as an identifier, not a security token or key
+# (learn.microsoft.com/azure/azure-monitor/app/connection-strings). Requiring Entra ID for ingestion is
+# the control against misuse. That is a live change raised for IT. Only this file is excepted. If one of
+# those web apps or slots moves to another file, add that file's path to this exception.
+[[rules.allowlists]]
+description = "Live Application Insights link tags in rg-demo-web (identifiers, not secrets)"
+paths = [
+  '''^infra[\\/]subscriptions[\\/]demo[\\/]resource-groups[\\/]rg-demo-web\.bicep$''',
+]
+
+# The default generic-api-key rule reads any long value under a key whose name contains "api" as a
+# key, so a subscription ID in deploy/units.json was reported. Subscription, tenant
+# and client IDs are plain GUIDs and are not secrets. This exception covers that rule only and only
+# a value that is exactly one GUID. The Application Insights rule above still catches GUID keys.
+[[rules]]
+id = "generic-api-key"
+[[rules.allowlists]]
+description = "A bare GUID is an Azure ID, not a secret"
+regexTarget = "secret"
+regexes = ['''^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$''']
+
+# The default sourcegraph-access-token rule reads any 40-character hex value as a token when "sgp_"
+# appears anywhere in the same file, and the demo subscription's resource group files name machines and local
+# network gateways with SGP_. Three kinds of 40-character hex value are identifiers, not secrets: the
+# machine ID in the status message of an Arc machine extension, the thumbprint of the public root
+# certificate on a VPN gateway, and the commit a GitHub Actions release is pinned to. This exception
+# covers that rule only, and only a line that holds one of the three.
+[[rules]]
+id = "sourcegraph-access-token"
+[[rules.allowlists]]
+description = "Arc extension machine IDs and VPN root certificate thumbprints (identifiers, not secrets)"
+regexTarget = "line"
+regexes = [
+  '''"machineId":\s*"[0-9a-fA-F]{40}"''',
+  '''serverRootThumbprint:\s*'[0-9a-fA-F]{40}'''',
+  # A GitHub Actions release pinned by its commit and written as "`<40 hex>` v5.1.0", which is a public commit ID, not a secret.
+  '''`[0-9a-f]{40}` v\d+\.\d+''',
+]
+
+[allowlist]
+description = "The local working folder at the repository root, never committed"
+paths = ['''^reports[\\/]work[\\/]''']

@@ -1,0 +1,33 @@
+{
+  "status": "Succeeded",
+  "changes": [
+    {
+      "resourceId": "/subscriptions/__SUB__/resourceGroups/__RG__/providers/Microsoft.Storage/storageAccounts/st1",
+      "changeType": "Modify",
+      "delta": [
+        { "path": "properties.testOnlySetting", "propertyChangeType": "Modify", "before": "old", "after": "new" }
+      ]
+    },
+    {
+      "resourceId": "/subscriptions/__SUB__/resourceGroups/__RG__/providers/Microsoft.HybridCompute/machines/m1/extensions/ext1",
+      "changeType": "Modify",
+      "delta": [
+        { "path": "properties", "propertyChangeType": "Modify", "children": [
+          { "path": "settings", "propertyChangeType": "Modify", "children": [
+            { "path": "updateConfiguration", "propertyChangeType": "Modify", "children": [
+              { "path": "startTime", "propertyChangeType": "Modify", "before": "2026-01-01T00:00:00Z", "after": "2026-02-01T00:00:00Z" }
+            ] }
+          ] }
+        ] }
+      ]
+    },
+    {
+      "resourceId": "/subscriptions/__SUB__/resourceGroups/__RG__/providers/Microsoft.Compute/virtualMachines/vm1/extensions/SamplePatchExtension",
+      "changeType": "NoChange"
+    },
+    {
+      "resourceId": "/subscriptions/__SUB__/resourceGroups/__RG__/providers/Microsoft.Network/networkSecurityGroups/nsg1",
+      "changeType": "Create"
+    }
+  ]
+}

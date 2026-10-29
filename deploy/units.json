@@ -1,0 +1,76 @@
+{
+  "description": "Deployment units and their order. scripts/deploy-unit.ps1 refuses anything not listed here or listed with enabled false. A unit marked \"route\": \"hand\" is never deployed by the pipeline, a person runs it by hand. Paths are relative to the repository root.",
+  "tenantId": "d1a349ef-6ac8-4588-a88d-5dab272c700b",
+  "allowedPrincipals": [
+    {
+      "type": "user",
+      "name": "",
+      "use": "Interactive, reviewed runs by hand. Fill in your own sign-in name to run deploy-unit.ps1 yourself. An empty name never matches."
+    },
+    {
+      "type": "servicePrincipal",
+      "name": "READER_CLIENT_ID",
+      "use": "The client ID of the reader identity id-mirror-reader. Pull request previews, the plan of every deployment and drift checks sign in with it (environments mirror-reader and mirror-reader-dispatch). Fill in when the identity exists. An empty name never matches."
+    },
+    {
+      "type": "servicePrincipal",
+      "name": "DEPLOY_DEMO_CLIENT_ID",
+      "use": "The client ID of the deploy identity for the demo subscription (environment mirror-production-demo). Fill in only for a subscription deployed from the pipeline. An empty name never matches."
+    }
+  ],
+  "subscriptions": {
+    "demo": "77488719-1168-4d53-af9a-f5c3bc9291d7"
+  },
+  "deploymentLocation": "uksouth",
+  "units": [
+    {
+      "name": "pilot-empty-rg",
+      "kind": "resourceGroup",
+      "subscription": "demo",
+      "resourceGroup": "rg-demo-pilot",
+      "template": "pipelines/pilot/empty-rg.bicep",
+      "parameters": null,
+      "wave": 0,
+      "risk": "none",
+      "enabled": false,
+      "notes": "Empty template against rg-demo-pilot, an empty resource group created by hand for the pilot alone. Proves identity, roles, the reviewers' approval and evidence capture without touching a resource."
+    },
+    {
+      "name": "rg-demo-network",
+      "kind": "resourceGroup",
+      "subscription": "demo",
+      "resourceGroup": "rg-demo-network",
+      "template": "infra/subscriptions/demo/resource-groups/rg-demo-network.bicep",
+      "parameters": "infra/subscriptions/demo/resource-groups/rg-demo-network.bicepparam",
+      "wave": 1,
+      "risk": "low",
+      "enabled": false,
+      "notes": "One network security group with no rules of its own and one virtual network with one subnet, which that network security group protects. Free resources only."
+    },
+    {
+      "name": "rg-demo-routing",
+      "kind": "resourceGroup",
+      "subscription": "demo",
+      "resourceGroup": "rg-demo-routing",
+      "template": "infra/subscriptions/demo/resource-groups/rg-demo-routing.bicep",
+      "parameters": "infra/subscriptions/demo/resource-groups/rg-demo-routing.bicepparam",
+      "wave": 2,
+      "risk": "low",
+      "enabled": false,
+      "notes": "One route table with no routes and one application security group. Free resources only."
+    },
+    {
+      "name": "demo-subscription",
+      "kind": "subscription",
+      "subscription": "demo",
+      "resourceGroup": null,
+      "template": "infra/subscriptions/demo/main.bicep",
+      "parameters": "infra/subscriptions/demo/parameters.bicepparam",
+      "wave": 3,
+      "risk": "medium",
+      "route": "hand",
+      "enabled": false,
+      "notes": "Demo subscription layer: the three resource groups rg-demo-pilot, rg-demo-network and rg-demo-routing, written out as they are live. The resources inside the groups deploy from their own resource group files in resource-groups/, one unit each, and main.bicep does not call those files. Deployed by hand, never by the pipeline (\"route\": \"hand\"). A subscription main.bicep is where a subscription's role assignments and policy belong, which no pipeline deploy identity can write, so none can raise its own rights. A person deploys it with deploy-unit.ps1 from a PowerShell window. A code pull request still previews it for information."
+    }
+  ]
+}

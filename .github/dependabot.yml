@@ -1,0 +1,20 @@
+# Dependabot keeps the GitHub Actions pins current. Each month it checks the actions the workflows pin by commit
+# SHA and opens a pull request when one has a new release, updated to the new commit with the version in the
+# comment. The validate workflow runs on that pull request. A major bump of azure/login is also checked with a
+# drift run (read-only) before it is merged.
+#
+# The check is monthly because every merge to master ends a plan that waits for its reviewers (the apply refuses
+# when master has moved since the plan), so a weekly pull request would keep colliding with deployments.
+#
+# Please do not merge these while a deployment waits for its reviewers. The merge ends the plan, and the
+# deployment is started again with Run workflow.
+#
+# Off until the pipeline is set up. open-pull-requests-limit 0 stops the monthly pull requests. PIPELINE.md step 3.20
+# removes that line when it turns the pipeline on.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0

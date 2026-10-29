@@ -1,0 +1,28 @@
+# Scratch output from sweeps, probes and exports. Regenerated, never reviewed.
+reports/work/
+
+# Raw discovery output. The sanitised copy was removed from git; a re-run of
+# discovery writes here, and none of it belongs in the repository.
+reports/raw/
+
+# Secrets, keys and certificates with private parts.
+*.secret.json
+*.secrets.json
+*.pfx
+*.p12
+*.pem
+*.key
+.env
+.env.*
+
+# Compiled Bicep output. Compile to a scratch folder, never into the tree.
+*.bicep.json
+
+# Editor folders.
+.vscode/
+.idea/
+
+# Windows and macOS clutter.
+Thumbs.db
+desktop.ini
+.DS_Store

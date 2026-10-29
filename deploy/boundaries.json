@@ -1,0 +1,16 @@
+{
+  "description": "The list of boundaries, holds and expected Ignore records that scripts/deploy-unit.ps1 applies, in the deploy gate and in the drift check (scripts/preflight-drift.ps1). A boundary is a field Azure owns, whose difference the gate accepts (inert) or stops on for a person (review). A hold is a resource the gate refuses to deploy unless the run names its ID in -AllowHeld. An expected Ignore is a live resource deliberately not declared in the unit that previews it, which the drift check accepts. Each entry carries its own reason. A what-if Modify passes the deploy gate only when every leaf delta is NoEffect or matches a boundary here. After the baseline deployment, a change named in -AllowModify (with -ApprovedChanges) passes too. An entry is added only when the evidence, such as a read-only preview, shows it is needed, never to make a gate pass.",
+  "matching": {
+    "path": "Delta paths are flattened to leaves and array indices are written as [*]. A pattern matches the path itself or anything below it (pattern followed by '.' or '['). '**' inside a pattern matches any run of characters.",
+    "type": "Resource type, case-insensitive, without API version.",
+    "onDeploy": "inert = the PUT does not send the value or the provider keeps the live value, so deploying changes nothing. review = the PUT sends a value that differs from live or its effect is unproven, so the gate stops unless the operator passes -AcknowledgeReview after reading the note.",
+    "expectedIgnore": "Live resources a unit deliberately does not write: existing references, resources declared in another unit, and resources another service creates. A deployment leaves Ignore records alone anyway (Incremental mode), but the drift check fails on any Ignore record that matches none of these patterns, except, in a subscription unit, a resource inside a group that has its own resource-group unit, which that unit measures. Each pattern names exact resources or the naming form the creating service uses (Azure for the network card of a private endpoint, GitHub for a runner card), so a resource created outside the code fails the check unless its name takes that form.",
+    "holds": "Resources the gate refuses to redeploy at all, whatever the what-if says, unless their IDs are passed in -AllowHeld. The drift sweep reports them but does not alert."
+  },
+  "alwaysAcceptedPropertyChangeTypes": [
+    "NoEffect"
+  ],
+  "boundaries": [],
+  "expectedIgnore": [],
+  "holds": []
+}

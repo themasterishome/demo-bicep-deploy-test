@@ -1,0 +1,472 @@
+# Every job of this workflow is skipped, so no runner starts, until IT sets the repository variable
+# MIRROR_PIPELINE_ENABLED to true after the setup in PIPELINE.md section 3.
+#
+# Deploys the units the pipeline may deploy, in two steps that belong to one run. The plan signs in with the reader
+# identity, takes the dry run and passes it through the gate. The apply deploys, and it starts only after the
+# required reviewers of the unit's GitHub environment have read the plan and approved it. A reviewer is never the
+# person who started the run, because every mirror-production environment has "Prevent self-review" on.
+#
+# Two ways to start it.
+#   A push to master (a merged pull request) plans every enabled unit whose files changed. A push carries no option,
+#   so its plan passes the gate only when it holds no effective change, and then it asks nobody to approve. A push
+#   whose plan the gate stops says so in its summary and waits for nobody. A push that changes no enabled unit starts
+#   no plan. The merge deploys nothing.
+#   Run workflow (workflow_dispatch) on master names one unit, the change ticket, the reason and, when the gate
+#   needs them, the options acknowledgeReview, allowCreate, allowModify and allowHeld. Leave apply off for a plan
+#   only. Every deployment is started this way. With apply on and a plan that passes the gate, the apply waits for
+#   the reviewers.
+#
+#   select   No Azure. Picks the units, or checks the inputs of Run workflow.
+#   plan     The reader identity (environment mirror-reader-dispatch, master only). One job for each unit. It runs
+#            scripts/deploy-unit.ps1 as a dry run with the options, and writes the plan as the job summary and as
+#            an artifact.
+#   collect  No Azure. Reads the plans and lists the units whose apply waits for a reviewer.
+#   apply    The subscription's deploy identity, through the mirror-production-<subscription folder> environment,
+#            which only the master branch may use and which holds the required reviewers. After the approval it
+#            checks that master is still at the planned commit, that the plan is recent and that a fresh preview
+#            shows the same records, then runs scripts/deploy-unit.ps1 -DryRun:$false -Approve with the options of
+#            the plan. That step is the gate. It repeats every check on a fresh preview, holds the resources named
+#            in allowModify to exactly the property changes the plan showed, deploys, and takes the second check. It
+#            is the one step a unit replaces when it stops using the gate.
+#
+# A re-run never deploys, because a retry has no reviewed plan. The deploy identity holds one role on its own
+# subscription, Contributor for the demo subscription (plus a narrow peering role on the remote networks its units peer
+# with) and the custom role Mirror Budget Writer for the two budget subscriptions. It cannot write role
+# assignments, policy or locks, so the 11 subscription units, which hold those, are deployed by hand ("route":
+# "hand" in deploy/units.json, refused here), and the identity's own role assignments sit in no unit it deploys.
+# It has no secret, and its federated credential trusts only the mirror-production-<subscription folder>
+# environment, which only master may use (PIPELINE.md section 1.5).
+#
+# Variables per environment (none is secret): AZURE_CLIENT_ID, the client ID of that environment's identity, and
+# AZURE_TENANT_ID. One federated credential per environment. Its subject is copied from the subject a first run
+# of the repository presents, not typed from a pattern, because a repository created after July 2026 carries the owner
+# and repository IDs in it. Optional repository variable: MIRROR_MAX_PLAN_AGE_HOURS (24), the longest a plan may
+# wait for its apply.
+name: mirror-deploy-unit
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('Deploy {0} ({1})', inputs.unit, inputs.changeRef) || format('Plan the units changed by the push {0}', github.sha) }}
+
+on:
+  push:
+    branches: [ master ]
+    # Only a speed-up, because the select job works out for itself which units the push changed.
+    paths: [ 'infra/**', 'deploy/**', 'scripts/**', 'pipelines/**', 'bicepconfig.json' ]
+  workflow_dispatch:
+    inputs:
+      unit:
+        description: Deployment unit (name from deploy/units.json)
+        required: true
+        type: string
+      changeRef:
+        description: Change ticket number
+        required: true
+        type: string
+      reason:
+        description: What this deployment is for
+        required: true
+        type: string
+      apply:
+        description: Deploy after a reviewer approves the plan. Leave off for a plan only
+        required: false
+        type: boolean
+        default: false
+      acknowledgeReview:
+        description: Accept the review items (review boundaries and review records) after reading them in a plan
+        required: false
+        type: boolean
+        default: false
+      allowCreate:
+        description: Resource IDs that may show as Create, separated by commas
+        required: false
+        type: string
+        default: ''
+      allowModify:
+        description: Resource IDs whose changes the plan shows and the deployment may write, separated by commas
+        required: false
+        type: string
+        default: ''
+      allowHeld:
+        description: Held resource IDs to lift the hold for, separated by commas
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  # SHA256 of bicep-win-x64.exe (a Windows runner) and of bicep-linux-x64 (a Linux runner) in the Bicep v0.48.1
+  # GitHub release. Change the three together, and the Bicep version that scripts/deploy-unit.ps1,
+  # scripts/whatif-rg-sweep.sh and scripts/whatif-sub-sweep.sh require.
+  BICEP_VERSION: v0.48.1
+  BICEP_SHA256_WINDOWS: 398AF294CF16AC4BECDBD008A77D148D0E8E91492309A6B60EC911B7E1CAB082
+  BICEP_SHA256_LINUX: B09EC25A9D376C1F8E33EDE6ED22B587F915AD68488D5DB77A6F9541748C7F6E
+
+# Actions are pinned to the full commit SHA of the release named in the comment. Every job runs on windows-2025, or
+# on ubuntu-24.04 when the repository variable MIRROR_RUNNER is ubuntu-24.04. No other value of the variable reaches
+# runs-on, and the first step of every job, the runner check, stops the job on any other runner.
+jobs:
+  select:
+    if: vars.MIRROR_PIPELINE_ENABLED == 'true'
+    runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
+    permissions:
+      contents: read
+      pull-requests: read
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - name: Runner check
+        # Stops the job unless the runner is GitHub-hosted, x64 and has the windows-2025 or the ubuntu-24.04
+        # image, the two the scripts and the pinned tools are checked on. The images set ImageOS. The label
+        # windows-2025 gives win25, or win25-vs2026 for its build with Visual Studio 2026, and ubuntu-24.04 gives
+        # ubuntu24. On a failure, the job log's "Set up job" step names the image under "Runner Image". If that
+        # is windows-2025 or ubuntu-24.04 with an ImageOS value not listed here, the value is added to this step
+        # and this comment in every job of the four workflows, through a code pull request.
+        shell: pwsh
+        run: |
+          $os = if (@('win25', 'win25-vs2026') -ccontains $env:ImageOS) { 'Windows' } elseif ($env:ImageOS -ceq 'ubuntu24') { 'Linux' } else { '' }
+          if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_ARCH -cne 'X64' -or -not $os -or $env:RUNNER_OS -cne $os) {
+            Write-Error "the runner is $env:RUNNER_ENVIRONMENT, $env:RUNNER_OS $env:RUNNER_ARCH, image '$env:ImageOS'. The jobs run only on a GitHub-hosted x64 runner with the windows-2025 or the ubuntu-24.04 image. Compare the image under 'Runner Image' in this job's 'Set up job' step. If it is windows-2025 or ubuntu-24.04 with a new ImageOS value, add that value to the 'Runner check' step of every workflow, and to its comment, in a code pull request"
+            exit 1
+          }
+          Write-Host "GitHub-hosted $env:RUNNER_OS $env:RUNNER_ARCH runner, image $env:ImageOS $env:ImageVersion"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: select
+        name: Pick the units
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          UNIT: ${{ inputs.unit }}
+          CHANGE_REF: ${{ inputs.changeRef }}
+          REASON: ${{ inputs.reason }}
+          APPLY: ${{ inputs.apply }}
+          ACK: ${{ inputs.acknowledgeReview }}
+          ALLOW_CREATE: ${{ inputs.allowCreate }}
+          ALLOW_MODIFY: ${{ inputs.allowModify }}
+          ALLOW_HELD: ${{ inputs.allowHeld }}
+        run: |
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode Select
+          exit $LASTEXITCODE
+
+  plan:
+    needs: select
+    if: vars.MIRROR_PIPELINE_ENABLED == 'true' && needs.select.outputs.matrix != '[]'
+    name: plan ${{ matrix.unit }}
+    runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
+    # The environment's branch rule (master only) makes GitHub refuse the job on any other branch, and the reader
+    # identity's credential for it trusts only that environment. No deployment is recorded for a plan.
+    environment:
+      name: mirror-reader-dispatch
+      deployment: false
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include: ${{ fromJSON(needs.select.outputs.matrix) }}
+    steps:
+      - name: Runner check
+        # Stops the job unless the runner is GitHub-hosted, x64 and has the windows-2025 or the ubuntu-24.04
+        # image, the two the scripts and the pinned tools are checked on. The images set ImageOS. The label
+        # windows-2025 gives win25, or win25-vs2026 for its build with Visual Studio 2026, and ubuntu-24.04 gives
+        # ubuntu24. On a failure, the job log's "Set up job" step names the image under "Runner Image". If that
+        # is windows-2025 or ubuntu-24.04 with an ImageOS value not listed here, the value is added to this step
+        # and this comment in every job of the four workflows, through a code pull request.
+        shell: pwsh
+        run: |
+          $os = if (@('win25', 'win25-vs2026') -ccontains $env:ImageOS) { 'Windows' } elseif ($env:ImageOS -ceq 'ubuntu24') { 'Linux' } else { '' }
+          if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_ARCH -cne 'X64' -or -not $os -or $env:RUNNER_OS -cne $os) {
+            Write-Error "the runner is $env:RUNNER_ENVIRONMENT, $env:RUNNER_OS $env:RUNNER_ARCH, image '$env:ImageOS'. The jobs run only on a GitHub-hosted x64 runner with the windows-2025 or the ubuntu-24.04 image. Compare the image under 'Runner Image' in this job's 'Set up job' step. If it is windows-2025 or ubuntu-24.04 with a new ImageOS value, add that value to the 'Runner check' step of every workflow, and to its comment, in a code pull request"
+            exit 1
+          }
+          Write-Host "GitHub-hosted $env:RUNNER_OS $env:RUNNER_ARCH runner, image $env:ImageOS $env:ImageVersion"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the Bicep inputs
+        # Before the sign-in. Bicep may not read environment variables, registry modules or files outside the
+        # repository, because the job holds the reader token.
+        shell: pwsh
+        env:
+          UNIT: ${{ matrix.unit }}
+        run: |
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode InputCheck
+          exit $LASTEXITCODE
+      - name: Pin the Bicep CLI
+        shell: pwsh
+        run: |
+          # The Azure CLI installs bicep-win-x64.exe as bicep.exe on a Windows runner and bicep-linux-x64 as bicep
+          # on a Linux runner. Both hashes are pinned above, for x64 runners only.
+          if ($env:RUNNER_ARCH -ne 'X64' -or @('Windows', 'Linux') -notcontains $env:RUNNER_OS) { Write-Error "the runner is $env:RUNNER_OS $env:RUNNER_ARCH, and the Bicep CLI is pinned for Windows or Linux on x64"; exit 1 }
+          $exe = if ($IsWindows) { 'bicep.exe' } else { 'bicep' }
+          $want = if ($IsWindows) { $env:BICEP_SHA256_WINDOWS } else { $env:BICEP_SHA256_LINUX }
+          az bicep install --version $env:BICEP_VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cfg = if ($env:AZURE_CONFIG_DIR) { $env:AZURE_CONFIG_DIR } else { Join-Path $HOME '.azure' }
+          $bin = Join-Path $cfg 'bin'
+          $file = Join-Path $bin $exe
+          $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
+          if ($hash -ne $want) { Write-Error "$exe SHA256 $hash does not match the published hash of $env:BICEP_VERSION"; exit 1 }
+          # On Linux the file must be executable. The Azure CLI sets that, and the step sets it again.
+          if (-not $IsWindows) { chmod 755 $file; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          # In a GitHub job the Azure CLI uses the first bicep on PATH, and the runner image has its own copy
+          # there. So the checked binary goes first on PATH for the later steps of this job, and the CLI setting
+          # bicep.use_binary_from_path is set to true through its environment variable.
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          'AZURE_BICEP_USE_BINARY_FROM_PATH=true' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Check the Bicep CLI
+        # A step of its own, because a PATH change takes effect only in the steps after the one that made it.
+        shell: pwsh
+        run: |
+          $want = if ($IsWindows) { $env:BICEP_SHA256_WINDOWS } else { $env:BICEP_SHA256_LINUX }
+          $first = Get-Command bicep -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $first) { Write-Error 'no bicep on PATH'; exit 1 }
+          $hash = (Get-FileHash -LiteralPath $first.Source -Algorithm SHA256).Hash
+          if ($hash -ne $want) { Write-Error "the first bicep on PATH, $($first.Source), is not the checked $env:BICEP_VERSION binary"; exit 1 }
+          $want = $env:BICEP_VERSION.TrimStart('v')
+          $v = (az bicep version) -join ' '
+          if ($LASTEXITCODE -ne 0 -or $v -notmatch ('version ' + [regex]::Escape($want) + '\b')) { Write-Error "az bicep version reports '$v', expected $want"; exit 1 }
+          Write-Host "The Azure CLI uses Bicep $want from $($first.Source)"
+      - name: Tool versions
+        shell: pwsh
+        run: |
+          az version -o json
+          az bicep version
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906  # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+      - name: Plan (dry run and gate)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UNIT: ${{ matrix.unit }}
+          TRIGGER: ${{ matrix.trigger }}
+          STARTED_BY: ${{ matrix.startedBy }}
+          CHANGE_REF: ${{ matrix.changeRef }}
+          REASON: ${{ matrix.reason }}
+          APPLY: ${{ matrix.apply }}
+          OPTIONS: ${{ matrix.options }}
+        run: |
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode DeployPlan -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'plan')
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        if: always()
+        with:
+          name: reviewed-plan-${{ matrix.unit }}
+          path: ${{ runner.temp }}/plan
+
+  collect:
+    needs: [ select, plan ]
+    if: vars.MIRROR_PIPELINE_ENABLED == 'true' && always() && needs.select.result == 'success' && needs.select.outputs.matrix != '[]'
+    runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    outputs:
+      applyMatrix: ${{ steps.collect.outputs.applyMatrix }}
+    steps:
+      - name: Runner check
+        # Stops the job unless the runner is GitHub-hosted, x64 and has the windows-2025 or the ubuntu-24.04
+        # image, the two the scripts and the pinned tools are checked on. The images set ImageOS. The label
+        # windows-2025 gives win25, or win25-vs2026 for its build with Visual Studio 2026, and ubuntu-24.04 gives
+        # ubuntu24. On a failure, the job log's "Set up job" step names the image under "Runner Image". If that
+        # is windows-2025 or ubuntu-24.04 with an ImageOS value not listed here, the value is added to this step
+        # and this comment in every job of the four workflows, through a code pull request.
+        shell: pwsh
+        run: |
+          $os = if (@('win25', 'win25-vs2026') -ccontains $env:ImageOS) { 'Windows' } elseif ($env:ImageOS -ceq 'ubuntu24') { 'Linux' } else { '' }
+          if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_ARCH -cne 'X64' -or -not $os -or $env:RUNNER_OS -cne $os) {
+            Write-Error "the runner is $env:RUNNER_ENVIRONMENT, $env:RUNNER_OS $env:RUNNER_ARCH, image '$env:ImageOS'. The jobs run only on a GitHub-hosted x64 runner with the windows-2025 or the ubuntu-24.04 image. Compare the image under 'Runner Image' in this job's 'Set up job' step. If it is windows-2025 or ubuntu-24.04 with a new ImageOS value, add that value to the 'Runner check' step of every workflow, and to its comment, in a code pull request"
+            exit 1
+          }
+          Write-Host "GitHub-hosted $env:RUNNER_OS $env:RUNNER_ARCH runner, image $env:ImageOS $env:ImageVersion"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        continue-on-error: true
+        with:
+          pattern: reviewed-plan-*
+          path: ${{ runner.temp }}/plans
+      - id: collect
+        name: List the units that wait for a reviewer
+        shell: pwsh
+        env:
+          MATRIX: ${{ needs.select.outputs.matrix }}
+        run: |
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode Collect -Dir (Join-Path $env:RUNNER_TEMP 'plans')
+          exit $LASTEXITCODE
+
+  apply:
+    needs: collect
+    # A re-run of this job alone would reuse the earlier plan, so the first attempt is required here as well.
+    if: vars.MIRROR_PIPELINE_ENABLED == 'true' && needs.collect.result == 'success' && needs.collect.outputs.applyMatrix != '[]' && github.run_attempt == '1'
+    name: apply ${{ matrix.unit }}
+    runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
+    # The job waits here for the required reviewers of the environment, and the deploy identity cannot sign in until
+    # one of them who did not start the run approves.
+    environment: mirror-production-${{ matrix.subscription }}
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 240
+    concurrency:
+      # One deployment per unit at a time. queue: max keeps a later run waiting instead of cancelling the
+      # pending one.
+      group: mirror-unit-${{ matrix.unit }}
+      cancel-in-progress: false
+      queue: max
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.collect.outputs.applyMatrix) }}
+    steps:
+      - name: Runner check
+        # Stops the job unless the runner is GitHub-hosted, x64 and has the windows-2025 or the ubuntu-24.04
+        # image, the two the scripts and the pinned tools are checked on. The images set ImageOS. The label
+        # windows-2025 gives win25, or win25-vs2026 for its build with Visual Studio 2026, and ubuntu-24.04 gives
+        # ubuntu24. On a failure, the job log's "Set up job" step names the image under "Runner Image". If that
+        # is windows-2025 or ubuntu-24.04 with an ImageOS value not listed here, the value is added to this step
+        # and this comment in every job of the four workflows, through a code pull request.
+        shell: pwsh
+        run: |
+          $os = if (@('win25', 'win25-vs2026') -ccontains $env:ImageOS) { 'Windows' } elseif ($env:ImageOS -ceq 'ubuntu24') { 'Linux' } else { '' }
+          if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_ARCH -cne 'X64' -or -not $os -or $env:RUNNER_OS -cne $os) {
+            Write-Error "the runner is $env:RUNNER_ENVIRONMENT, $env:RUNNER_OS $env:RUNNER_ARCH, image '$env:ImageOS'. The jobs run only on a GitHub-hosted x64 runner with the windows-2025 or the ubuntu-24.04 image. Compare the image under 'Runner Image' in this job's 'Set up job' step. If it is windows-2025 or ubuntu-24.04 with a new ImageOS value, add that value to the 'Runner check' step of every workflow, and to its comment, in a code pull request"
+            exit 1
+          }
+          Write-Host "GitHub-hosted $env:RUNNER_OS $env:RUNNER_ARCH runner, image $env:ImageOS $env:ImageVersion"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: reviewed-plan-${{ matrix.unit }}
+          path: ${{ runner.temp }}/plan
+      - name: Check the reviewed plan
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UNIT: ${{ matrix.unit }}
+          MIRROR_MAX_PLAN_AGE_HOURS: ${{ vars.MIRROR_MAX_PLAN_AGE_HOURS }}
+        run: |
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode CheckApply -Dir (Join-Path $env:RUNNER_TEMP 'plan')
+          exit $LASTEXITCODE
+      - name: Pin the Bicep CLI
+        shell: pwsh
+        run: |
+          # The Azure CLI installs bicep-win-x64.exe as bicep.exe on a Windows runner and bicep-linux-x64 as bicep
+          # on a Linux runner. Both hashes are pinned above, for x64 runners only.
+          if ($env:RUNNER_ARCH -ne 'X64' -or @('Windows', 'Linux') -notcontains $env:RUNNER_OS) { Write-Error "the runner is $env:RUNNER_OS $env:RUNNER_ARCH, and the Bicep CLI is pinned for Windows or Linux on x64"; exit 1 }
+          $exe = if ($IsWindows) { 'bicep.exe' } else { 'bicep' }
+          $want = if ($IsWindows) { $env:BICEP_SHA256_WINDOWS } else { $env:BICEP_SHA256_LINUX }
+          az bicep install --version $env:BICEP_VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cfg = if ($env:AZURE_CONFIG_DIR) { $env:AZURE_CONFIG_DIR } else { Join-Path $HOME '.azure' }
+          $bin = Join-Path $cfg 'bin'
+          $file = Join-Path $bin $exe
+          $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
+          if ($hash -ne $want) { Write-Error "$exe SHA256 $hash does not match the published hash of $env:BICEP_VERSION"; exit 1 }
+          # On Linux the file must be executable. The Azure CLI sets that, and the step sets it again.
+          if (-not $IsWindows) { chmod 755 $file; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          # In a GitHub job the Azure CLI uses the first bicep on PATH, and the runner image has its own copy
+          # there. So the checked binary goes first on PATH for the later steps of this job, and the CLI setting
+          # bicep.use_binary_from_path is set to true through its environment variable.
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          'AZURE_BICEP_USE_BINARY_FROM_PATH=true' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Check the Bicep CLI
+        # A step of its own, because a PATH change takes effect only in the steps after the one that made it.
+        shell: pwsh
+        run: |
+          $want = if ($IsWindows) { $env:BICEP_SHA256_WINDOWS } else { $env:BICEP_SHA256_LINUX }
+          $first = Get-Command bicep -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $first) { Write-Error 'no bicep on PATH'; exit 1 }
+          $hash = (Get-FileHash -LiteralPath $first.Source -Algorithm SHA256).Hash
+          if ($hash -ne $want) { Write-Error "the first bicep on PATH, $($first.Source), is not the checked $env:BICEP_VERSION binary"; exit 1 }
+          $want = $env:BICEP_VERSION.TrimStart('v')
+          $v = (az bicep version) -join ' '
+          if ($LASTEXITCODE -ne 0 -or $v -notmatch ('version ' + [regex]::Escape($want) + '\b')) { Write-Error "az bicep version reports '$v', expected $want"; exit 1 }
+          Write-Host "The Azure CLI uses Bicep $want from $($first.Source)"
+      - name: Tool versions
+        shell: pwsh
+        run: |
+          az version -o json
+          az bicep version
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906  # v3.1.0
+        # The sign-in lasts the whole job, because the Azure CLI cannot renew a federated sign-in, and a user-assigned
+        # managed identity's token lasts about 24 hours (an app registration's about one hour).
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+      - name: Compare the fresh preview with the reviewed plan
+        # There is a gap between the plan and the approval, and a short one between this preview and the gate's own.
+        # The fresh preview must show the same records as the plan, so nothing the reviewer did not read deploys.
+        shell: pwsh
+        env:
+          UNIT: ${{ matrix.unit }}
+        run: |
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode ComparePlan -Dir (Join-Path $env:RUNNER_TEMP 'plan') -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'evidence' 'compare')
+          exit $LASTEXITCODE
+      # ---------------------------------------------------------------------------------------------------------
+      # THE GATE STEP. scripts/deploy-unit.ps1 repeats every check, deploys and takes the second check. When a
+      # unit stops using the gate, this one step is replaced by plain preview, deploy and second-check steps.
+      # Every step before and after it stays.
+      # ---------------------------------------------------------------------------------------------------------
+      - name: Gate, deploy and second check (deploy-unit.ps1)
+        shell: pwsh
+        env:
+          UNIT: ${{ matrix.unit }}
+        run: |
+          $exitFile = Join-Path $env:RUNNER_TEMP 'gate-exit.txt'
+          # The arguments are built first. If they cannot be built, nothing has signed in to a deployment (exit 2).
+          try {
+            . ./.github/scripts/mirror-pipeline.ps1
+            $reviewed = Get-ReviewedPlan (Join-Path $env:RUNNER_TEMP 'plan')
+            $gateArgs = Get-GateArguments (Get-DeployOptions $reviewed.plan.options) (Join-Path $env:RUNNER_TEMP 'evidence') (Join-Path $env:RUNNER_TEMP 'plan') -Deploy
+          } catch {
+            Write-Host "::error::the gate arguments could not be built, so nothing was deployed: $(($_.Exception.Message) -replace '[\r\n\u0085\u2028\u2029]+', ' | ')"
+            Set-Content -LiteralPath $exitFile -Value 2
+            exit 2
+          }
+          # 'started' stays in the file if the job is cancelled or times out while deploy-unit.ps1 runs, so the
+          # summary says a deployment may still be running. The exit code replaces it when the script returns,
+          # and 'error' when the script stops with an error instead of an exit code.
+          Set-Content -LiteralPath $exitFile -Value 'started'
+          $code = 'error'
+          try {
+            & ./scripts/deploy-unit.ps1 -Unit $env:UNIT @gateArgs
+            $code = $LASTEXITCODE
+          } catch {
+            Write-Host "::error::the gate step stopped with an error: $(($_.Exception.Message) -replace '[\r\n\u0085\u2028\u2029]+', ' | ')"
+          } finally {
+            Set-Content -LiteralPath $exitFile -Value $code
+          }
+          if ("$code" -eq 'error') { exit 3 }
+          exit $code
+      - name: Record the deployment and summarize
+        if: always()
+        shell: pwsh
+        env:
+          UNIT: ${{ matrix.unit }}
+          STARTED_BY: ${{ github.actor }}
+        run: |
+          $env:GATE_EXIT_FILE = Join-Path $env:RUNNER_TEMP 'gate-exit.txt'
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode DeploySummary -Dir (Join-Path $env:RUNNER_TEMP 'plan') -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'evidence')
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        if: always()
+        with:
+          name: evidence-deploy-${{ matrix.unit }}
+          path: ${{ runner.temp }}/evidence

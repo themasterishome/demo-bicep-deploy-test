@@ -1,0 +1,388 @@
+# Every job of this workflow is skipped, so no runner starts, until IT sets the repository variable
+# MIRROR_PIPELINE_ENABLED to true after the setup in PIPELINE.md section 3.
+#
+# Offline checks on every push to master and every pull request into master: secret scan, workflow lint, the
+# workflow rules, the check that no unit the pipeline deploys declares a role assignment, policy or lock, and the
+# preflight (compile, lint, parameter files, file layout, duplicate declarations, deployment unit files). No Azure
+# login, no Azure calls.
+#
+# The jobs secret-scan, actionlint, workflow-hygiene, portability and preflight are required status checks in the
+# branch ruleset, together with pr-gate of mirror-pr. The workflow has no path filter, because a required check that
+# a path filter skips stays pending and blocks the merge. Turn on "Require branches to be up to date before
+# merging" in the branch ruleset, so a pull request's preflight covers the tree that lands.
+#
+# Every job but one runs on windows-2025, or on ubuntu-24.04 when the repository variable MIRROR_RUNNER is
+# ubuntu-24.04. The portability job runs on the other image and repeats the preflight there, so every code change
+# is checked on both systems whichever image the other jobs use. No other value of the variable reaches runs-on,
+# and the first step of every job, the runner check, stops the job on any other runner.
+name: mirror-validate
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+permissions:
+  contents: read
+
+concurrency:
+  # A pull request's newer run replaces its older one. Each push to master has a group of its own (its commit),
+  # so its checks always run to the end.
+  group: mirror-validate-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # SHA256 of bicep-win-x64.exe (a Windows runner) and of bicep-linux-x64 (a Linux runner) in the Bicep v0.48.1
+  # GitHub release. Change the three together, and the Bicep version that scripts/deploy-unit.ps1,
+  # scripts/whatif-rg-sweep.sh and scripts/whatif-sub-sweep.sh require.
+  BICEP_VERSION: v0.48.1
+  BICEP_SHA256_WINDOWS: 398AF294CF16AC4BECDBD008A77D148D0E8E91492309A6B60EC911B7E1CAB082
+  BICEP_SHA256_LINUX: B09EC25A9D376C1F8E33EDE6ED22B587F915AD68488D5DB77A6F9541748C7F6E
+  # The secret scan uses gitleaks_8.30.1_windows_x64.zip or gitleaks_8.30.1_linux_x64.tar.gz, with the SHA256 from
+  # the checksums file of the Gitleaks v8.30.1 GitHub release.
+  GITLEAKS_VERSION: 8.30.1
+  GITLEAKS_SHA256_WINDOWS: D29144DEFF3A68AA93CED33DDDF84B7FDC26070ADD4AA0F4513094C8332AFC4E
+  GITLEAKS_SHA256_LINUX: 551F6FC83EA457D62A0D98237CBAD105AF8D557003051F41F3E7CA7B3F2470EB
+  # The workflow lint uses actionlint_1.7.12_windows_amd64.zip or actionlint_1.7.12_linux_amd64.tar.gz, with the
+  # SHA256 from the checksums file of the actionlint v1.7.12 GitHub release.
+  ACTIONLINT_VERSION: 1.7.12
+  ACTIONLINT_SHA256_WINDOWS: 6E7241B51E6817EA6A047693D8E6FED13B31819C9A0DD6C5A726E1592D22F6E9
+  ACTIONLINT_SHA256_LINUX: 8ACA8DB96F1B94770F1B0D72B6DDDCB1EBB8123CB3712530B08CC387B349A3D8
+
+# Actions are pinned to the full commit SHA of the release named in the comment.
+jobs:
+  secret-scan:
+    if: vars.MIRROR_PIPELINE_ENABLED == 'true'
+    runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
+    timeout-minutes: 15
+    steps:
+      - name: Runner check
+        # Stops the job unless the runner is GitHub-hosted, x64 and has the windows-2025 or the ubuntu-24.04
+        # image, the two the scripts and the pinned tools are checked on. The images set ImageOS. The label
+        # windows-2025 gives win25, or win25-vs2026 for its build with Visual Studio 2026, and ubuntu-24.04 gives
+        # ubuntu24. On a failure, the job log's "Set up job" step names the image under "Runner Image". If that
+        # is windows-2025 or ubuntu-24.04 with an ImageOS value not listed here, the value is added to this step
+        # and this comment in every job of the four workflows, through a code pull request.
+        shell: pwsh
+        run: |
+          $os = if (@('win25', 'win25-vs2026') -ccontains $env:ImageOS) { 'Windows' } elseif ($env:ImageOS -ceq 'ubuntu24') { 'Linux' } else { '' }
+          if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_ARCH -cne 'X64' -or -not $os -or $env:RUNNER_OS -cne $os) {
+            Write-Error "the runner is $env:RUNNER_ENVIRONMENT, $env:RUNNER_OS $env:RUNNER_ARCH, image '$env:ImageOS'. The jobs run only on a GitHub-hosted x64 runner with the windows-2025 or the ubuntu-24.04 image. Compare the image under 'Runner Image' in this job's 'Set up job' step. If it is windows-2025 or ubuntu-24.04 with a new ImageOS value, add that value to the 'Runner check' step of every workflow, and to its comment, in a code pull request"
+            exit 1
+          }
+          Write-Host "GitHub-hosted $env:RUNNER_OS $env:RUNNER_ARCH runner, image $env:ImageOS $env:ImageVersion"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Secret scan (Gitleaks)
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'gitleaks'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $name = if ($IsWindows) { "gitleaks_$($env:GITLEAKS_VERSION)_windows_x64.zip" } else { "gitleaks_$($env:GITLEAKS_VERSION)_linux_x64.tar.gz" }
+          $want = if ($IsWindows) { $env:GITLEAKS_SHA256_WINDOWS } else { $env:GITLEAKS_SHA256_LINUX }
+          $archive = Join-Path $dir $name
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri "https://github.com/gitleaks/gitleaks/releases/download/v$($env:GITLEAKS_VERSION)/$name" -OutFile $archive
+          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+          if ($hash -ne $want) { Write-Error "$name SHA256 $hash does not match the published hash"; exit 1 }
+          if ($IsWindows) { Expand-Archive -LiteralPath $archive -DestinationPath $dir -Force }
+          else { tar -xzf $archive -C $dir; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          & (Join-Path $dir $(if ($IsWindows) { 'gitleaks.exe' } else { 'gitleaks' })) detect --redact --no-banner --no-git --source . --config .gitleaks.toml
+          exit $LASTEXITCODE
+
+  actionlint:
+    if: vars.MIRROR_PIPELINE_ENABLED == 'true'
+    runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
+    timeout-minutes: 10
+    steps:
+      - name: Runner check
+        # Stops the job unless the runner is GitHub-hosted, x64 and has the windows-2025 or the ubuntu-24.04
+        # image, the two the scripts and the pinned tools are checked on. The images set ImageOS. The label
+        # windows-2025 gives win25, or win25-vs2026 for its build with Visual Studio 2026, and ubuntu-24.04 gives
+        # ubuntu24. On a failure, the job log's "Set up job" step names the image under "Runner Image". If that
+        # is windows-2025 or ubuntu-24.04 with an ImageOS value not listed here, the value is added to this step
+        # and this comment in every job of the four workflows, through a code pull request.
+        shell: pwsh
+        run: |
+          $os = if (@('win25', 'win25-vs2026') -ccontains $env:ImageOS) { 'Windows' } elseif ($env:ImageOS -ceq 'ubuntu24') { 'Linux' } else { '' }
+          if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_ARCH -cne 'X64' -or -not $os -or $env:RUNNER_OS -cne $os) {
+            Write-Error "the runner is $env:RUNNER_ENVIRONMENT, $env:RUNNER_OS $env:RUNNER_ARCH, image '$env:ImageOS'. The jobs run only on a GitHub-hosted x64 runner with the windows-2025 or the ubuntu-24.04 image. Compare the image under 'Runner Image' in this job's 'Set up job' step. If it is windows-2025 or ubuntu-24.04 with a new ImageOS value, add that value to the 'Runner check' step of every workflow, and to its comment, in a code pull request"
+            exit 1
+          }
+          Write-Host "GitHub-hosted $env:RUNNER_OS $env:RUNNER_ARCH runner, image $env:ImageOS $env:ImageVersion"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Workflow lint (actionlint)
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'actionlint'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $name = if ($IsWindows) { "actionlint_$($env:ACTIONLINT_VERSION)_windows_amd64.zip" } else { "actionlint_$($env:ACTIONLINT_VERSION)_linux_amd64.tar.gz" }
+          $want = if ($IsWindows) { $env:ACTIONLINT_SHA256_WINDOWS } else { $env:ACTIONLINT_SHA256_LINUX }
+          $archive = Join-Path $dir $name
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri "https://github.com/rhysd/actionlint/releases/download/v$($env:ACTIONLINT_VERSION)/$name" -OutFile $archive
+          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+          if ($hash -ne $want) { Write-Error "$name SHA256 $hash does not match the published hash"; exit 1 }
+          if ($IsWindows) { Expand-Archive -LiteralPath $archive -DestinationPath $dir -Force }
+          else { tar -xzf $archive -C $dir; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          # actionlint 1.7.12 does not know the queue key of a concurrency group yet (GitHub added it later).
+          # That one message is ignored until a newer release knows it. The pattern is a regular expression and
+          # uses . for the double quotes of the message, so it reaches the program unchanged on every system.
+          # The shellcheck and pyflakes checks are off. They read bash and Python steps, and every step here runs pwsh.
+          & (Join-Path $dir $(if ($IsWindows) { 'actionlint.exe' } else { 'actionlint' })) -shellcheck= -pyflakes= -ignore 'unexpected key .queue. for .concurrency. section'
+          exit $LASTEXITCODE
+
+  workflow-hygiene:
+    # A deploy token goes to any job that names a production environment from master, so only the deploy workflow
+    # may name one, no workflow uses a trigger that runs pull request code with master's rights, and every action
+    # is an allowed one pinned to a full commit SHA. The rules are in .github/scripts/mirror-pipeline.ps1. They
+    # are text matches that catch mistakes, and on a pull request they run the pull request's own copy. The
+    # controls are the production environments' branch policy (master only), the code owners' review and the push
+    # ruleset on .github/**.
+    if: vars.MIRROR_PIPELINE_ENABLED == 'true'
+    runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
+    timeout-minutes: 15
+    steps:
+      - name: Runner check
+        # Stops the job unless the runner is GitHub-hosted, x64 and has the windows-2025 or the ubuntu-24.04
+        # image, the two the scripts and the pinned tools are checked on. The images set ImageOS. The label
+        # windows-2025 gives win25, or win25-vs2026 for its build with Visual Studio 2026, and ubuntu-24.04 gives
+        # ubuntu24. On a failure, the job log's "Set up job" step names the image under "Runner Image". If that
+        # is windows-2025 or ubuntu-24.04 with an ImageOS value not listed here, the value is added to this step
+        # and this comment in every job of the four workflows, through a code pull request.
+        shell: pwsh
+        run: |
+          $os = if (@('win25', 'win25-vs2026') -ccontains $env:ImageOS) { 'Windows' } elseif ($env:ImageOS -ceq 'ubuntu24') { 'Linux' } else { '' }
+          if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_ARCH -cne 'X64' -or -not $os -or $env:RUNNER_OS -cne $os) {
+            Write-Error "the runner is $env:RUNNER_ENVIRONMENT, $env:RUNNER_OS $env:RUNNER_ARCH, image '$env:ImageOS'. The jobs run only on a GitHub-hosted x64 runner with the windows-2025 or the ubuntu-24.04 image. Compare the image under 'Runner Image' in this job's 'Set up job' step. If it is windows-2025 or ubuntu-24.04 with a new ImageOS value, add that value to the 'Runner check' step of every workflow, and to its comment, in a code pull request"
+            exit 1
+          }
+          Write-Host "GitHub-hosted $env:RUNNER_OS $env:RUNNER_ARCH runner, image $env:ImageOS $env:ImageVersion"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Workflow rules
+        shell: pwsh
+        run: |
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode Hygiene
+          exit $LASTEXITCODE
+      - name: Helper tests (offline)
+        shell: pwsh
+        run: |
+          & ./.github/scripts/tests/mirror-pipeline.tests.ps1
+          exit $LASTEXITCODE
+
+  portability:
+    # The checks on the other runner image, ubuntu-24.04 while the other jobs use windows-2025 and windows-2025
+    # when they use ubuntu-24.04. It parses every script (bash -n for the .sh files), applies the workflow rules and
+    # runs the helper tests, which also run scripts/deploy-unit.ps1 -WhatIfJson on a saved what-if. For a code
+    # change it then runs what the preflight job runs: the pinned Bicep CLI, the check of the pipeline units and
+    # scripts/preflight-validate.ps1. So every code change passes the preflight on both images before it lands. A
+    # required status check. It has no needs, and its only job condition is the pipeline switch, so it never stays
+    # pending. No Azure login, no Azure calls.
+    if: vars.MIRROR_PIPELINE_ENABLED == 'true'
+    runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'windows-2025' || 'ubuntu-24.04' }}
+    timeout-minutes: 90
+    steps:
+      - name: Runner check
+        # Stops the job unless the runner is GitHub-hosted, x64 and has the windows-2025 or the ubuntu-24.04
+        # image, the two the scripts and the pinned tools are checked on. The images set ImageOS. The label
+        # windows-2025 gives win25, or win25-vs2026 for its build with Visual Studio 2026, and ubuntu-24.04 gives
+        # ubuntu24. On a failure, the job log's "Set up job" step names the image under "Runner Image". If that
+        # is windows-2025 or ubuntu-24.04 with an ImageOS value not listed here, the value is added to this step
+        # and this comment in every job of the four workflows, through a code pull request.
+        shell: pwsh
+        run: |
+          $os = if (@('win25', 'win25-vs2026') -ccontains $env:ImageOS) { 'Windows' } elseif ($env:ImageOS -ceq 'ubuntu24') { 'Linux' } else { '' }
+          if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_ARCH -cne 'X64' -or -not $os -or $env:RUNNER_OS -cne $os) {
+            Write-Error "the runner is $env:RUNNER_ENVIRONMENT, $env:RUNNER_OS $env:RUNNER_ARCH, image '$env:ImageOS'. The jobs run only on a GitHub-hosted x64 runner with the windows-2025 or the ubuntu-24.04 image. Compare the image under 'Runner Image' in this job's 'Set up job' step. If it is windows-2025 or ubuntu-24.04 with a new ImageOS value, add that value to the 'Runner check' step of every workflow, and to its comment, in a code pull request"
+            exit 1
+          }
+          Write-Host "GitHub-hosted $env:RUNNER_OS $env:RUNNER_ARCH runner, image $env:ImageOS $env:ImageVersion"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Parse every script
+        shell: pwsh
+        run: |
+          $failed = 0
+          $ps = @(Get-ChildItem -LiteralPath 'scripts', '.github/scripts' -Recurse -File -Filter '*.ps1')
+          foreach ($f in $ps) {
+            $tokens = $null; $errs = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errs)
+            $rel = [IO.Path]::GetRelativePath((Get-Location).Path, $f.FullName)
+            foreach ($e in @($errs)) { $failed++; Write-Host "::error file=$rel,line=$($e.Extent.StartLineNumber)::$($e.Message -replace '[\r\n]+', ' ')" }
+          }
+          # On Windows the first bash on PATH can be the one of the Windows Subsystem for Linux, so the step names
+          # the bash of Git for Windows.
+          $bash = if ($IsWindows) { Join-Path $env:ProgramFiles 'Git/bin/bash.exe' } else { 'bash' }
+          $sh = @(Get-ChildItem -LiteralPath 'scripts' -Recurse -File -Filter '*.sh')
+          foreach ($f in $sh) {
+            & $bash -n $f.FullName
+            if ($LASTEXITCODE -ne 0) { $failed++; Write-Host "::error file=$([IO.Path]::GetRelativePath((Get-Location).Path, $f.FullName))::bash -n failed" }
+          }
+          Write-Host "$($ps.Count) PowerShell and $($sh.Count) shell script(s) parsed, $failed error(s), PowerShell $($PSVersionTable.PSVersion) on $($PSVersionTable.OS)"
+          if ($failed -gt 0) { exit 1 }
+          exit 0
+      - name: Workflow rules
+        shell: pwsh
+        run: |
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode Hygiene
+          exit $LASTEXITCODE
+      - name: Helper tests (offline)
+        shell: pwsh
+        run: |
+          & ./.github/scripts/tests/mirror-pipeline.tests.ps1
+          exit $LASTEXITCODE
+      - name: Pin the Bicep CLI
+        shell: pwsh
+        run: |
+          # The Azure CLI installs bicep-win-x64.exe as bicep.exe on a Windows runner and bicep-linux-x64 as bicep
+          # on a Linux runner. Both hashes are pinned above, for x64 runners only.
+          if ($env:RUNNER_ARCH -ne 'X64' -or @('Windows', 'Linux') -notcontains $env:RUNNER_OS) { Write-Error "the runner is $env:RUNNER_OS $env:RUNNER_ARCH, and the Bicep CLI is pinned for Windows or Linux on x64"; exit 1 }
+          $exe = if ($IsWindows) { 'bicep.exe' } else { 'bicep' }
+          $want = if ($IsWindows) { $env:BICEP_SHA256_WINDOWS } else { $env:BICEP_SHA256_LINUX }
+          az bicep install --version $env:BICEP_VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cfg = if ($env:AZURE_CONFIG_DIR) { $env:AZURE_CONFIG_DIR } else { Join-Path $HOME '.azure' }
+          $bin = Join-Path $cfg 'bin'
+          $file = Join-Path $bin $exe
+          $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
+          if ($hash -ne $want) { Write-Error "$exe SHA256 $hash does not match the published hash of $env:BICEP_VERSION"; exit 1 }
+          # On Linux the file must be executable. The Azure CLI sets that, and the step sets it again.
+          if (-not $IsWindows) { chmod 755 $file; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          # In a GitHub job the Azure CLI uses the first bicep on PATH, and the runner image has its own copy
+          # there. So the checked binary goes first on PATH for the later steps of this job, and the CLI setting
+          # bicep.use_binary_from_path is set to true through its environment variable.
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          'AZURE_BICEP_USE_BINARY_FROM_PATH=true' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Check the Bicep CLI
+        # A step of its own, because a PATH change takes effect only in the steps after the one that made it.
+        shell: pwsh
+        run: |
+          $want = if ($IsWindows) { $env:BICEP_SHA256_WINDOWS } else { $env:BICEP_SHA256_LINUX }
+          $first = Get-Command bicep -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $first) { Write-Error 'no bicep on PATH'; exit 1 }
+          $hash = (Get-FileHash -LiteralPath $first.Source -Algorithm SHA256).Hash
+          if ($hash -ne $want) { Write-Error "the first bicep on PATH, $($first.Source), is not the checked $env:BICEP_VERSION binary"; exit 1 }
+          $want = $env:BICEP_VERSION.TrimStart('v')
+          $v = (az bicep version) -join ' '
+          if ($LASTEXITCODE -ne 0 -or $v -notmatch ('version ' + [regex]::Escape($want) + '\b')) { Write-Error "az bicep version reports '$v', expected $want"; exit 1 }
+          Write-Host "The Azure CLI uses Bicep $want from $($first.Source)"
+      - name: Pipeline units hold no role assignments, policy or locks
+        shell: pwsh
+        run: |
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode PipelineScope
+          exit $LASTEXITCODE
+      - name: Preflight
+        id: preflight
+        shell: pwsh
+        run: ./scripts/preflight-validate.ps1 -OutDir (Join-Path $env:RUNNER_TEMP 'build-logs')
+      - name: Job summary
+        if: always()
+        shell: pwsh
+        env:
+          OUTCOME: ${{ steps.preflight.outcome }}
+        run: |
+          "Preflight on $($env:RUNNER_OS): $env:OUTCOME. The full logs are in the build-logs-portability artifact." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        if: always()
+        with:
+          name: build-logs-portability
+          path: ${{ runner.temp }}/build-logs
+
+  preflight:
+    if: vars.MIRROR_PIPELINE_ENABLED == 'true'
+    runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
+    timeout-minutes: 90
+    steps:
+      - name: Runner check
+        # Stops the job unless the runner is GitHub-hosted, x64 and has the windows-2025 or the ubuntu-24.04
+        # image, the two the scripts and the pinned tools are checked on. The images set ImageOS. The label
+        # windows-2025 gives win25, or win25-vs2026 for its build with Visual Studio 2026, and ubuntu-24.04 gives
+        # ubuntu24. On a failure, the job log's "Set up job" step names the image under "Runner Image". If that
+        # is windows-2025 or ubuntu-24.04 with an ImageOS value not listed here, the value is added to this step
+        # and this comment in every job of the four workflows, through a code pull request.
+        shell: pwsh
+        run: |
+          $os = if (@('win25', 'win25-vs2026') -ccontains $env:ImageOS) { 'Windows' } elseif ($env:ImageOS -ceq 'ubuntu24') { 'Linux' } else { '' }
+          if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_ARCH -cne 'X64' -or -not $os -or $env:RUNNER_OS -cne $os) {
+            Write-Error "the runner is $env:RUNNER_ENVIRONMENT, $env:RUNNER_OS $env:RUNNER_ARCH, image '$env:ImageOS'. The jobs run only on a GitHub-hosted x64 runner with the windows-2025 or the ubuntu-24.04 image. Compare the image under 'Runner Image' in this job's 'Set up job' step. If it is windows-2025 or ubuntu-24.04 with a new ImageOS value, add that value to the 'Runner check' step of every workflow, and to its comment, in a code pull request"
+            exit 1
+          }
+          Write-Host "GitHub-hosted $env:RUNNER_OS $env:RUNNER_ARCH runner, image $env:ImageOS $env:ImageVersion"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pin the Bicep CLI
+        shell: pwsh
+        run: |
+          # The Azure CLI installs bicep-win-x64.exe as bicep.exe on a Windows runner and bicep-linux-x64 as bicep
+          # on a Linux runner. Both hashes are pinned above, for x64 runners only.
+          if ($env:RUNNER_ARCH -ne 'X64' -or @('Windows', 'Linux') -notcontains $env:RUNNER_OS) { Write-Error "the runner is $env:RUNNER_OS $env:RUNNER_ARCH, and the Bicep CLI is pinned for Windows or Linux on x64"; exit 1 }
+          $exe = if ($IsWindows) { 'bicep.exe' } else { 'bicep' }
+          $want = if ($IsWindows) { $env:BICEP_SHA256_WINDOWS } else { $env:BICEP_SHA256_LINUX }
+          az bicep install --version $env:BICEP_VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cfg = if ($env:AZURE_CONFIG_DIR) { $env:AZURE_CONFIG_DIR } else { Join-Path $HOME '.azure' }
+          $bin = Join-Path $cfg 'bin'
+          $file = Join-Path $bin $exe
+          $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
+          if ($hash -ne $want) { Write-Error "$exe SHA256 $hash does not match the published hash of $env:BICEP_VERSION"; exit 1 }
+          # On Linux the file must be executable. The Azure CLI sets that, and the step sets it again.
+          if (-not $IsWindows) { chmod 755 $file; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          # In a GitHub job the Azure CLI uses the first bicep on PATH, and the runner image has its own copy
+          # there. So the checked binary goes first on PATH for the later steps of this job, and the CLI setting
+          # bicep.use_binary_from_path is set to true through its environment variable.
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          'AZURE_BICEP_USE_BINARY_FROM_PATH=true' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Check the Bicep CLI
+        # A step of its own, because a PATH change takes effect only in the steps after the one that made it.
+        shell: pwsh
+        run: |
+          $want = if ($IsWindows) { $env:BICEP_SHA256_WINDOWS } else { $env:BICEP_SHA256_LINUX }
+          $first = Get-Command bicep -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $first) { Write-Error 'no bicep on PATH'; exit 1 }
+          $hash = (Get-FileHash -LiteralPath $first.Source -Algorithm SHA256).Hash
+          if ($hash -ne $want) { Write-Error "the first bicep on PATH, $($first.Source), is not the checked $env:BICEP_VERSION binary"; exit 1 }
+          $want = $env:BICEP_VERSION.TrimStart('v')
+          $v = (az bicep version) -join ' '
+          if ($LASTEXITCODE -ne 0 -or $v -notmatch ('version ' + [regex]::Escape($want) + '\b')) { Write-Error "az bicep version reports '$v', expected $want"; exit 1 }
+          Write-Host "The Azure CLI uses Bicep $want from $($first.Source)"
+      - name: Tool versions
+        shell: pwsh
+        run: |
+          az version -o json
+          az bicep version
+      - name: Pipeline units hold no role assignments, policy or locks
+        # Compiles every unit the pipeline may deploy, through its parameters file as Azure receives it, and fails
+        # when one declares a Microsoft.Authorization resource. The pipeline's deploy identities cannot write
+        # those, so a unit that declares one is marked "route": "hand" in deploy/units.json and deployed by a
+        # person. It also fails on a data-access grant (a Key Vault access policy, a Cosmos DB data-plane role
+        # assignment, a SQL administrator) that is not in the helper's list of known grants, because Contributor
+        # can write those.
+        shell: pwsh
+        run: |
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode PipelineScope
+          exit $LASTEXITCODE
+      - name: Preflight
+        id: preflight
+        shell: pwsh
+        run: ./scripts/preflight-validate.ps1 -OutDir (Join-Path $env:RUNNER_TEMP 'build-logs')
+      - name: Job summary
+        if: always()
+        shell: pwsh
+        env:
+          OUTCOME: ${{ steps.preflight.outcome }}
+        run: |
+          "Preflight: $env:OUTCOME. The full logs are in the build-logs artifact." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        if: always()
+        with:
+          name: build-logs
+          path: ${{ runner.temp }}/build-logs

@@ -1,0 +1,14 @@
+{
+  "overall": "review",
+  "problems": [],
+  "counts": { "Deploy": 1 },
+  "failed": 0,
+  "review": 1,
+  "decisions": [
+    { "resourceId": "/subscriptions/s/resourceGroups/r/providers/Microsoft.Resources/deployments/nested", "type": "Microsoft.Resources/deployments", "changeType": "Deploy", "verdict": "review",
+      "notes": [ "review record: Deploy record of a nested deployment: the preview could not work out what this module writes and lists nothing inside it, so none of it was checked. Find out what it writes before passing -AcknowledgeReview" ] }
+  ],
+  "reviewRecords": [
+    { "resourceId": "/subscriptions/s/resourceGroups/r/providers/Microsoft.Resources/deployments/nested", "changeType": "Deploy", "reason": "Deploy record of a nested deployment", "status": "waiting for -AcknowledgeReview" }
+  ]
+}

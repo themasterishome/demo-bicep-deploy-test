@@ -1,0 +1,10 @@
+{
+  "overall": "pass",
+  "problems": [],
+  "counts": { "NoChange": 3 },
+  "failed": 0,
+  "review": 0,
+  "decisions": [
+    { "resourceId": "/subscriptions/s/resourceGroups/r/providers/Microsoft.Storage/storageAccounts/a", "type": "Microsoft.Storage/storageAccounts", "changeType": "NoChange", "verdict": "pass", "notes": [] }
+  ]
+}

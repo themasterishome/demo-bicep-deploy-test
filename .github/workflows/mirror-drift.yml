@@ -1,0 +1,205 @@
+# Every job of this workflow is skipped, so no runner starts, until IT sets the repository variable
+# MIRROR_PIPELINE_ENABLED to true after the setup in PIPELINE.md section 3.
+#
+# Read-only drift sweep, started by hand. It has no schedule until IT
+# approves scheduled drift checks. Never deploys. A failed run is the alert. GitHub notifies the
+# person who started the run, and the summary is in the run's job summary. While every unit in
+# deploy/units.json is disabled it has nothing to check and fails with that message.
+# It uses the mirror-reader-dispatch environment, with the same reader identity as the pull request previews. Its
+# variables are AZURE_CLIENT_ID of the reader identity (Reader plus the "Mirror What-If Reader" custom role on all 11
+# subscriptions) and AZURE_TENANT_ID. deployment: false keeps these runs out of the environment's deployment history.
+# The environment allows only the branch master, and the reader identity's credential for it trusts only that
+# environment. GitHub refuses the job when the run is started on any other branch, so an older copy of this file
+# on another branch cannot sign in either. A branch's Bicep files are previewed through its pull request (mirror-pr,
+# in the mirror-reader environment). The job still takes the scripts from master's tip and refuses Bicep that reads
+# environment variables, registry modules or files outside the repository.
+name: mirror-drift
+
+on:
+  # Manual only. A schedule is added here only once IT approves scheduled drift checks.
+  workflow_dispatch: {}
+
+# Read-only token by default. The one job signs in to Azure, so it requests the OpenID Connect token itself.
+permissions:
+  contents: read
+
+env:
+  # SHA256 of bicep-win-x64.exe (a Windows runner) and of bicep-linux-x64 (a Linux runner) in the Bicep v0.48.1
+  # GitHub release. Change the three together, and the Bicep version that scripts/deploy-unit.ps1,
+  # scripts/whatif-rg-sweep.sh and scripts/whatif-sub-sweep.sh require.
+  BICEP_VERSION: v0.48.1
+  BICEP_SHA256_WINDOWS: 398AF294CF16AC4BECDBD008A77D148D0E8E91492309A6B60EC911B7E1CAB082
+  BICEP_SHA256_LINUX: B09EC25A9D376C1F8E33EDE6ED22B587F915AD68488D5DB77A6F9541748C7F6E
+
+concurrency:
+  group: mirror-drift
+  cancel-in-progress: false
+
+# Actions are pinned to the full commit SHA of the release named in the comment. Every job runs on windows-2025, or
+# on ubuntu-24.04 when the repository variable MIRROR_RUNNER is ubuntu-24.04. No other value of the variable reaches
+# runs-on, and the first step of every job, the runner check, stops the job on any other runner.
+jobs:
+  drift:
+    if: vars.MIRROR_PIPELINE_ENABLED == 'true'
+    runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
+    environment:
+      name: mirror-reader-dispatch
+      deployment: false
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 240
+    steps:
+      - name: Runner check
+        # Stops the job unless the runner is GitHub-hosted, x64 and has the windows-2025 or the ubuntu-24.04
+        # image, the two the scripts and the pinned tools are checked on. The images set ImageOS. The label
+        # windows-2025 gives win25, or win25-vs2026 for its build with Visual Studio 2026, and ubuntu-24.04 gives
+        # ubuntu24. On a failure, the job log's "Set up job" step names the image under "Runner Image". If that
+        # is windows-2025 or ubuntu-24.04 with an ImageOS value not listed here, the value is added to this step
+        # and this comment in every job of the four workflows, through a code pull request.
+        shell: pwsh
+        run: |
+          $os = if (@('win25', 'win25-vs2026') -ccontains $env:ImageOS) { 'Windows' } elseif ($env:ImageOS -ceq 'ubuntu24') { 'Linux' } else { '' }
+          if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_ARCH -cne 'X64' -or -not $os -or $env:RUNNER_OS -cne $os) {
+            Write-Error "the runner is $env:RUNNER_ENVIRONMENT, $env:RUNNER_OS $env:RUNNER_ARCH, image '$env:ImageOS'. The jobs run only on a GitHub-hosted x64 runner with the windows-2025 or the ubuntu-24.04 image. Compare the image under 'Runner Image' in this job's 'Set up job' step. If it is windows-2025 or ubuntu-24.04 with a new ImageOS value, add that value to the 'Runner check' step of every workflow, and to its comment, in a code pull request"
+            exit 1
+          }
+          Write-Host "GitHub-hosted $env:RUNNER_OS $env:RUNNER_ARCH runner, image $env:ImageOS $env:ImageVersion"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # Master. The scripts that run with the reader token come from master, never from the branch the run was
+      # started on, because the push ruleset covers .github/** only and a writer can push a changed scripts/
+      # folder to any branch.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: master
+          path: trusted
+          persist-credentials: false
+          # Only what the job takes from it.
+          sparse-checkout: |
+            /scripts/
+            /.github/scripts/
+            /deploy/boundaries.json
+            /bicepconfig.json
+          sparse-checkout-cone-mode: false
+      - name: Take the scripts from master
+        # The run's commit is master's tip when the run started, so the job keeps its checkout as it is. If master
+        # moved after that, or the environment's branch rule is ever loosened, the job keeps the run's Bicep files
+        # and deploy/units.json and takes scripts/, .github/scripts/, deploy/boundaries.json and bicepconfig.json
+        # from master's tip.
+        shell: pwsh
+        run: |
+          $ws = $env:GITHUB_WORKSPACE
+          $t = Join-Path $ws 'trusted'
+          $trusted = ((git -C $t rev-parse HEAD) -join '').Trim()
+          $code = ((git -C $ws rev-parse HEAD) -join '').Trim()
+          if ($code -cne $trusted) {
+            foreach ($s in @('scripts', '.github/scripts', 'deploy/boundaries.json', 'bicepconfig.json')) {
+              if (-not (Test-Path -LiteralPath (Join-Path $t $s))) { Write-Host "::error::$s is missing from master's checkout"; exit 2 }
+            }
+            foreach ($d in @('scripts', '.github/scripts')) {
+              $p = Join-Path $ws $d
+              if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force }
+              Copy-Item -LiteralPath (Join-Path $t $d) -Destination $p -Recurse
+            }
+            foreach ($f in @('deploy/boundaries.json', 'bicepconfig.json')) { Copy-Item -LiteralPath (Join-Path $t $f) -Destination (Join-Path $ws $f) -Force }
+          }
+          Remove-Item -LiteralPath $t -Recurse -Force
+          "MIRROR_TRUSTED_COMMIT=$trusted" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MIRROR_CODE_COMMIT=$code" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Scripts from master's commit $trusted. Bicep files from $code."
+      - name: Check the Bicep inputs
+        # Before the sign-in, for every enabled unit. Bicep from a branch may not read environment variables,
+        # registry modules or files outside the repository, because the job holds the reader token.
+        shell: pwsh
+        run: |
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode InputCheck
+          exit $LASTEXITCODE
+      - name: Pin the Bicep CLI
+        shell: pwsh
+        run: |
+          # The Azure CLI installs bicep-win-x64.exe as bicep.exe on a Windows runner and bicep-linux-x64 as bicep
+          # on a Linux runner. Both hashes are pinned above, for x64 runners only.
+          if ($env:RUNNER_ARCH -ne 'X64' -or @('Windows', 'Linux') -notcontains $env:RUNNER_OS) { Write-Error "the runner is $env:RUNNER_OS $env:RUNNER_ARCH, and the Bicep CLI is pinned for Windows or Linux on x64"; exit 1 }
+          $exe = if ($IsWindows) { 'bicep.exe' } else { 'bicep' }
+          $want = if ($IsWindows) { $env:BICEP_SHA256_WINDOWS } else { $env:BICEP_SHA256_LINUX }
+          az bicep install --version $env:BICEP_VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cfg = if ($env:AZURE_CONFIG_DIR) { $env:AZURE_CONFIG_DIR } else { Join-Path $HOME '.azure' }
+          $bin = Join-Path $cfg 'bin'
+          $file = Join-Path $bin $exe
+          $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
+          if ($hash -ne $want) { Write-Error "$exe SHA256 $hash does not match the published hash of $env:BICEP_VERSION"; exit 1 }
+          # On Linux the file must be executable. The Azure CLI sets that, and the step sets it again.
+          if (-not $IsWindows) { chmod 755 $file; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          # In a GitHub job the Azure CLI uses the first bicep on PATH, and the runner image has its own copy
+          # there. So the checked binary goes first on PATH for the later steps of this job, and the CLI setting
+          # bicep.use_binary_from_path is set to true through its environment variable.
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          'AZURE_BICEP_USE_BINARY_FROM_PATH=true' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Check the Bicep CLI
+        # A step of its own, because a PATH change takes effect only in the steps after the one that made it.
+        shell: pwsh
+        run: |
+          $want = if ($IsWindows) { $env:BICEP_SHA256_WINDOWS } else { $env:BICEP_SHA256_LINUX }
+          $first = Get-Command bicep -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $first) { Write-Error 'no bicep on PATH'; exit 1 }
+          $hash = (Get-FileHash -LiteralPath $first.Source -Algorithm SHA256).Hash
+          if ($hash -ne $want) { Write-Error "the first bicep on PATH, $($first.Source), is not the checked $env:BICEP_VERSION binary"; exit 1 }
+          $want = $env:BICEP_VERSION.TrimStart('v')
+          $v = (az bicep version) -join ' '
+          if ($LASTEXITCODE -ne 0 -or $v -notmatch ('version ' + [regex]::Escape($want) + '\b')) { Write-Error "az bicep version reports '$v', expected $want"; exit 1 }
+          Write-Host "The Azure CLI uses Bicep $want from $($first.Source)"
+      - name: Tool versions
+        shell: pwsh
+        run: |
+          az version -o json
+          az bicep version
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906  # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+      - name: Drift sweep (read-only)
+        shell: pwsh
+        env:
+          CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+        run: |
+          # The Azure CLI cannot renew a federated sign-in. For an app registration it ends after about an
+          # hour, and a sweep of every enabled unit can take longer. So every az call of the sweep goes through
+          # the function below. Once the last sign-in is 30 minutes old, it signs in again with a fresh token
+          # from this job's OpenID Connect provider (the exchange azure/login makes) before it runs the call.
+          # If that sign-in fails, the call still runs and its unit is reported as not checked.
+          $global:AzExe = (Get-Command az -CommandType Application | Select-Object -First 1).Source
+          $global:LastSignIn = Get-Date
+          function global:az {
+            $ErrorActionPreference = 'Continue'
+            if (((Get-Date) - $global:LastSignIn).TotalMinutes -ge 30) {
+              try {
+                $req = "$($env:ACTIONS_ID_TOKEN_REQUEST_URL)&audience=$([uri]::EscapeDataString('api://AzureADTokenExchange'))"
+                $tok = (Invoke-RestMethod -Uri $req -Headers @{ Authorization = "bearer $($env:ACTIONS_ID_TOKEN_REQUEST_TOKEN)" }).value
+                Write-Host "::add-mask::$tok"
+                $o = & $global:AzExe login --service-principal -u $env:CLIENT_ID --tenant $env:TENANT_ID --federated-token $tok --allow-no-subscriptions -o none 2>&1
+                if ($LASTEXITCODE -eq 0) { $global:LastSignIn = Get-Date; Write-Host 'Signed in again' }
+                else { Write-Host "Signing in again failed: $(@($o) | Select-Object -Last 1)" }
+              } catch { Write-Host "Signing in again failed: $_" }
+            }
+            & $global:AzExe @args
+          }
+          $drift = Join-Path $env:RUNNER_TEMP 'drift'
+          & ./scripts/preflight-drift.ps1 -EvidenceRoot $drift
+          $code = $LASTEXITCODE
+          $summary = Join-Path $drift 'drift-summary.txt'
+          if (Test-Path -LiteralPath $summary) {
+            '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            Get-Content -LiteralPath $summary | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+          exit $code
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        if: always()
+        with:
+          name: drift
+          path: ${{ runner.temp }}/drift
