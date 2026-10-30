@@ -36,3 +36,12 @@ resource resourceGroup_rg_demo_routing 'Microsoft.Resources/resourceGroups@2025-
   location: location
   tags: { purpose: 'demo-bicep-deploy' }
 }
+
+// The Defender for Cloud plan for virtual machines, at the value it has live. The deploy identity writes it through
+// the custom role Mirror Platform Deployment, so the subscription unit shows how that role is used.
+resource defenderPlan_VirtualMachines 'Microsoft.Security/pricings@2024-01-01' = {
+  name: 'VirtualMachines'
+  properties: {
+    pricingTier: 'Free'
+  }
+}
