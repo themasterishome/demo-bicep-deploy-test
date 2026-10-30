@@ -84,6 +84,7 @@ resource policyAssignment_resource_location 'Microsoft.Authorization/policyAssig
     displayName: 'Audit resource location matches resource group location'
     policyDefinitionId: tenantResourceId('Microsoft.Authorization/policyDefinitions', '0a914e76-4921-4c19-b460-a2d36003525a')
     enforcementMode: 'Default'
+    definitionVersion: '2.*.*'
   }
 }
 
