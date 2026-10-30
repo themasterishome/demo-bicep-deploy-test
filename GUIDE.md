@@ -528,7 +528,7 @@ The reasons are these:
 - Mirror Key Vault Deployment is the right a template needs to read a secret through a reference. The demo creates the role so the list matches the project's, and assigns it to nobody.
 - Mirror Platform Deployment exists because the deploy identity holds Contributor on the workload groups only. A subscription-scope deployment needs `Microsoft.Resources/deployments/*` at the subscription, a resource group declared in `main.bicep` needs the write on resource groups, and the Defender plan needs the write on pricings. It never deletes or moves a group.
 
-1. Create the six roles. This needs Owner or User Access Administrator on the subscription and on the identity resource group. The two roles whose scope is the Tenant Root Group need the same right there, and the demo account holds User Access Administrator at the Tenant Root Group already, so no elevated access is needed. If a command prints `AuthorizationFailed` for one of those two roles, the signed-in account lacks that right, and project step 3.13 shows the elevated access that gives it.
+1. Create the seven roles. This needs Owner or User Access Administrator on the subscription and on the identity resource group. The two roles whose scope is the Tenant Root Group need the same right there, and the demo account holds User Access Administrator at the Tenant Root Group already, so no elevated access is needed. If a command prints `AuthorizationFailed` for one of those two roles, the signed-in account lacks that right, and project step 3.13 shows the elevated access that gives it.
 
    ```powershell
    $folder = 'C:\demo-setup\roles'
