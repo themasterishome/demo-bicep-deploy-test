@@ -191,7 +191,6 @@ The placeholders used in this section:
 - `REPOSITORY_ID` is the repository's numeric ID, from step 3.3.
 - `WHATIF_ROLE_ID`, `WHATIF_TENANT_ROLE_ID`, `LOCK_ROLE_ID`, `OPERATOR_ROLE_ID`, `OPERATOR_TENANT_ROLE_ID` and `KEYVAULT_ROLE_ID` are the IDs of the custom roles, from step 3.13.
 - `READER_CLIENT`, `READER_PRINCIPAL`, `DEPLOY_CLIENT`, `DEPLOY_PRINCIPAL`, `GOVERN_CLIENT`, `GOVERN_PRINCIPAL`, `TENANT_CLIENT` and `TENANT_PRINCIPAL` are the `clientId` and `principalId` of the four identities, from steps 3.14 and 3.15.
-- `OWNER_PRINCIPAL` is the `principalId` of the throwaway identity of step 3.15, item 1, that becomes Owner of `rg-demo-network`.
 
 The owner ID of `themasterishome` is `49098959`. Step 3.2 reads it again, so you can show where it comes from.
 
@@ -590,7 +589,7 @@ The reader identity runs every pipeline preview: pull request previews, the plan
    az identity create --name id-mirror-reader --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --location uksouth
    ```
 
-   The output is the identity in JSON. Keep `clientId` as `READER_CLIENT` and `principalId` as `READER_PRINCIPAL`.
+   The output is the identity in JSON. Keep `clientId` as `READER_CLIENT` and `principalId` as `READER_PRINCIPAL`. The output IDs replace the value of `readerPrincipalId` in `rg-demo-network.bicepparam` and `governance.mg-demo.bicepparam` only if they differ.
 2. Grant Reader and Mirror What-If Reader on the subscription, and the same two on the Tenant Root Group, with the Tenant Root Group copy of Mirror What-If Reader.
 
    ```powershell
@@ -621,7 +620,7 @@ The reader identity runs every pipeline preview: pull request previews, the plan
 
 ### 3.15 Create the deploy and govern identities
 
-The project creates two identities per subscription, because every subscription has units of both tiers, and one more for the tenant units. That makes 23 beside the reader. The demo has one subscription, so it creates three, and a throwaway fourth for the Owner assignment of `demo-privileged`.
+The project creates two identities per subscription, because every subscription has units of both tiers, and one more for the tenant units. That makes 23 beside the reader. The demo has one subscription, so it creates three.
 - `id-mirror-deploy-demo`, for the production units
 - `id-mirror-govern-demo`, for `demo-privileged`
 - `id-mirror-govern-tenant`, for the two tenant units
@@ -631,12 +630,12 @@ Each identity holds its standing roles on its own scope only. Never give a deplo
 1. Create the identities.
 
    ```powershell
-   foreach ($n in 'id-mirror-deploy-demo', 'id-mirror-govern-demo', 'id-mirror-govern-tenant', 'id-demo-owner') {
+   foreach ($n in 'id-mirror-deploy-demo', 'id-mirror-govern-demo', 'id-mirror-govern-tenant') {
      az identity create --name $n --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --location uksouth --query "{name:name, clientId:clientId, principalId:principalId}" -o json
    }
    ```
 
-   Keep the IDs as `DEPLOY_CLIENT`, `DEPLOY_PRINCIPAL`, `GOVERN_CLIENT`, `GOVERN_PRINCIPAL`, `TENANT_CLIENT` and `TENANT_PRINCIPAL`. The fourth identity, `id-demo-owner`, is not a pipeline identity. It gets no federated credential and no role from these steps. It only gives the Owner assignment of `demo-privileged` a real principal to point at, so keep its `principalId` as `OWNER_PRINCIPAL`.
+   Keep the IDs as `DEPLOY_CLIENT`, `DEPLOY_PRINCIPAL`, `GOVERN_CLIENT`, `GOVERN_PRINCIPAL`, `TENANT_CLIENT` and `TENANT_PRINCIPAL`. The parameter files already hold the `principalId` values of identities created earlier, which are current. If the output differs from them, put the output values into `rg-demo-network.bicepparam`, `privileged.bicepparam` and `governance.mg-demo.bicepparam`. The reader's `principalId` is `readerPrincipalId` in the first and third, and `id-mirror-govern-demo`'s is `ownerPrincipalId` in the second.
 
 2. Give the deploy identity its four roles. Contributor excludes writes under `Microsoft.Authorization`, so Resource Policy Contributor writes the policy assignment of `rg-demo-network`, Mirror Lock Writer writes its lock, and Role Based Access Control Administrator writes its Reader assignment. The last one carries the condition of project section 1.5, "allow all except specific roles", with Owner (`8e3af657-a8ff-443c-a75c-2fe8c4bcb635`), Role Based Access Control Administrator (`f58310d9-a9f6-439a-9e8d-f62e7b41a168`) and User Access Administrator (`18d7d88d-d35e-4fb5-a5c3-7773c20a72d9`) excluded. It is the same condition string as the project's.
 
@@ -703,7 +702,7 @@ Check that both lists of identities are complete.
 az identity list --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[].name" -o tsv
 ```
 
-The output lists `id-demo-owner`, `id-mirror-deploy-demo`, `id-mirror-govern-demo`, `id-mirror-govern-tenant` and `id-mirror-reader`, in no fixed order. To read an identity's IDs again later, run `az identity show --name IDENTITY_NAME --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "{clientId:clientId, principalId:principalId}" -o json`.
+The output lists `id-mirror-deploy-demo`, `id-mirror-govern-demo`, `id-mirror-govern-tenant` and `id-mirror-reader`, in no fixed order. To read an identity's IDs again later, run `az identity show --name IDENTITY_NAME --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "{clientId:clientId, principalId:principalId}" -o json`.
 
 ### 3.16 Read the subject the workflows present
 
@@ -1010,7 +1009,6 @@ Do section 3 the day before, or at least two hours before the audience arrives. 
 - [ ] The second account is signed in, in the private window.
 - [ ] No run of mirror-deploy-unit waits for approval.
 - [ ] You merge nothing else while a deployment waits. A merge moves `master`, and the waiting apply then refuses (project section 4.1).
-- [ ] You have a text file open with `READER_PRINCIPAL` and `OWNER_PRINCIPAL`, because three pull requests edit parameter files with them (4.3 item 1, 4.5 item 1 and 4.7 item 1).
 
 Plan jobs take one to two minutes, and apply jobs about three.
 ### 4.2 Wave 0, the pilot
@@ -1120,13 +1118,13 @@ This is project step 3.23 and sections 4.2 to 4.8. Project section 4.6, the chec
 
 This is project sections 4.2 to 4.8 and 4.10, for a production unit that creates resources. `rg-demo-network` also holds a lock, a policy assignment and a Reader role assignment, so the audience sees what the deploy identity may write. The lock needs Mirror Lock Writer, the policy assignment needs Resource Policy Contributor and the Reader assignment needs the conditioned Role Based Access Control Administrator (step 3.15).
 
-1. Enable the network and routing units in one pull request, and give the Reader assignment a principal that exists. Create a branch.
+1. Enable the network and routing units in one pull request. Create a branch.
 
    ```powershell
    git switch --create enable-waves
    ```
 
-   Open `deploy/units.json` in an editor and set `"enabled": true` in the entries of `rg-demo-network` and `rg-demo-routing`. Then open `infra/subscriptions/demo/resource-groups/rg-demo-network.bicepparam` and replace the value of `readerPrincipalId` with `READER_PRINCIPAL`. The file holds the ID of an identity from an earlier demo, which no longer exists, and Azure refuses a role assignment for a principal it cannot find. Then commit, push and open the pull request.
+   Open `deploy/units.json` in an editor and set `"enabled": true` in the entries of `rg-demo-network` and `rg-demo-routing`. `readerPrincipalId` in `infra/subscriptions/demo/resource-groups/rg-demo-network.bicepparam` already holds the reader's `principalId`, so the Reader assignment needs no edit. Then commit, push and open the pull request.
 
    ```powershell
    git commit --all --message "Enable the network and routing units"
@@ -1188,13 +1186,13 @@ The unit is enabled already, so this wave needs no pull request.
 
 This is project step 3.23 item 8 and sections 4.2 to 4.8, for a privileged unit. `demo-privileged` holds the Owner role assignment on `rg-demo-network` and the custom role `Demo Reader Plus`. A production unit may not hold either. The `preflight` job of mirror-validate fails a change that puts them there, and the deploy identity could not write them in any case, because its condition excludes Owner. The unit waits in `mirror-privileged-demo` and deploys with `id-mirror-govern-demo`.
 
-1. Enable the unit in a pull request, and give the Owner assignment a principal that exists. Create a branch.
+1. Enable the unit in a pull request. In the demo the privileged identity `id-mirror-govern-demo` is itself the Owner target, because the estate has no other principal. The project's Owner records belong to IT's people and groups. Create a branch.
 
    ```powershell
    git switch --create enable-privileged
    ```
 
-   Open `deploy/units.json` and set `"enabled": true` in the entry of `demo-privileged`. Then open `infra/subscriptions/demo/privileged.bicepparam` and replace the value of `ownerPrincipalId` with `OWNER_PRINCIPAL`. Then commit, push and open the pull request.
+   Open `deploy/units.json` and set `"enabled": true` in the entry of `demo-privileged`. `ownerPrincipalId` in `infra/subscriptions/demo/privileged.bicepparam` already holds its `principalId`. Then commit, push and open the pull request.
 
    ```powershell
    git commit --all --message "Enable the privileged unit"
@@ -1231,7 +1229,7 @@ This is project step 3.23 item 8 and sections 4.2 to 4.8, for a privileged unit.
 
 7. Approve it as the second account. Read the plan first, as project section 4.5 asks for a privileged unit. Every role assignment and role definition is named, the ticket says who gains Owner and why, and nothing grants Owner, User Access Administrator or Role Based Access Control Administrator to more than the ticket states. Then select **Review deployments**, tick `mirror-privileged-demo`, write a comment naming `DEMO-0006`, and select **Approve and deploy**.
 
-8. Watch the apply. It signs in as `id-mirror-govern-demo` through the federated credential of `mirror-privileged-demo`, takes a fresh preview, deploys and takes the second check, which ends with `NoChange=2`. In the Azure portal, open `rg-demo-network`, select **Access control (IAM)** > **Role assignments** and read the Owner row for `id-demo-owner`. To see the role, search for **Subscriptions**, select the Visual Studio subscription, select **Access control (IAM)** > **Roles**, and filter the type to custom roles. The list holds `Demo Reader Plus`.
+8. Watch the apply. It signs in as `id-mirror-govern-demo` through the federated credential of `mirror-privileged-demo`, takes a fresh preview, deploys and takes the second check, which ends with `NoChange=2`. In the Azure portal, open `rg-demo-network`, select **Access control (IAM)** > **Role assignments** and read the Owner row for `id-mirror-govern-demo`. To see the role, search for **Subscriptions**, select the Visual Studio subscription, select **Access control (IAM)** > **Roles**, and filter the type to custom roles. The list holds `Demo Reader Plus`.
 
 9. Download the evidence as in wave 0, with `evidence-deploy-demo-privileged` and `reviewed-plan-demo-privileged`.
 
@@ -1276,7 +1274,7 @@ This is the first tenant unit. It deploys at management group scope against the 
 
 This unit runs against `mg-demo`, which wave 5 created. That is why it has its own pull request. Its preview and its plan need the group to exist.
 
-1. Enable the unit in a pull request, and give the Reader assignment a principal that exists. Create a branch, set `"enabled": true` in the entry of `demo-tenant-governance` in `deploy/units.json`, and replace the value of `readerPrincipalId` in `infra/tenant/governance.mg-demo.bicepparam` with `READER_PRINCIPAL`. Then commit, push and open the pull request.
+1. Enable the unit in a pull request. Create a branch and set `"enabled": true` in the entry of `demo-tenant-governance` in `deploy/units.json`. `readerPrincipalId` in `infra/tenant/governance.mg-demo.bicepparam` already holds the reader's `principalId`. Then commit, push and open the pull request.
 
    ```powershell
    git switch --create enable-tenant-governance
@@ -1428,7 +1426,7 @@ A rollback cannot remove a resource that a deployment created with `allowCreate`
 | The apply refuses after the approval because `master` moved | Something was merged while the apply waited | Reject the old run under **Review deployments**, then start a new run and approve its plan |
 | A drift run fails on resource groups the code does not declare | `demo-subscription` was enabled. Its drift check lists every live group in the Visual Studio subscription, and the demo declares only its own three | Keep `demo-subscription` disabled |
 | A plan of a tenant unit fails with `AuthorizationFailed` | The reader lacks Reader or Mirror What-If Reader Tenant on the Tenant Root Group, or the roles have not taken effect yet | Run the second check of step 3.14 item 3, wait about 10 minutes and start a new run |
-| A role assignment fails with `PrincipalNotFound` | The parameter file still holds the ID of an identity from an earlier demo | Put the identity's `principalId` into the file through a code pull request (4.3 item 1, 4.5 item 1 and 4.7 item 1) |
+| A role assignment fails with `PrincipalNotFound` | A parameter file holds a `principalId` that differs from the identity's, for example after the identity was created again | Put the identity's `principalId` into `rg-demo-network.bicepparam`, `privileged.bicepparam` and `governance.mg-demo.bicepparam` through a code pull request |
 | The plan of `demo-tenant-governance` cannot be previewed | The management group `mg-demo` does not exist yet, because `demo-tenant-management-group` has not deployed | Deploy wave 5 first (section 4.6) |
 | A write of an Owner, User Access Administrator or Role Based Access Control Administrator assignment is refused, or `preflight` fails | The record sits in a production unit. The deploy identity's condition refuses it, and the preflight keeps it out of the production tier | Move it into a privileged unit, as `privileged.bicep` does for the Owner assignment |
 | `az policy assignment delete` fails with `ScopeLocked`, or a resource group cannot be deleted | The CanNotDelete lock on `rg-demo-identities` covers the assignment, and `lock-rg-demo-network` covers its group | Remove the locks first, as section 6 does |
@@ -1480,7 +1478,7 @@ Remove everything in the order Azure needs. Your CLI default is still the Visual
    }
    ```
 
-   Replace the four placeholders with the `principalId` values. The output is one `removed` line for each assignment. The Owner assignment of `id-demo-owner` sits on `rg-demo-network` and goes with that group.
+   Replace the four placeholders with the `principalId` values. The output is one `removed` line for each assignment. The Owner assignment of `id-mirror-govern-demo` sits on `rg-demo-network` and goes with that group.
 
 5. Remove the custom roles. A role can go only once nothing holds it, and a new removal can take a minute to show.
 
