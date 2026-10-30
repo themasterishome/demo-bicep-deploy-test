@@ -38,7 +38,7 @@ Every resource the demo creates is free. That covers the resource groups, the vi
 | GitHub plan | Free. Every environment control works on Free for a public repository | Enterprise Cloud, which a private repository needs for required reviewers |
 | Reviewers | You and a second GitHub account, as users, with Prevent self-review on | An approvers team, with Prevent self-review on |
 | Code owners | `@themasterishome`, plus the second account | The approvers team |
-| Units | 3 pipeline units and 1 by-hand unit | 32 pipeline units and 25 by-hand units |
+| Units | 3 pipeline units and 1 by-hand unit | 31 pipeline units and 25 by-hand units |
 | Rulesets | `protect-master` and `protect-tags` | `protect-master`, `protect-github-folder` and `protect-tags`, next to the organization ruleset |
 | Retention | 90 days, the longest for a public repository | 365 days |
 | Change tickets | Made-up numbers such as `DEMO-0001` | IT's change tickets |
