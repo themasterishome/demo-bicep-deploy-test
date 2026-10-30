@@ -21,7 +21,7 @@
 #
 # Anyone with write access can open a pull request, and a pull request runs its own copy of this workflow, so
 # anyone with write access can use the reader identity. Give write access only to people who already hold the
-# Reader and Mirror What-If Reader roles on the 11 subscriptions. Anyone with read access can download the
+# Reader and Mirror What-If Reader roles on the 11 subscriptions and the Tenant Root Group. Anyone with read access can download the
 # previews, which hold the live settings of the estate. The whatif job runs the scripts and the gate of master's
 # tip, not the pull request's, and only the Bicep files and deploy/units.json come from the pull request. Before
 # the sign-in it refuses Bicep that reads environment variables, registry modules or files outside the

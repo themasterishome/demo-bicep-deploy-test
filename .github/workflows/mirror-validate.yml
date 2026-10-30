@@ -2,7 +2,8 @@
 # MIRROR_PIPELINE_ENABLED to true after the setup in PIPELINE.md section 3.
 #
 # Offline checks on every push to master and every pull request into master: secret scan, workflow lint, the
-# workflow rules, the check that no unit the pipeline deploys declares a role assignment, policy or lock, and the
+# workflow rules, the check that no production unit declares a role definition or an Owner, User Access Administrator
+# or Role Based Access Control Administrator assignment, and the
 # preflight (compile, lint, parameter files, file layout, duplicate declarations, deployment unit files). No Azure
 # login, no Azure calls.
 #
@@ -274,7 +275,7 @@ jobs:
           $v = (az bicep version) -join ' '
           if ($LASTEXITCODE -ne 0 -or $v -notmatch ('version ' + [regex]::Escape($want) + '\b')) { Write-Error "az bicep version reports '$v', expected $want"; exit 1 }
           Write-Host "The Azure CLI uses Bicep $want from $($first.Source)"
-      - name: Pipeline units hold no role assignments, policy or locks
+      - name: Production units hold no role definition and no Owner, User Access Administrator or Role Based Access Control Administrator assignment
         shell: pwsh
         run: |
           & ./.github/scripts/mirror-pipeline.ps1 -Mode PipelineScope
@@ -359,11 +360,12 @@ jobs:
         run: |
           az version -o json
           az bicep version
-      - name: Pipeline units hold no role assignments, policy or locks
-        # Compiles every unit the pipeline may deploy, through its parameters file as Azure receives it, and fails
-        # when one declares a Microsoft.Authorization resource. The pipeline's deploy identities cannot write
-        # those, so a unit that declares one is marked "route": "hand" in deploy/units.json and deployed by a
-        # person. It also fails on a data-access grant (a Key Vault access policy, a Cosmos DB data-plane role
+      - name: Production units hold no role definition and no Owner, User Access Administrator or Role Based Access Control Administrator assignment
+        # Compiles every unit, through its parameters file as Azure receives it, and fails when a production unit
+        # declares a role definition, a role assignment of Owner, User Access Administrator or Role Based Access
+        # Control Administrator, or a role assignment whose role it cannot read from the compiled template. A
+        # production deploy identity cannot write those, so they sit in a unit of the privileged tier. It also
+        # fails on a data-access grant (a Key Vault access policy, a Cosmos DB data-plane role
         # assignment, a SQL administrator) that is not in the helper's list of known grants, because Contributor
         # can write those.
         shell: pwsh

@@ -77,8 +77,8 @@
        -EvidenceRoot/<unit>/<timestamp>-<commit>. Every STOP after that folder is created (from the
        commit check on) also writes stop.txt there with the reason, so a run refused before the gate
        (identity, tenant, an uncommitted tree) leaves that record rather than an empty folder.
-       Argument and allowlist errors (an unknown or disabled unit, a tenant-kind unit, missing or
-       conflicting flags) stop before the folder exists and write none. An offline -WhatIfJson
+       Argument and allowlist errors (an unknown or disabled unit, a unit whose kind or scope fields
+       are wrong, missing or conflicting flags) stop before the folder exists and write none. An offline -WhatIfJson
        evaluation ends with its summary only.
 
   Steps 8 to 11 run only on a deploy run whose gate passed, with -DryRun:$false and -Approve
@@ -97,6 +97,11 @@
   undoing drift by deploying the code) go through -AllowModify with the resource IDs that change,
   so they get the same checks and evidence as a mirror deployment. A plain az deployment group
   create stays possible, but it skips every check above.
+
+  A unit of kind tenant runs at management group scope, against the group its managementGroup field names in
+  units.json. It is previewed with az deployment mg what-if and deployed with az deployment mg create, its
+  records are judged under /providers/Microsoft.Management/managementGroups/, and it has no subscription. The
+  identity check reads the signed-in account without a subscription and still compares the tenant.
 
   With -WhatIfJson it makes no Azure calls at all. It evaluates a saved what-if file against the
   gate and writes the evidence. Useful for testing the gate offline against a saved what-if.
@@ -687,8 +692,12 @@ function Test-WhatIf($whatIf, $unitDef, [string]$subId, $bdoc, [string]$Stage = 
     $changes = @()
   }
 
+  # A tenant-kind unit deploys at management group scope. Its records sit under /providers/Microsoft.Management/
+  # managementGroups/, and a management group the unit declares with scope tenant() is under that prefix too
+  # even when it is not the group the deployment targets.
   $scopePrefix = "/subscriptions/$subId".ToLowerInvariant()
   $rgPrefix = $null
+  if ($unitDef.kind -eq 'tenant') { $scopePrefix = '/providers/microsoft.management/managementgroups' }
   if ($unitDef.kind -eq 'resourceGroup') { $rgPrefix = "$scopePrefix/resourcegroups/$($unitDef.resourceGroup)".ToLowerInvariant() }
 
   foreach ($ch in @($changes)) {
@@ -705,10 +714,8 @@ function Test-WhatIf($whatIf, $unitDef, [string]$subId, $bdoc, [string]$Stage = 
     $dataWhy = $null
 
     $inScope = $true
-    if ($unitDef.kind -ne 'tenant') {
-      if (-not ([string]::Equals($idl, $scopePrefix, [StringComparison]::Ordinal) -or $idl.StartsWith("$scopePrefix/", [StringComparison]::Ordinal))) { $inScope = $false }
-      if ($rgPrefix -and -not ([string]::Equals($idl, $rgPrefix, [StringComparison]::Ordinal) -or $idl.StartsWith("$rgPrefix/", [StringComparison]::Ordinal))) { $inScope = $false }
-    }
+    if (-not ([string]::Equals($idl, $scopePrefix, [StringComparison]::Ordinal) -or $idl.StartsWith("$scopePrefix/", [StringComparison]::Ordinal))) { $inScope = $false }
+    if ($rgPrefix -and -not ([string]::Equals($idl, $rgPrefix, [StringComparison]::Ordinal) -or $idl.StartsWith("$rgPrefix/", [StringComparison]::Ordinal))) { $inScope = $false }
     if (-not $inScope -and $ct -ne 'Ignore') { $verdict = 'fail'; $notes += 'outside the unit scope' }
 
     switch ($ct) {
@@ -949,11 +956,23 @@ if ($unitDef.Count -ne 1) { Fail 2 "unit '$Unit' is not in deploy/units.json$(Ge
 $unitDef = $unitDef[0]
 # An offline evaluation calls no Azure and never deploys, so it may judge a saved what-if of a disabled unit.
 if (-not $unitDef.enabled -and -not $offline) { Fail 2 "unit '$Unit' is disabled in units.json: $($unitDef.notes)" }
-if ($unitDef.kind -eq 'tenant') { Fail 2 'tenant-scope units are deployed by hand under their own approval, so this script does not run them' }
-$unitSub = [string](Get-Prop $unitDef 'subscription')
-if (-not $unitSub) { Fail 2 "unit '$Unit' has no subscription in deploy/units.json" }
-$subId = Get-Prop $udoc.subscriptions $unitSub
-if (-not $subId) { Fail 2 "subscription '$unitSub' is not in the allowlist" }
+$unitKind = [string](Get-Prop $unitDef 'kind')
+if ($unitKind -notin @('resourceGroup', 'subscription', 'tenant')) { Fail 2 "unit '$Unit' has kind '$unitKind', not resourceGroup, subscription or tenant" }
+$unitTier = [string](Get-Prop $unitDef 'tier')
+if ($unitTier -and $unitTier -cne 'privileged') { Fail 2 "unit '$Unit' has tier '$unitTier', which is neither absent (production) nor privileged" }
+$subId = $null; $mgId = $null
+if ($unitKind -eq 'tenant') {
+  # A tenant-kind unit deploys at management group scope, against the group units.json names. It has no subscription.
+  if (Get-Prop $unitDef 'subscription') { Fail 2 "unit '$Unit' is a tenant-kind unit and must have subscription null" }
+  $mgId = [string](Get-Prop $unitDef 'managementGroup')
+  if (-not $mgId -or $mgId -notmatch '^[A-Za-z0-9._()-]{1,90}$') { Fail 2 "unit '$Unit' is a tenant-kind unit and must name its managementGroup in deploy/units.json" }
+} else {
+  if (Get-Prop $unitDef 'managementGroup') { Fail 2 "unit '$Unit' is not a tenant-kind unit and must not name a managementGroup" }
+  $unitSub = [string](Get-Prop $unitDef 'subscription')
+  if (-not $unitSub) { Fail 2 "unit '$Unit' has no subscription in deploy/units.json" }
+  $subId = Get-Prop $udoc.subscriptions $unitSub
+  if (-not $subId) { Fail 2 "subscription '$unitSub' is not in the allowlist" }
+}
 
 $template = Join-Path $repo $unitDef.template
 $paramFile = $null
@@ -1001,7 +1020,7 @@ $dirty = [bool]$dirtyList
 $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
 $evidence = Join-Path $EvidenceRoot (Join-Path $Unit "$stamp-$short")
 New-Item -ItemType Directory -Force -Path $evidence | Out-Null
-$scopeText = if ($unitDef.kind -eq 'resourceGroup') { "$subId / $($unitDef.resourceGroup)" } else { "subscription $subId" }
+$scopeText = if ($unitKind -eq 'resourceGroup') { "$subId / $($unitDef.resourceGroup)" } elseif ($unitKind -eq 'tenant') { "management group $mgId" } else { "subscription $subId" }
 $context = @{ unit = $Unit; scope = $scopeText; commit = $commit; dirty = $dirty; identity = 'not checked (offline)'; time = (Get-Date).ToUniversalTime().ToString('u'); mode = 'offline evaluation' }
 if (-not $offline) {
   $context.identity = 'not checked yet'
@@ -1079,8 +1098,10 @@ if ($offline) {
 # 2. Identity
 # ---------------------------------------------------------------------------------------------
 function Assert-Identity {
-  # Checked for the unit's own subscription, because the CLI default may be another sign-in.
-  $acct = ConvertFrom-JsonText (Invoke-Az @('account', 'show', '--subscription', $subId, '-o', 'json')).Out
+  # Checked for the unit's own subscription, because the CLI default may be another sign-in. A tenant-kind unit has no
+  # subscription, so the signed-in account is read as it is and the tenant check below still applies.
+  $acctArgs = if ($unitKind -eq 'tenant') { @('account', 'show', '-o', 'json') } else { @('account', 'show', '--subscription', $subId, '-o', 'json') }
+  $acct = ConvertFrom-JsonText (Invoke-Az $acctArgs).Out
   $u = Get-Prop $acct 'user'
   $name = [string](Get-Prop $u 'name'); $type = [string](Get-Prop $u 'type')
   if ((Get-Prop $acct 'tenantId') -ne $udoc.tenantId) { Fail 2 "signed in to tenant $(Get-Prop $acct 'tenantId'), expected $($udoc.tenantId)" }
@@ -1137,7 +1158,9 @@ Info 'Compile ok'
 # Resource group files are edited by hand, so a resource can end up declared twice, in the same file or
 # in a module it calls. Azure refuses that deployment (ResourceDeployedMultipleTimes). The check finds
 # it first. A unit without a parameters file is checked with the template's parameter defaults.
-if (-not $Drift -and $unitDef.kind -in @('subscription', 'resourceGroup')) {
+if ($unitDef.kind -eq 'tenant') {
+  Info 'Duplicate check not run for a tenant-kind unit'
+} elseif (-not $Drift -and $unitDef.kind -in @('subscription', 'resourceGroup')) {
   $dupArgs = @('-Template', $template, '-OutJson', (Join-Path $evidence 'duplicates.json'))
   if ($paramFile) { $dupArgs += @('-Parameters', $paramFile) } else { $dupArgs += '-NoParameters' }
   & $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'find-duplicate-declarations.ps1') @dupArgs | Out-Null
@@ -1161,7 +1184,8 @@ if ($null -ne $ov) {
 
 function Get-ScopeArgs {
   if ($unitDef.kind -eq 'resourceGroup') { return @('group', '--subscription', $subId, '--resource-group', $unitDef.resourceGroup) }
-  return @('sub', '--subscription', $subId, '--location', $udoc.deploymentLocation)
+  if ($unitDef.kind -eq 'subscription') { return @('sub', '--subscription', $subId, '--location', $udoc.deploymentLocation) }
+  return @('mg', '--management-group-id', $mgId, '--location', $udoc.deploymentLocation)
 }
 function Get-SourceArgs([string]$tpl, [string]$prm, [string[]]$extra) {
   if ($prm) { return @('--parameters', $prm) + $extra }
@@ -1379,6 +1403,8 @@ $context.identity = Assert-Identity
 $stateQuery = '[].{n:name,s:properties.provisioningState}'
 if ($unitDef.kind -eq 'resourceGroup') {
   $listed = Invoke-Az @('deployment', 'group', 'list', '--subscription', $subId, '--resource-group', $unitDef.resourceGroup, '--query', $stateQuery, '-o', 'json')
+} elseif ($unitDef.kind -eq 'tenant') {
+  $listed = Invoke-Az @('deployment', 'mg', 'list', '--management-group-id', $mgId, '--query', $stateQuery, '-o', 'json')
 } else {
   $listed = Invoke-Az @('deployment', 'sub', 'list', '--subscription', $subId, '--query', $stateQuery, '-o', 'json')
 }
@@ -1406,7 +1432,7 @@ $approvalLines | Set-Content -LiteralPath (Join-Path $evidence 'approval.txt') -
 
 $sa = Get-ScopeArgs
 $createArgs = @('deployment', $sa[0], 'create') + $sa[1..($sa.Count - 1)] + @('--name', $deployName) + (Get-SourceArgs $template $paramFile $overrideArgs) + @('-o', 'json')
-# Resource-group deployments take a mode. Subscription deployments are always incremental.
+# Resource-group deployments take a mode. Subscription and management group deployments are always incremental.
 if ($unitDef.kind -eq 'resourceGroup') { $createArgs += @('--mode', 'Incremental') }
 Info "Deploying $Unit as $deployName (Incremental)"
 $deployStarted = $true

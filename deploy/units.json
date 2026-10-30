@@ -1,5 +1,5 @@
 {
-  "description": "Deployment units and their order. scripts/deploy-unit.ps1 refuses anything not listed here or listed with enabled false. A unit marked \"route\": \"hand\" is never deployed by the pipeline, a person runs it by hand. Paths are relative to the repository root.",
+  "description": "Deployment units and their order. scripts/deploy-unit.ps1 refuses anything not listed here or listed with enabled false. Every unit deploys from the pipeline. A unit marked \"tier\": \"privileged\" holds the role assignments of Owner, User Access Administrator and Role Based Access Control Administrator, the custom role definitions and the pipeline identities' own roles, and deploys through the mirror-privileged-<folder> environment with that subscription's privileged identity. Every other unit is production tier and deploys through mirror-production-<folder>. A tenant-kind unit names the management group it deploys against in \"managementGroup\". Paths are relative to the repository root.",
   "tenantId": "d1a349ef-6ac8-4588-a88d-5dab272c700b",
   "allowedPrincipals": [
     {
@@ -58,9 +58,49 @@
       "parameters": "infra/subscriptions/demo/parameters.bicepparam",
       "wave": 3,
       "risk": "medium",
-      "route": "hand",
       "enabled": false,
-      "notes": "Demo subscription layer: the three resource groups rg-demo-pilot, rg-demo-network and rg-demo-routing, written out as they are live. The resources inside the groups deploy from their own resource group files in resource-groups/, one unit each, and main.bicep does not call those files. Deployed by hand, never by the pipeline (\"route\": \"hand\"). A subscription main.bicep is where a subscription's role assignments and policy belong, which no pipeline deploy identity can write, so none can raise its own rights. A person deploys it with deploy-unit.ps1 from a PowerShell window. A code pull request still previews it for information."
+      "notes": "Demo subscription layer: the three resource groups rg-demo-pilot, rg-demo-network and rg-demo-routing, written out as they are live. The resources inside the groups deploy from their own resource group files in resource-groups/, one unit each, and main.bicep does not call those files. The Owner role assignment and the custom role of the subscription are in demo-privileged. Deployed by the pipeline through mirror-production-demo like every other unit."
+    },
+    {
+      "name": "demo-privileged",
+      "kind": "subscription",
+      "subscription": "demo",
+      "resourceGroup": null,
+      "template": "infra/subscriptions/demo/privileged.bicep",
+      "parameters": "infra/subscriptions/demo/privileged.bicepparam",
+      "wave": 4,
+      "risk": "high",
+      "tier": "privileged",
+      "enabled": false,
+      "notes": "The privileged part of the demo-subscription unit: the Owner role assignment on rg-demo-network, the custom role definition Demo Reader Plus, and later the standing roles of the pipeline's own identities. Only the subscription's privileged identity writes them, after approval in mirror-privileged-demo. Nothing else is declared here. It runs after demo-subscription and rg-demo-network, which create the resource group the Owner assignment sits on."
+    },
+    {
+      "name": "demo-tenant-management-group",
+      "kind": "tenant",
+      "subscription": null,
+      "resourceGroup": null,
+      "managementGroup": "d1a349ef-6ac8-4588-a88d-5dab272c700b",
+      "template": "infra/tenant/management-groups/main.bicep",
+      "parameters": "infra/tenant/management-groups/main.bicepparam",
+      "wave": 5,
+      "risk": "high",
+      "tier": "privileged",
+      "enabled": false,
+      "notes": "The management group mg-demo, with no subscription link. It deploys at management group scope against the Tenant Root Group, which declares the child group with scope tenant(), so nothing is assigned or deployed at the root scope /. Privileged tier: the pipeline deploys it through mirror-privileged-tenant with the tenant identity, which holds User Access Administrator, Management Group Contributor and Mirror Deployment Operator at the Tenant Root Group. The reader previews it with Reader and Mirror What-If Reader there."
+    },
+    {
+      "name": "demo-tenant-governance",
+      "kind": "tenant",
+      "subscription": null,
+      "resourceGroup": null,
+      "managementGroup": "mg-demo",
+      "template": "infra/tenant/governance.bicep",
+      "parameters": "infra/tenant/governance.mg-demo.bicepparam",
+      "wave": 6,
+      "risk": "high",
+      "tier": "privileged",
+      "enabled": false,
+      "notes": "One Reader role assignment made directly on the management group mg-demo. Runs after demo-tenant-management-group, which declares the group. Privileged tier: the pipeline deploys it through mirror-privileged-tenant with the tenant identity, at management group scope against mg-demo, and deploy-unit.ps1 runs it like any other unit (az deployment mg what-if and create). The reader previews it with Reader and Mirror What-If Reader at the Tenant Root Group."
     }
   ]
 }

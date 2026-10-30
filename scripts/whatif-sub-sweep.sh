@@ -12,7 +12,7 @@
 # nowhere in the code, so no preview and no drift check would ever show its resources.
 #
 # Run it with bash, from Git Bash on Windows or a shell on Linux, as
-#   bash scripts/whatif-sub-sweep.sh <outdir> [name ...]      no names = demo-subscription
+#   bash scripts/whatif-sub-sweep.sh <outdir> [name ...]      no names = demo-subscription and demo-privileged
 # (the file is also marked executable in git, so scripts/whatif-sub-sweep.sh ... works on Linux as well).
 # Then summarize with pwsh -File scripts/summarize-whatif.ps1 -Dir <outdir> [-Detail] (powershell -File on
 # Windows PowerShell).
@@ -41,11 +41,13 @@ if ! grep -qE 'version 0\.48\.1( |$)' "$OUT/bicep.txt"; then
   exit 1
 fi
 declare -A SUBS=()
-# The one more unit, as <subscription ID>|<parameters file under infra/subscriptions>|<compare groups>, the
-# same subscriptions and files deploy/units.json gives them.
-DEMO=6117ea3e-9dcc-49d8-8b4b-3616d8a5c252
+# The other units, as <subscription ID>|<parameters file under infra/subscriptions>|<compare groups>, the
+# same subscriptions and files deploy/units.json gives them. The privileged unit holds the Owner role assignment and
+# the custom role definition of the subscription, so it has no resource group to compare.
+DEMO=77488719-1168-4d53-af9a-f5c3bc9291d7
 declare -A EXTRA=(
   [demo-subscription]="$DEMO|demo/parameters.bicepparam|yes"
+  [demo-privileged]="$DEMO|demo/privileged.bicepparam|no"
 )
 check_identity() {
   local me tn
@@ -54,7 +56,7 @@ check_identity() {
   [ "$me" = "$USER_EXPECTED" ] && [ "$tn" = "$TENANT" ]
 }
 if [ $# -eq 0 ]; then
-  set -- demo-subscription
+  set -- demo-subscription demo-privileged
 fi
 for s in "$@"; do
   # The name is checked first, because under set -u an unknown name would stop the script inside

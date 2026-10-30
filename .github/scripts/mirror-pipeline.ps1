@@ -7,17 +7,18 @@
   A deployment from the pipeline is a plan followed by an apply, both jobs of one run of mirror-deploy-unit. The run
   starts with a push to master (a merged pull request) or with Run workflow on master. The plan signs in with the
   reader identity and runs the dry run and the gate. The apply waits for the required reviewers of the unit's
-  mirror-production environment, who did not start the run, and then deploys exactly what the plan showed. The
+  mirror-production or mirror-privileged environment, who did not start the run, and then deploys exactly what the plan showed. The
   workflows call this script in one of these modes:
 
     Hygiene        mirror-validate. Catches workflow files that could hand a deploy token to code nobody reviewed
                    (a check for mistakes, the controls are GitHub settings), and a job without the pipeline switch
                    (the repository variable MIRROR_PIPELINE_ENABLED)
-    PipelineScope  mirror-validate. Compiles every unit the pipeline may deploy, as Azure receives it (through
-                   its parameters file), and fails when one declares a Microsoft.Authorization resource (a role
-                   assignment, role definition, policy, exemption or lock) or a data-access grant not in the list
-                   of known grants. No pipeline deploy identity can write under Microsoft.Authorization, so those
-                   units go by hand
+    PipelineScope  mirror-validate. Compiles every unit as Azure receives it (through its parameters file). Fails
+                   when a production unit declares a role definition, a role assignment of Owner, User Access
+                   Administrator or Role Based Access Control Administrator, or a role assignment whose role the
+                   compiled template does not show, because a production deploy identity cannot write those and
+                   they belong in a privileged unit. Also fails when any unit declares a data-access grant not in
+                   the list of known grants
     InputCheck     mirror-pr, mirror-deploy-unit and mirror-drift, before the sign-in to Azure. Reads every Bicep
                    file of the checkout and refuses one that reads an environment variable, a registry module or a
                    file outside the repository, or uses a form this check does not read
@@ -29,10 +30,12 @@
                    Run workflow plans the one unit it names, after checking its inputs
     DeployPlan     mirror-deploy-unit, plan job. The dry run and the gate of one unit with its options. Writes the
                    verdict, the job summary and the reviewed plan
-    Collect        mirror-deploy-unit. Reads the reviewed plans and lists the units whose apply waits for a reviewer
-    CheckApply     mirror-deploy-unit, apply job, after the approval. First attempt, master still at the planned
-                   commit, the plan recent, the unit still enabled and still able to run in the pipeline
-    ComparePlan    mirror-deploy-unit, apply job. A fresh dry run shows the same records as the reviewed plan, apart
+    Collect        mirror-deploy-unit. Reads the reviewed plans and lists the units whose apply waits for a reviewer,
+                   one list for the production tier and one for the privileged tier
+    CheckApply     mirror-deploy-unit, apply and apply-privileged jobs, after the approval. First attempt, master
+                   still at the planned commit, the plan recent, the unit still enabled, still of the tier of the
+                   job and still able to run in the pipeline
+    ComparePlan    mirror-deploy-unit, apply and apply-privileged jobs. A fresh dry run shows the same records as the reviewed plan, apart
                    from the resources the options name
     DeploySummary  mirror-deploy-unit. Writes pipeline-deployment.json in the evidence and the job summary
 
@@ -41,6 +44,11 @@
   options it names, and the apply takes those options from the plan and never from anything typed again.
 
   With no -Mode the script only defines its functions, so a workflow step or the tests can dot-source it.
+  Every unit runs in the pipeline. A unit has a tier in deploy/units.json. A unit with no tier is production, and
+  its deploy identity cannot write an Owner-class role assignment or a role definition. The privileged tier holds
+  those, deployed by a separate identity through a separate environment with its own approvers. Tenant-kind units
+  are privileged and deploy at management group scope.
+
   Values reach the script through environment variables that the workflow sets with env:, never through text
   pasted into the command line.
 
@@ -71,7 +79,7 @@ $script:DefaultMaxPlanAgeHours = 24
 # Resource types that grant access to data through the resource's own settings. Contributor can write them, so a
 # pipeline unit may declare only the ones in $script:KnownDataGrants, each as "<unit>|<type> (<name in the
 # compiled template>)".
-# A new one goes to a unit deployed by hand, or into this list after IT reviews it as an access change.
+# A new one goes into this list after IT reviews it as an access change.
 $script:DataGrantTypes = @('Microsoft.KeyVault/vaults/accessPolicies', 'Microsoft.DocumentDB/databaseAccounts/*RoleAssignments',
   'Microsoft.DocumentDB/databaseAccounts/*RoleDefinitions', 'Microsoft.DocumentDB/databaseAccounts/*UserDefinitions',
   'Microsoft.Sql/servers/administrators', 'Microsoft.Sql/servers/azureADOnlyAuthentications',
@@ -299,24 +307,55 @@ function ConvertFrom-NameStatus([string[]]$Lines) {
   }
 }
 
-# Why a unit never runs in the pipeline, or $null when it may. Tenant units, the subscription units, the gateway
-# unit, the deploy-excluded units and the hash-excluded unit are deployed by hand ("route": "hand" in units.json).
-# A subscription unit's main.bicep holds the subscription's role assignments, policy and locks, which the
-# pipeline's deploy identities (Contributor, Mirror Budget Writer, Mirror Network Peering) cannot write. The kind
-# and name rules are a second barrier should the field be lost, and the PipelineScope check in mirror-validate is
-# a third.
-function Get-HandRouteReason($UnitDef) {
-  if ([string](Get-Prop $UnitDef 'kind') -eq 'tenant') { return 'a tenant-scope unit, deployed by hand' }
-  if ([string](Get-Prop $UnitDef 'route') -eq 'hand') { return 'marked "route": "hand" in deploy/units.json, deployed by hand' }
-  if (Test-SubscriptionMainUnit $UnitDef) { return "a subscription unit whose main.bicep holds role assignments, policy and locks, deployed by hand" }
-  $n = [string](Get-Prop $UnitDef 'name')
-  if ($n -like '*-deploy-excluded' -or $n -like '*-hash-excluded') { return 'a deploy-excluded or hash-excluded unit, deployed by hand' }
-  if (-not (Get-Prop $UnitDef 'subscription')) { return 'no subscription in deploy/units.json' }
+# The roles whose assignment only a privileged unit may declare: Owner, User Access Administrator and Role Based
+# Access Control Administrator.
+$script:PrivilegedRoleIds = @('8e3af657-a8ff-443c-a75c-2fe8c4bcb635', '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9', 'f58310d9-a9f6-439a-9e8d-f62e7b41a168')
+
+# The tier of a unit: 'production' when deploy/units.json gives it none, 'privileged' when it says so, and always
+# 'privileged' for a tenant-kind unit. Any other value gives $null, so a misspelled tier is refused by the callers
+# and never falls back to production.
+function Get-UnitTier($UnitDef) {
+  $t = Get-Prop $UnitDef 'tier'
+  $kind = [string](Get-Prop $UnitDef 'kind')
+  if ($null -eq $t) { if ($kind -ceq 'tenant') { return 'privileged' } else { return 'production' } }
+  if ($t -is [string] -and $t -ceq 'privileged') { return 'privileged' }
   return $null
 }
 
-# One of the 11 subscription units (a subscription folder's main.bicep). They deploy by hand, but the reader
-# identity can still preview them, so a code pull request previews them for information.
+# The scope name of a unit: its subscription folder, or 'tenant' for a tenant-kind unit.
+function Get-UnitScope($UnitDef) {
+  if ([string](Get-Prop $UnitDef 'kind') -ceq 'tenant') { return 'tenant' }
+  return [string](Get-Prop $UnitDef 'subscription')
+}
+
+# The GitHub environment of a unit: mirror-<tier>-<scope>, or $null when the tier is not one the pipeline knows.
+function Get-UnitEnvironment($UnitDef) {
+  $tier = Get-UnitTier $UnitDef
+  if ($null -eq $tier) { return $null }
+  return "mirror-$tier-$(Get-UnitScope $UnitDef)"
+}
+
+# Why a unit cannot be previewed, or $null. What-if cannot read a resource name with a # in it, so the unit that
+# holds the certificate with a # in its name never passes the gate.
+function Get-UnrunnableReason($UnitDef) {
+  $n = [string](Get-Prop $UnitDef 'name')
+  if ($n -like '*-hash-excluded') { return 'a resource name with a # in it, which what-if cannot preview' }
+  return $null
+}
+
+# The beginning of every resource ID a unit may name in allowCreate, allowModify and allowHeld, or $null when the
+# subscription of the unit is not in the list. A tenant-kind unit works at management group scope, and the groups it
+# declares sit beside its own, so the prefix is every management group.
+function Get-UnitIdPrefix($UnitDef, $UnitsDoc) {
+  if ([string](Get-Prop $UnitDef 'kind') -ceq 'tenant') { return '/providers/Microsoft.Management/managementGroups/' }
+  $subId = [string](Get-Prop (Get-Prop $UnitsDoc 'subscriptions') ([string](Get-Prop $UnitDef 'subscription')))
+  if (-not $subId) { return $null }
+  if ([string](Get-Prop $UnitDef 'kind') -ceq 'resourceGroup') { return "/subscriptions/$subId/resourceGroups/$(Get-Prop $UnitDef 'resourceGroup')/" }
+  return "/subscriptions/$subId/"
+}
+
+# One of the 11 subscription units (a subscription folder's main.bicep), the part of a subscription that is not
+# privileged.
 function Test-SubscriptionMainUnit($UnitDef) {
   return ([string](Get-Prop $UnitDef 'kind') -eq 'subscription' -and
           ([string](Get-Prop $UnitDef 'template')).Replace('\', '/') -match '^infra/subscriptions/[^/]+/main\.bicep$')
@@ -502,12 +541,21 @@ function Test-DeployRequest($Request, $UnitsDoc, $BoundariesDoc) {
     $unitDef = Find-UnitDef $UnitsDoc $unitName
     if ($null -eq $unitDef) { $errors += "unit '$unitName' is not in deploy/units.json at this commit" }
     else {
-      $hand = Get-HandRouteReason $unitDef
-      if ($hand) { $errors += "unit '$unitName' never runs in the pipeline: $hand" }
+      $unrunnable = Get-UnrunnableReason $unitDef
+      if ($unrunnable) { $errors += "unit '$unitName' cannot run in the pipeline: $unrunnable" }
+      if ($null -eq (Get-UnitTier $unitDef)) { $errors += "unit '$unitName' has the tier '$(Get-Prop $unitDef 'tier')' in deploy/units.json, which is neither absent (production) nor privileged" }
       if (-not [bool](Get-Prop $unitDef 'enabled')) { $errors += "unit '$unitName' is disabled in deploy/units.json at this commit. Enable it in a code pull request first" }
-      $sub = [string](Get-Prop $unitDef 'subscription')
-      if (-not (Get-Prop (Get-Prop $UnitsDoc 'subscriptions') $sub)) { $errors += "unit '$unitName' names subscription '$sub', which is not in the subscriptions list" }
-      if ($null -ne (Get-Prop $unitDef 'parameterOverrides')) { $errors += "unit '$unitName' has parameterOverrides, which the pipeline does not preview. Deploy it by hand" }
+      $kind = [string](Get-Prop $unitDef 'kind')
+      if ($kind -ceq 'tenant') {
+        if (Get-Prop $unitDef 'subscription') { $errors += "unit '$unitName' is a tenant-kind unit and must have no subscription in deploy/units.json" }
+        $mg = Get-Prop $unitDef 'managementGroup'
+        if (-not ($mg -is [string]) -or $mg -cnotmatch '^[A-Za-z0-9._()-]{1,90}$') { $errors += "unit '$unitName' is a tenant-kind unit and must name its managementGroup in deploy/units.json" }
+      } elseif ($kind -ceq 'resourceGroup' -or $kind -ceq 'subscription') {
+        $sub = [string](Get-Prop $unitDef 'subscription')
+        if (-not (Get-Prop (Get-Prop $UnitsDoc 'subscriptions') $sub)) { $errors += "unit '$unitName' names subscription '$sub', which is not in the subscriptions list" }
+        if ($null -ne (Get-Prop $unitDef 'managementGroup')) { $errors += "unit '$unitName' names a managementGroup, and only a tenant-kind unit may" }
+      } else { $errors += "unit '$unitName' has the kind '$kind', which is not resourceGroup, subscription or tenant" }
+      if ($null -ne (Get-Prop $unitDef 'parameterOverrides')) { $errors += "unit '$unitName' has parameterOverrides, which the pipeline does not preview" }
     }
   }
   $ref = Get-Prop $Request 'changeRef'
@@ -517,10 +565,9 @@ function Test-DeployRequest($Request, $UnitsDoc, $BoundariesDoc) {
   elseif ($reason.Length -gt 500) { $errors += 'reason is longer than 500 characters' }
   if (-not ((Get-Prop $Request 'acknowledgeReview') -is [bool])) { $errors += 'acknowledgeReview must be true or false' }
 
-  if ($null -ne $unitDef -and (Get-Prop (Get-Prop $UnitsDoc 'subscriptions') ([string](Get-Prop $unitDef 'subscription')))) {
-    $subId = [string](Get-Prop (Get-Prop $UnitsDoc 'subscriptions') ([string](Get-Prop $unitDef 'subscription')))
-    $prefix = "/subscriptions/$subId/"
-    if ([string](Get-Prop $unitDef 'kind') -eq 'resourceGroup') { $prefix = "/subscriptions/$subId/resourceGroups/$(Get-Prop $unitDef 'resourceGroup')/" }
+  $prefix = $null
+  if ($null -ne $unitDef) { $prefix = Get-UnitIdPrefix $unitDef $UnitsDoc }
+  if ($null -ne $unitDef -and $prefix) {
     # Read through PSObject, not Get-Prop, because a function return would unroll a list of one into a plain string.
     foreach ($f in @('allowCreate', 'allowModify', 'allowHeld')) {
       $p = $Request.PSObject.Properties[$f]
@@ -696,7 +743,7 @@ function Format-PlanMarkdown($Plan, $Verdict) {
   if ($o.acknowledgeReview) { $opts += 'acknowledgeReview' }
   foreach ($k in @('allowCreate', 'allowModify', 'allowHeld')) { if (@($o.$k).Count -gt 0) { $opts += "$k ($(@($o.$k).Count))" } }
   $lines = @("## Plan for $($Plan.unit)", '',
-    "- Subscription folder: $($Plan.subscription), environment mirror-production-$($Plan.subscription)",
+    "- Scope: $($Plan.scope), tier $($Plan.tier), environment $($Plan.environment)",
     "- Commit: $($Plan.commit), the tip of master when this run started",
     "- Started by: $($Plan.startedBy), $($Plan.trigger)",
     "- Change ticket: $($Plan.changeRef)",
@@ -816,14 +863,13 @@ function Get-UnitFiles($UnitsDoc, [string]$Root) {
   return $map
 }
 
-# The units a code change touches. Returns the units to preview (at most $script:MaxPreviewUnits), the
-# by-hand units it touches (never previewed here), and notes for the pull request comment. A change to a file
+# The units a code change touches. Returns the units to preview (at most $script:MaxPreviewUnits) and
+# notes for the pull request comment. A change to a file
 # that judges every unit (bicepconfig.json in any folder, deploy/boundaries.json, scripts/deploy-unit.ps1)
 # previews nothing, because such a change needs a sweep. Bicep reads the bicepconfig.json nearest to each file, so
 # one in a subfolder judges every file below it.
 function Resolve-AffectedUnits([string[]]$ChangedPaths, $UnitsDoc, $UnitFiles, [string[]]$ChangedUnitEntries = @(), [switch]$AfterMerge) {
   $preview = New-Object System.Collections.Generic.List[string]
-  $hand = New-Object System.Collections.Generic.List[string]
   $notes = New-Object System.Collections.Generic.List[string]
   $sweep = $false
   $hits = New-Object 'System.Collections.Generic.HashSet[string]'
@@ -836,7 +882,6 @@ function Resolve-AffectedUnits([string[]]$ChangedPaths, $UnitsDoc, $UnitFiles, [
       else { $notes.Add("$p changed. It judges every unit, so no single preview covers it. Run a read-only sweep of the enabled units before this is merged.") }
       continue
     }
-    if ($lp.StartsWith('infra/tenant/')) { $notes.Add("$p is read by the tenant units, which are deployed by hand and not previewed here."); continue }
     $found = $false
     foreach ($u in @(Get-Prop $UnitsDoc 'units')) {
       $n = [string]$u.name
@@ -845,22 +890,13 @@ function Resolve-AffectedUnits([string[]]$ChangedPaths, $UnitsDoc, $UnitFiles, [
     if (-not $found -and $lp.StartsWith('infra/')) { $notes.Add("$p is reached by no unit in deploy/units.json.") }
   }
   foreach ($n in @($ChangedUnitEntries)) { if ($n) { [void]$hits.Add($n) } }
-  $handPreviewed = New-Object System.Collections.Generic.List[string]
   foreach ($u in @(Get-Prop $UnitsDoc 'units')) {
     $n = [string]$u.name
     if (-not $hits.Contains($n)) { continue }
-    $why = Get-HandRouteReason $u
-    if ($why -and -not (Test-SubscriptionMainUnit $u)) { $hand.Add($n); continue }
-    if ($null -ne (Get-Prop $u 'parameterOverrides')) { $notes.Add("$n has parameterOverrides and is not previewed here. Preview it by hand."); continue }
-    if ($why) { $handPreviewed.Add($n) }
+    $why = Get-UnrunnableReason $u
+    if ($why) { $notes.Add("$n cannot be previewed or deployed in the pipeline: $why."); continue }
+    if ($null -ne (Get-Prop $u 'parameterOverrides')) { $notes.Add("$n has parameterOverrides and is not previewed here."); continue }
     $preview.Add($n)
-  }
-  if ($AfterMerge) {
-    if ($hand.Count -gt 0) { $notes.Add("By-hand units this push touches, never deployed by the pipeline: $($hand -join ', ').") }
-    if ($handPreviewed.Count -gt 0) { $notes.Add("Subscription units this push touches, deployed by hand and never by the pipeline: $($handPreviewed -join ', ').") }
-  } else {
-    if ($hand.Count -gt 0) { $notes.Add("By-hand units this change touches, not previewed here: $($hand -join ', ').") }
-    if ($handPreviewed.Count -gt 0) { $notes.Add("Subscription units this change touches, previewed here for information and deployed by hand: $($handPreviewed -join ', ').") }
   }
   if ($sweep -and $preview.Count -gt 0) { $preview.Clear() }
   if ($preview.Count -gt $script:MaxPreviewUnits) {
@@ -868,7 +904,7 @@ function Resolve-AffectedUnits([string[]]$ChangedPaths, $UnitsDoc, $UnitFiles, [
     else { $notes.Add("$($preview.Count) units are affected, more than the $($script:MaxPreviewUnits) a pull request previews. Run a read-only sweep instead.") }
     $preview.Clear()
   }
-  return [pscustomobject]@{ preview = [string[]]$preview.ToArray(); hand = [string[]]$hand.ToArray(); notes = [string[]]$notes.ToArray(); sweep = $sweep }
+  return [pscustomobject]@{ preview = [string[]]$preview.ToArray(); notes = [string[]]$notes.ToArray(); sweep = $sweep }
 }
 
 # Unit entries that differ between two copies of deploy/units.json (added or changed), so enabling a unit
@@ -887,11 +923,15 @@ function Get-ChangedUnitEntries($OldDoc, $NewDoc) {
 # The what-if a code pull request takes for one unit, with the same scope and file arguments deploy-unit.ps1
 # uses, at the validation level a reader identity can run.
 function Get-WhatIfArguments($UnitDef, $UnitsDoc, [string]$Root) {
-  $subId = [string](Get-Prop (Get-Prop $UnitsDoc 'subscriptions') ([string]$UnitDef.subscription))
   $name = ('whatif-{0}-{1}' -f $UnitDef.name, [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) -replace '[^A-Za-z0-9._()-]', '-'
   if ($name.Length -gt 64) { $name = $name.Substring(0, 64) }
-  if ([string]$UnitDef.kind -eq 'resourceGroup') { $a = @('deployment', 'group', 'what-if', '--subscription', $subId, '--resource-group', [string]$UnitDef.resourceGroup) }
-  else { $a = @('deployment', 'sub', 'what-if', '--subscription', $subId, '--location', [string](Get-Prop $UnitsDoc 'deploymentLocation')) }
+  $loc = [string](Get-Prop $UnitsDoc 'deploymentLocation')
+  if ([string]$UnitDef.kind -eq 'tenant') { $a = @('deployment', 'mg', 'what-if', '--management-group-id', [string](Get-Prop $UnitDef 'managementGroup'), '--location', $loc) }
+  else {
+    $subId = [string](Get-Prop (Get-Prop $UnitsDoc 'subscriptions') ([string]$UnitDef.subscription))
+    if ([string]$UnitDef.kind -eq 'resourceGroup') { $a = @('deployment', 'group', 'what-if', '--subscription', $subId, '--resource-group', [string]$UnitDef.resourceGroup) }
+    else { $a = @('deployment', 'sub', 'what-if', '--subscription', $subId, '--location', $loc) }
+  }
   $a += @('--name', $name)
   $prm = Get-Prop $UnitDef 'parameters'
   if ($prm) { $a += @('--parameters', (Join-RepoPath $Root ([string]$prm))) }
@@ -908,14 +948,34 @@ function Find-AuthorizationResources($Template, [string]$Path = '') {
   return @(Find-TemplateResources $Template @('Microsoft.Authorization/*') $Path)
 }
 
+# The privileged authorization a compiled template writes: a role definition, and a role assignment of Owner, User
+# Access Administrator or Role Based Access Control Administrator. A role assignment whose role the compiled
+# template does not show as a GUID (a parameter, say) counts too, because the check cannot tell which role it is.
+# Policy, exemptions, locks and the other role assignments pass. Returns one line per resource.
+function Find-PrivilegedAuthorization($Template, [string]$Path = '') {
+  $describe = {
+    param($Resource)
+    $type = [string](Get-Prop $Resource 'type')
+    if ($type -ieq 'Microsoft.Authorization/roleDefinitions') { return 'a role definition' }
+    $rid = Get-Prop (Get-Prop $Resource 'properties') 'roleDefinitionId'
+    if (-not ($rid -is [string])) { return 'the role cannot be read from the compiled template' }
+    $ids = @([regex]::Matches($rid, '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}') | ForEach-Object { $_.Value.ToLowerInvariant() })
+    if ($ids.Count -eq 0) { return 'the role cannot be read from the compiled template' }
+    foreach ($id in $ids) { if ($script:PrivilegedRoleIds -contains $id) { return "the role $id is Owner, User Access Administrator or Role Based Access Control Administrator" } }
+    return ''
+  }
+  return @(Find-TemplateResources $Template @('Microsoft.Authorization/roleDefinitions', 'Microsoft.Authorization/roleAssignments') $Path $describe)
+}
+
 # The data-access grants a compiled template writes ($script:DataGrantTypes), found the same way.
 function Find-DataAccessGrants($Template, [string]$Path = '') {
   return @(Find-TemplateResources $Template $script:DataGrantTypes $Path)
 }
 
 # The resources of a compiled template whose type matches one of $Types (wildcards allowed), as
-# "<module > ><type> (<symbolic name or name>)".
-function Find-TemplateResources($Template, [string[]]$Types, [string]$Path = '') {
+# "<module > ><type> (<symbolic name or name>)". With $Describe, a block that takes the resource and returns the
+# reason it counts, or an empty string when it does not, only those resources are returned, each with its reason.
+function Find-TemplateResources($Template, [string[]]$Types, [string]$Path = '', [scriptblock]$Describe = $null) {
   $hits = @()
   # The property is read here and not through Get-Prop, because a function hands back a list of one as the item
   # itself, and a template with one resource would then look like a template keyed by symbolic name.
@@ -935,11 +995,18 @@ function Find-TemplateResources($Template, [string[]]$Types, [string]$Path = '')
     $type = [string](Get-Prop $r 'type')
     $label = if ($i.key) { $i.key } else { [string](Get-Prop $r 'name') }
     if ($label.Length -gt 100) { $label = $label.Substring(0, 100) + '...' }
-    if (@($Types | Where-Object { $type -like $_ }).Count -gt 0) { $hits += "$Path$type ($label)" }
-    if ($null -ne (Get-Prop $r 'resources')) { $hits += @(Find-TemplateResources $r $Types $Path) }
+    if (@($Types | Where-Object { $type -like $_ }).Count -gt 0) {
+      # With a describing block, only a resource it gives a reason for is a hit.
+      if ($null -eq $Describe) { $hits += "$Path$type ($label)" }
+      else {
+        $why = [string](& $Describe $r)
+        if ($why) { $hits += "$Path$type ($label): $why" }
+      }
+    }
+    if ($null -ne (Get-Prop $r 'resources')) { $hits += @(Find-TemplateResources $r $Types $Path $Describe) }
     if ($type -ieq 'Microsoft.Resources/deployments') {
       $inner = Get-Prop (Get-Prop $r 'properties') 'template'
-      if ($null -ne $inner) { $hits += @(Find-TemplateResources $inner $Types "$Path$label > ") }
+      if ($null -ne $inner) { $hits += @(Find-TemplateResources $inner $Types "$Path$label > " $Describe) }
     }
   }
   return $hits
@@ -1061,7 +1128,7 @@ function Test-PipelineSwitch([string]$Condition) {
   return ($depth -eq 0)
 }
 
-# Workflow rules. A deploy token is issued to any job that names a production environment from master, whatever
+# Workflow rules. A deploy token is issued to any job that names a production or privileged environment from master, whatever
 # workflow file the job is in. These rules catch honest mistakes early. They are text matches and a determined
 # writer can get past them, and on a pull request they run the pull request's own copy of this file. The
 # controls are the production environments' branch policy (master only), the code owners' review and the push
@@ -1072,8 +1139,8 @@ function Test-WorkflowHygiene([hashtable]$Files) {
   foreach ($name in @($Files.Keys | Sort-Object)) {
     $body = (@(([string]$Files[$name]) -split "`r?`n" | Where-Object { -not $_.TrimStart().StartsWith('#') }) -join "`n")
     $deployWorkflow = Test-Same $name 'mirror-deploy-unit.yml'
-    if (-not $deployWorkflow -and $body -match 'mirror-production-') {
-      $errors += "${name}: names a mirror-production environment, and only mirror-deploy-unit.yml may"
+    if (-not $deployWorkflow -and $body -match 'mirror-(production|privileged)-') {
+      $errors += "${name}: names a mirror-production or mirror-privileged environment, and only mirror-deploy-unit.yml may"
     }
     # An environment name built from an expression could name a production environment without saying so.
     if (-not $deployWorkflow -and $body -match '(?m)^\s*environment:\s*(\$\{\{|\{[^}]*\$\{\{)|(?m)^\s*environment:\s*\n\s+name:\s*[''"]?\$\{\{') {
@@ -1149,17 +1216,21 @@ function Test-WorkflowHygiene([hashtable]$Files) {
       if ($body -notmatch '(?ms)^on:[ \t]*\n[ \t]+push:[ \t]*\n[ \t]+branches:[ \t]*\[[ \t]*master[ \t]*\]' -or $body -notmatch '(?m)^[ \t]+workflow_dispatch:') {
         $errors += "${name}: the deploy workflow must start on push with branches [ master ] and on workflow_dispatch, and on nothing else"
       }
-      # The apply is the only job in a production environment. It waits for the plan jobs through the collect job, and
-      # its environment is built from the matrix value the collect job wrote and nothing else.
+      # The apply and the apply-privileged jobs are the only jobs in a production or a privileged environment. They
+      # wait for the plan jobs through the collect job, and the environment is built from the matrix value the
+      # collect job wrote and nothing else.
       if ($jobsAt.Success) {
         foreach ($k in 0..($heads.Count - 1)) {
           $to = if ($k + 1 -lt $heads.Count) { $heads[$k + 1].Index } else { $jobText.Length }
           $job = $jobText.Substring($heads[$k].Index, $to - $heads[$k].Index)
           $jn = $heads[$k].Groups['job'].Value
           if ($jn -ceq 'apply') {
-            if ($job -notmatch '(?m)^    environment:[ \t]*mirror-production-\$\{\{ matrix\.subscription \}\}[ \t]*$') { $errors += "${name}: the apply job must have environment: mirror-production-`${{ matrix.subscription }} and no other environment" }
+            if ($job -notmatch '(?m)^    environment:[ \t]*mirror-production-\$\{\{ matrix\.scope \}\}[ \t]*$') { $errors += "${name}: the apply job must have environment: mirror-production-`${{ matrix.scope }} and no other environment" }
             if ($job -notmatch '(?m)^    needs:.*collect') { $errors += "${name}: the apply job must need the collect job" }
-          } elseif ($job -match 'mirror-production-') { $errors += "${name}: the job $jn names a mirror-production environment, and only the apply job may" }
+          } elseif ($jn -ceq 'apply-privileged') {
+            if ($job -notmatch '(?m)^    environment:[ \t]*mirror-privileged-\$\{\{ matrix\.scope \}\}[ \t]*$') { $errors += "${name}: the apply-privileged job must have environment: mirror-privileged-`${{ matrix.scope }} and no other environment" }
+            if ($job -notmatch '(?m)^    needs:.*collect') { $errors += "${name}: the apply-privileged job must need the collect job" }
+          } elseif ($job -match 'mirror-(production|privileged)-') { $errors += "${name}: the job $jn names a mirror-production or mirror-privileged environment, and only the apply and apply-privileged jobs may" }
         }
       }
     }
@@ -1275,23 +1346,27 @@ function Get-BicepparamUsing([string]$FullPath) {
   try { return [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $FullPath) (ConvertTo-NativePath $m.Groups[1].Value))) } catch { return '' }
 }
 
-# Every unit the pipeline may deploy (no by-hand reason, enabled or not) is compiled as Azure receives it, through
-# its parameters file when it has one (bicep build-params, whose template is the one the using line names, and
-# that must be the unit's template in deploy/units.json), else through its template. None may write a
-# Microsoft.Authorization resource. No deploy identity holds a role that writes one (Contributor excludes those
-# writes, and Mirror Budget Writer and Mirror Network Peering have none), so a role assignment, policy or lock in
-# such a unit would fail in the middle of a deployment, and a deploy identity that could write role assignments
-# could raise its own rights. Those resources stay in the units deployed by hand.
+# Every unit (enabled or not) is compiled as Azure receives it, through its parameters file when it has one (bicep
+# build-params, whose template is the one the using line names, and that must be the unit's template in
+# deploy/units.json), else through its template. A production unit may declare no role definition and no role
+# assignment of Owner, User Access Administrator or Role Based Access Control Administrator, and none whose role the
+# compiled template does not show. A production deploy identity holds a role-assignment right limited by a condition
+# that excludes those three roles, so such a record would fail in the middle of a deployment, and an identity that
+# could write them could raise its own rights. Those records sit in the privileged unit of the subscription.
+# Policy, exemptions, locks and the other role assignments are allowed in both tiers.
 # Contributor can grant access to data through a resource's own settings, so a data-access grant of the types in
 # $script:DataGrantTypes must be one of $script:KnownDataGrants.
 function Invoke-PipelineScopeMode {
   $root = $script:RepoRoot
   $units = Read-JsonFile (Join-RepoPath $root 'deploy/units.json')
   $bicep = Get-BicepExe
-  $errors = @(); $checked = 0; $grants = 0
+  $errors = @(); $checked = 0; $grants = 0; $production = 0; $privileged = 0
   foreach ($u in @(Get-Prop $units 'units')) {
-    if (Get-HandRouteReason $u) { continue }
-    $name = [string](Get-Prop $u 'name'); $tpl = [string](Get-Prop $u 'template'); $prm = [string](Get-Prop $u 'parameters')
+    $name = [string](Get-Prop $u 'name')
+    $tier = Get-UnitTier $u
+    if ($null -eq $tier) { $errors += "${name}: the tier '$(Get-Prop $u 'tier')' is neither absent (production) nor privileged"; continue }
+    if ($tier -ceq 'privileged') { $privileged++ } else { $production++ }
+    $tpl = [string](Get-Prop $u 'template'); $prm = [string](Get-Prop $u 'parameters')
     $full = Join-RepoPath $root $tpl
     if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { $errors += "${name}: the template $tpl is not in the repository"; continue }
     $doc = $null
@@ -1312,20 +1387,22 @@ function Invoke-PipelineScopeMode {
       if ($r.Code -ne 0) { $errors += "${name}: bicep build of $tpl failed (exit $($r.Code)). $(ConvertTo-OneLine $r.Err)"; continue }
       try { $doc = ConvertFrom-Json @MirrorJsonArgs -InputObject ($r.Out -join "`n") } catch { $errors += "${name}: the compiled $tpl is not valid JSON. $($_.Exception.Message)"; continue }
     }
-    foreach ($h in @(Find-AuthorizationResources $doc)) {
-      $errors += "$name is a pipeline unit but declares $h. A pipeline deploy identity cannot write under Microsoft.Authorization. Mark the unit ""route"": ""hand"" in deploy/units.json, or move the resource to a unit deployed by hand"
+    if ($tier -ceq 'production') {
+      foreach ($h in @(Find-PrivilegedAuthorization $doc)) {
+        $errors += "$name is a production unit but declares $h. A production deploy identity cannot write it. Move the resource to the privileged unit of the subscription (a unit with ""tier"": ""privileged"" in deploy/units.json)"
+      }
     }
     foreach ($h in @(Find-DataAccessGrants $doc)) {
       $grants++
       if (-not (Test-InList $script:KnownDataGrants "$name|$h")) {
-        $errors += "$name is a pipeline unit and declares the data-access grant $h, which is not in the list of known grants in .github/scripts/mirror-pipeline.ps1. Contributor can write it, so a new one is an access change. Move it to a unit deployed by hand, or add it to the list after IT reviews it"
+        $errors += "$name is a unit and declares the data-access grant $h, which is not in the list of known grants in .github/scripts/mirror-pipeline.ps1. Contributor can write it, so a new one is an access change. Add it to the list after IT reviews it"
       }
     }
     $checked++
     Write-Host "$name ($(if ($prm -match '\.bicepparam$') { $prm } else { $tpl })) compiled"
   }
-  if ($errors.Count -gt 0) { Stop-WithErrors 'A unit the pipeline may deploy declares role assignments, policy, locks or a new data-access grant' $errors }
-  Write-Summary @("Pipeline units: $checked compiled. None declares a Microsoft.Authorization resource. $grants data-access grant(s), each in the list of known grants.")
+  if ($errors.Count -gt 0) { Stop-WithErrors 'A unit declares privileged authorization in the production tier, or a new data-access grant' $errors }
+  Write-Summary @("Units: $checked compiled. $production production units declare no role definition and no Owner, User Access Administrator or Role Based Access Control Administrator assignment, $privileged privileged units. $grants data-access grant(s), each in the list of known grants.")
 }
 
 # True when the code in the working folder is the trusted commit itself. The workflow sets both values in the step
@@ -1552,7 +1629,7 @@ function Invoke-SelectMode {
     }
     $chk = Test-DeployRequest $req $units $bounds
     if (@($chk.errors).Count -gt 0) { Stop-WithErrors 'The inputs of this run do not pass their checks' $chk.errors }
-    $rows += [ordered]@{ unit = $req.unit; subscription = [string]$chk.unitDef.subscription; trigger = 'Run workflow'
+    $rows += [ordered]@{ unit = $req.unit; subscription = [string]$chk.unitDef.subscription; scope = Get-UnitScope $chk.unitDef; tier = Get-UnitTier $chk.unitDef; trigger = 'Run workflow'
                          apply = $(if ((Get-EnvValue 'APPLY') -eq 'true') { 'true' } else { 'false' }); startedBy = $actor
                          changeRef = $req.changeRef; reason = $req.reason; options = (ConvertTo-OptionsJson (Get-DeployOptions $req)) }
   } elseif ($evt -eq 'push') {
@@ -1580,11 +1657,12 @@ function Invoke-SelectMode {
     $off = 0
     foreach ($n in @($res.preview)) {
       $u = Find-UnitDef $units $n
-      if (Get-HandRouteReason $u) { continue }
+      if (Get-UnrunnableReason $u) { continue }
       if (-not [bool](Get-Prop $u 'enabled')) { $off++; continue }
-      # The client ID of the deploy identity lives in the environment of the subscription, not in deploy/units.json.
+      if ($null -eq (Get-UnitTier $u)) { $notes += "$n has a tier that is neither absent nor privileged, so it is not planned."; continue }
+      # The client ID of the deploy identity lives in the environment of the unit's scope, not in deploy/units.json.
       # The apply job stops with a clear message when the environment has none, so the plan does not look for it.
-      $rows += [ordered]@{ unit = $n; subscription = [string]$u.subscription; trigger = 'push'; apply = 'true'; startedBy = $actor
+      $rows += [ordered]@{ unit = $n; subscription = [string]$u.subscription; scope = Get-UnitScope $u; tier = Get-UnitTier $u; trigger = 'push'; apply = 'true'; startedBy = $actor
                            changeRef = ''; reason = ''; options = (ConvertTo-OptionsJson (Get-DeployOptions ([pscustomobject]@{}))) }
     }
     if ($off -gt 0) { $notes += "$off unit(s) this push touches are not enabled in deploy/units.json, so they are not planned." }
@@ -1643,7 +1721,8 @@ function Invoke-DeployPlanMode {
   $approvable = (-not $v.technical -and [bool]$v.approvable)
   $offer = ($approvable -and $applyAsked -and ($trigger -ne 'push' -or $hasChanges))
   $plan = [ordered]@{
-    schema = 1; unit = $req.unit; subscription = [string]$chk.unitDef.subscription; commit = $sha
+    schema = 2; unit = $req.unit; subscription = [string]$chk.unitDef.subscription; scope = Get-UnitScope $chk.unitDef; tier = Get-UnitTier $chk.unitDef
+    environment = Get-UnitEnvironment $chk.unitDef; commit = $sha
     planned = [DateTimeOffset]::UtcNow.ToString('o'); trigger = $trigger; startedBy = Get-EnvValue 'STARTED_BY' 'unknown'
     changeRef = $req.changeRef; reason = $req.reason; applyRequested = $applyAsked
     options = [ordered]@{ acknowledgeReview = $opts.acknowledgeReview; allowCreate = @($opts.allowCreate); allowModify = @($opts.allowModify); allowHeld = @($opts.allowHeld) }
@@ -1660,7 +1739,7 @@ function Invoke-DeployPlanMode {
     if ($null -ne $gate) {
       $h = Get-ExceptionHints $gate $req.unit
       if ($h.lines.Count -gt 0) { $tail += @('', 'What the options could accept:') + @($h.lines) }
-      if ($h.accepted) { $tail += @('', 'To deploy it with those options, start the same unit by hand. Fill in the ticket and the reason, and check each ID first.', '', '```text', $h.command, '```') }
+      if ($h.accepted) { $tail += @('', 'To deploy it with those options, start Run workflow for the same unit. Fill in the ticket and the reason, and check each ID first.', '', '```text', $h.command, '```') }
     }
     Write-Summary (@($md) + $tail)
     exit 1
@@ -1673,7 +1752,8 @@ function Invoke-DeployPlanMode {
   exit 0
 }
 
-# After the plan jobs. Reads each reviewed plan and lists the units whose apply waits for a reviewer.
+# After the plan jobs. Reads each reviewed plan and lists the units whose apply waits for a reviewer, the production
+# units in applyMatrix and the privileged ones in privilegedMatrix.
 function Invoke-CollectMode {
   $sha = Get-EnvValue 'GITHUB_SHA'
   $want = @(); $mt = Get-EnvValue 'MATRIX'
@@ -1683,24 +1763,26 @@ function Invoke-CollectMode {
     foreach ($f in @(Get-ChildItem -LiteralPath $Dir -Recurse -Filter 'plan.json' -File)) { $plans += Read-JsonFile $f.FullName }
   }
   $unitsDoc = Read-JsonFile (Join-RepoPath $script:RepoRoot 'deploy/units.json')
-  $apply = @(); $lines = @('## Plans of this run', '', '| Unit | Gate | Counts | What happens next |', '|---|---|---|---|')
+  $apply = @(); $privileged = @(); $lines = @('## Plans of this run', '', '| Unit | Gate | Counts | What happens next |', '|---|---|---|---|')
   foreach ($w in $want) {
     $p = @($plans | Where-Object { (Test-Same ([string]$_.unit) ([string]$w.unit)) -and (Test-Same ([string]$_.commit) $sha) })
     if ($p.Count -ne 1) { $lines += "| $($w.unit) | none | none | The plan did not finish, so nothing deploys. Read the plan job. |"; continue }
     $x = $p[0]
     $def = Find-UnitDef $unitsDoc ([string]$x.unit)
-    $subOk = ($null -ne $def -and (Test-Same ([string]$x.subscription) ([string](Get-Prop $def 'subscription'))))
-    if ($x.offerApply -and -not $subOk) { $lines += "| $($x.unit) | $($x.gate) | $($x.counts) | The plan names a subscription folder that deploy/units.json does not give this unit, so nothing deploys. |"; continue }
+    $defOk = ($null -ne $def -and $null -ne (Get-UnitTier $def) -and (Test-Same ([string]$x.scope) (Get-UnitScope $def)) -and (Test-Same ([string]$x.tier) (Get-UnitTier $def)))
+    if ($x.offerApply -and -not $defOk) { $lines += "| $($x.unit) | $($x.gate) | $($x.counts) | The plan names a scope or a tier that deploy/units.json does not give this unit, so nothing deploys. |"; continue }
     $next = if ($x.offerApply) { 'Waiting for a reviewer in the apply job.' }
             elseif (-not $x.approvable) { 'Not approvable. Nothing deploys.' }
             elseif (-not $x.applyRequested) { 'Plan only.' }
             else { 'Nothing to deploy.' }
     $lines += "| $($x.unit) | $($x.gate) | $($x.counts) | $next |"
-    if ($x.offerApply -and ([string]$x.unit) -cmatch '^[a-z0-9]+(?:-[a-z0-9]+)*\z' -and ([string]$x.subscription) -cmatch '^[a-z0-9]+(?:-[a-z0-9]+)*\z') {
-      $apply += [ordered]@{ unit = [string]$x.unit; subscription = [string]$x.subscription }
+    if ($x.offerApply -and ([string]$x.unit) -cmatch '^[a-z0-9]+(?:-[a-z0-9]+)*\z' -and ([string]$x.scope) -cmatch '^[a-z0-9]+(?:-[a-z0-9]+)*\z') {
+      $row = [ordered]@{ unit = [string]$x.unit; scope = [string]$x.scope }
+      if ((Get-UnitTier $def) -ceq 'privileged') { $privileged += $row } else { $apply += $row }
     }
   }
   Set-StepOutput 'applyMatrix' $(if ($apply.Count -gt 0) { ConvertTo-CompactJson @($apply) } else { '[]' })
+  Set-StepOutput 'privilegedMatrix' $(if ($privileged.Count -gt 0) { ConvertTo-CompactJson @($privileged) } else { '[]' })
   Write-Summary $lines
 }
 
@@ -1718,7 +1800,8 @@ function Get-ReviewedPlan([string]$Folder) {
 # Before the apply signs in. Nothing may have moved since the reviewer read the plan.
 function Invoke-CheckApplyMode {
   if ((Get-EnvValue 'GITHUB_RUN_ATTEMPT') -ne '1') { Stop-Check 're-runs never deploy. Start the deployment again with Run workflow on master' 2 }
-  $sha = Get-EnvValue 'GITHUB_SHA'; $unit = Get-EnvValue 'UNIT'
+  $sha = Get-EnvValue 'GITHUB_SHA'; $unit = Get-EnvValue 'UNIT'; $tierWanted = Get-EnvValue 'TIER'
+  if ($tierWanted -cne 'production' -and $tierWanted -cne 'privileged') { Stop-Check "the job names the tier '$tierWanted', and it must be production or privileged" 2 }
   $head = ((Invoke-Git @('rev-parse', 'HEAD')).Out -join '').Trim()
   if (-not (Test-Same $head $sha)) { Stop-Check "checked out $head, the run is at $sha" 2 }
   $dirty = ((Invoke-Git @('status', '--porcelain')).Out -join "`n").Trim()
@@ -1732,7 +1815,15 @@ function Invoke-CheckApplyMode {
   $unitsNow = Read-JsonFile (Join-RepoPath $script:RepoRoot 'deploy/units.json')
   $defNow = Find-UnitDef $unitsNow $unit
   if ($null -eq $defNow) { $errors += "unit '$unit' is not in deploy/units.json" }
-  elseif (-not (Test-Same ([string]$plan.subscription) ([string](Get-Prop $defNow 'subscription')))) { $errors += "the reviewed plan names the subscription folder '$($plan.subscription)', and deploy/units.json gives unit '$unit' the folder '$(Get-Prop $defNow 'subscription')'" }
+  else {
+    $tierNow = Get-UnitTier $defNow
+    if ($null -eq $tierNow) { $errors += "unit '$unit' has a tier in deploy/units.json that is neither absent (production) nor privileged" }
+    else {
+      if (-not (Test-Same ([string]$plan.tier) $tierWanted)) { $errors += "the reviewed plan is of the tier '$($plan.tier)', and this job deploys the tier $tierWanted" }
+      if (-not (Test-Same $tierNow $tierWanted)) { $errors += "deploy/units.json gives unit '$unit' the tier $tierNow, and this job deploys the tier $tierWanted" }
+    }
+    if (-not (Test-Same ([string]$plan.scope) (Get-UnitScope $defNow))) { $errors += "the reviewed plan names the scope '$($plan.scope)', and deploy/units.json gives unit '$unit' the scope '$(Get-UnitScope $defNow)'" }
+  }
   if ($errors.Count -gt 0) { Stop-WithErrors 'The reviewed plan is not the one this job deploys' $errors }
   $tip = Get-MasterTip
   if ($tip -cne $sha) { Stop-Check "master moved to $tip after the plan of commit $sha was reviewed. Nothing is deployed. Start the deployment again with Run workflow on master, so a new plan is reviewed" }

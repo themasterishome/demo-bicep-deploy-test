@@ -74,11 +74,11 @@ $pilot = @($units.units | Where-Object { $_.name -eq 'pilot-empty-rg' })[0]
 # whatever the checkout holds, and the gate runs below on a copy of the repository that holds this copy.
 $bounds.holds = @($bounds.holds) + @(ConvertFrom-Json '{ "type": "Microsoft.Compute/virtualMachines/extensions", "namePattern": "(?i)(OsUpdateExtension|PatchExtension)$", "reason": "A hold for the tests." }')
 $bounds.boundaries = @($bounds.boundaries) + @(ConvertFrom-Json '{ "type": "Microsoft.HybridCompute/machines/extensions", "path": "properties.settings.updateConfiguration.startTime", "changeTypes": [ "Modify" ], "onDeploy": "review", "reason": "A review boundary for the tests.", "note": "Read before acknowledging." }')
-# The tests of the by-hand rules judge a gateway unit, a tenant unit, a deploy-excluded and a hash-excluded unit,
-# which this estate does not have. They take a copy of the file with one of each added.
-$unitsHand = Copy-Object $unitsOn
-$extraUnits = ConvertFrom-Json '[ { "name": "demo-vpn-gateways", "kind": "subscription", "subscription": "demo", "resourceGroup": null, "template": "infra/subscriptions/demo/network-gateways.bicep", "route": "hand", "enabled": false }, { "name": "tenant-demo-groups", "kind": "tenant", "subscription": null, "resourceGroup": null, "template": "infra/tenant/management-groups/main.bicep", "route": "hand", "enabled": false }, { "name": "rg-demo-network-deploy-excluded", "kind": "resourceGroup", "subscription": "demo", "resourceGroup": "rg-demo-network", "template": "infra/subscriptions/demo/resource-groups/rg-demo-network.deploy-excluded.bicep", "route": "hand", "enabled": false }, { "name": "rg-demo-web-hash-excluded", "kind": "resourceGroup", "subscription": "demo", "resourceGroup": "rg-demo-web", "template": "infra/subscriptions/demo/resource-groups/rg-demo-web.hash-excluded.bicep", "route": "hand", "enabled": false } ]'
-$unitsHand.units = @($unitsHand.units) + @($extraUnits | ForEach-Object { $_ })
+# The tests of the hash-excluded rule judge a unit whose name ends in -hash-excluded, which this estate does not have.
+# They take a copy of the file with one added.
+$extraUnit = ConvertFrom-Json '{ "name": "rg-demo-web-hash-excluded", "kind": "resourceGroup", "subscription": "demo", "resourceGroup": "rg-demo-web", "template": "infra/subscriptions/demo/resource-groups/rg-demo-web.hash-excluded.bicep", "parameters": null, "enabled": false }'
+$unitsHash = Copy-Object $unitsOn
+$unitsHash.units = @($unitsHash.units) + @($extraUnit)
 $subId = [string]$units.subscriptions.($pilot.subscription)
 $rgPrefix = "/subscriptions/$subId/resourceGroups/$($pilot.resourceGroup)/providers"
 $inScope = "$rgPrefix/Microsoft.Storage/storageAccounts/st1"
@@ -108,11 +108,47 @@ $zw = [string][char]0x200B
 Assert-Contains @((Test-DeployRequest (New-Request @{ unit = 'pilot-empty-rg' + $zw }) $unitsOn $bounds).errors) 'unit must be a unit name*' 'a unit name with a zero-width space is refused'
 Assert-True ($null -eq (Find-UnitDef $unitsOn ('pilot-empty-rg' + $zw))) 'the unit lookup compares exact characters'
 Assert-True ($null -ne (Find-UnitDef $unitsOn 'pilot-empty-rg')) 'the unit lookup finds the plain name'
-$on2 = Copy-Object $unitsHand; (@($on2.units) | Where-Object { $_.name -eq 'demo-vpn-gateways' }).enabled = $true
-Assert-Contains @((Test-DeployRequest (New-Request @{ unit = 'demo-vpn-gateways' }) $on2 $bounds).errors) '*never runs in the pipeline*' 'a by-hand unit is refused'
-Assert-Contains @((Test-DeployRequest (New-Request @{ unit = 'tenant-demo-groups' }) $unitsHand $bounds).errors) '*never runs in the pipeline*' 'a tenant unit is refused'
-$noRoute = Copy-Object $on2; (@($noRoute.units) | Where-Object { $_.name -eq 'rg-demo-network-deploy-excluded' }).PSObject.Properties.Remove('route')
-Assert-True ($null -ne (Get-HandRouteReason (@($noRoute.units) | Where-Object { $_.name -eq 'rg-demo-network-deploy-excluded' }))) 'a deploy-excluded unit stays by hand even without its route field'
+# Every unit runs in the pipeline. The tier decides the environment, the identity and the approvers.
+function Enable-Unit($Doc, [string]$Name) { $c = Copy-Object $Doc; $u = @($c.units) | Where-Object { $_.name -eq $Name }; $u.enabled = $true; return $c }
+$on2 = Enable-Unit $unitsOn 'rg-demo-routing'
+Assert-Equal 0 @((Test-DeployRequest (New-Request @{ unit = 'rg-demo-routing' }) $on2 $bounds).errors).Count 'the gateway unit is a production unit and passes'
+$onT = Enable-Unit $unitsOn 'demo-tenant-management-group'
+Assert-Equal 0 @((Test-DeployRequest (New-Request @{ unit = 'demo-tenant-management-group' }) $onT $bounds).errors).Count 'a tenant unit passes when enabled'
+Assert-Contains @((Test-DeployRequest (New-Request @{ unit = 'demo-tenant-management-group' }) $unitsOn $bounds).errors) '*is disabled*' 'a disabled tenant unit is refused'
+$onG = Enable-Unit $unitsOn 'demo-tenant-governance'
+$mgPrefix = '/providers/Microsoft.Management/managementGroups/mg-demo/providers/Microsoft.Authorization/roleAssignments/x1'
+Assert-Equal 0 @((Test-DeployRequest (New-Request @{ unit = 'demo-tenant-governance'; allowModify = [string[]]@($mgPrefix) }) $onG $bounds).errors).Count 'an allowModify ID under the management group passes for a tenant unit'
+Assert-Contains @((Test-DeployRequest (New-Request @{ unit = 'demo-tenant-governance'; allowModify = [string[]]@($inScope) }) $onG $bounds).errors) "*not inside the unit's scope*" 'a subscription ID is refused for a tenant unit'
+$onT2 = Copy-Object $onT; (@($onT2.units) | Where-Object { $_.name -eq 'demo-tenant-management-group' }).managementGroup = 'bad name'
+Assert-Contains @((Test-DeployRequest (New-Request @{ unit = 'demo-tenant-management-group' }) $onT2 $bounds).errors) '*must name its managementGroup*' 'a tenant unit with a bad management group name is refused'
+$onT3 = Copy-Object $onT; (@($onT3.units) | Where-Object { $_.name -eq 'demo-tenant-management-group' }).subscription = 'demo'
+Assert-Contains @((Test-DeployRequest (New-Request @{ unit = 'demo-tenant-management-group' }) $onT3 $bounds).errors) '*must have no subscription*' 'a tenant unit with a subscription is refused'
+$onB = Copy-Object $unitsOn; $pu = @($onB.units) | Where-Object { $_.name -eq 'pilot-empty-rg' }; $pu | Add-Member -NotePropertyName tier -NotePropertyValue 'priviledged' -Force
+Assert-True ($null -eq (Get-UnitTier $pu)) 'a misspelled tier gives no tier'
+Assert-Contains @((Test-DeployRequest (New-Request) $onB $bounds).errors) '*neither absent (production) nor privileged*' 'a misspelled tier is refused, it never falls back to production'
+$pu.tier = 'Privileged'
+Assert-True ($null -eq (Get-UnitTier $pu)) 'the tier is compared by exact characters'
+Assert-Equal 'production' (Get-UnitTier (@($units.units) | Where-Object { $_.name -eq 'rg-demo-network' })) 'a unit with no tier is production'
+Assert-Equal 'privileged' (Get-UnitTier (@($units.units) | Where-Object { $_.name -eq 'demo-tenant-management-group' })) 'a tenant unit is privileged'
+Assert-Equal 'mirror-privileged-tenant' (Get-UnitEnvironment (@($units.units) | Where-Object { $_.name -eq 'demo-tenant-management-group' })) 'a tenant unit uses mirror-privileged-tenant'
+Assert-Equal 'mirror-production-demo' (Get-UnitEnvironment (@($units.units) | Where-Object { $_.name -eq 'demo-subscription' })) 'a production unit uses mirror-production-<folder>'
+Assert-Equal 'mirror-privileged-demo' (Get-UnitEnvironment (@($units.units) | Where-Object { $_.name -eq 'demo-privileged' })) 'a privileged subscription unit uses mirror-privileged-<folder>'
+Assert-Equal 'tenant' (Get-UnitScope (@($units.units) | Where-Object { $_.name -eq 'demo-tenant-management-group' })) 'the scope of a tenant unit is tenant'
+Assert-Equal 'demo' (Get-UnitScope (@($units.units) | Where-Object { $_.name -eq 'demo-subscription' })) 'the scope of a subscription unit is its folder'
+$on3 = Enable-Unit $unitsHash 'rg-demo-web-hash-excluded'
+Assert-Contains @((Test-DeployRequest (New-Request @{ unit = 'rg-demo-web-hash-excluded' }) $on3 $bounds).errors) '*cannot run in the pipeline*' 'the hash-excluded unit is refused, what-if cannot preview its name'
+$on4 = Enable-Unit $unitsOn 'demo-subscription'
+Assert-Equal 0 @((Test-DeployRequest (New-Request @{ unit = 'demo-subscription' }) $on4 $bounds).errors).Count 'a subscription unit (main.bicep) passes when enabled'
+$on5 = Enable-Unit $unitsOn 'demo-privileged'
+Assert-Equal 0 @((Test-DeployRequest (New-Request @{ unit = 'demo-privileged' }) $on5 $bounds).errors).Count 'a privileged subscription unit passes when enabled'
+$allOn = Copy-Object $unitsOn; foreach ($u in @($allOn.units)) { $u.enabled = $true }
+$bad = @()
+foreach ($u in @($allOn.units)) {
+  if (Get-UnrunnableReason $u) { continue }
+  $r = @((Test-DeployRequest (New-Request @{ unit = [string]$u.name }) $allOn $bounds).errors)
+  if ($r.Count -gt 0) { $bad += "$($u.name): $($r -join '; ')" }
+}
+Assert-Equal 0 $bad.Count "every unit but the hash-excluded one passes the request check when enabled ($($bad -join ' | '))"
 Assert-Contains @((Test-DeployRequest (New-Request @{ changeRef = 'a b' }) $unitsOn $bounds).errors) 'changeRef must*' 'a change reference with a space is refused'
 Assert-Contains @((Test-DeployRequest (New-Request @{ reason = ' ' }) $unitsOn $bounds).errors) 'reason must*' 'an empty reason is refused'
 Assert-Contains @((Test-DeployRequest (New-Request @{ reason = ('x' * 501) }) $unitsOn $bounds).errors) 'reason is longer*' 'a reason over 500 characters is refused'
@@ -125,15 +161,12 @@ Assert-Contains @((Test-DeployRequest (New-Request @{ allowCreate = [string[]]@(
 Assert-Contains @((Test-DeployRequest (New-Request @{ allowCreate = 'not-a-list' }) $unitsOn $bounds).errors) 'allowCreate must be a list*' 'an ID list must be a list'
 Assert-Equal 0 @((Test-DeployRequest (New-Request @{ allowHeld = [string[]]@($held) }) $unitsOn $bounds).errors).Count 'an allowHeld ID that matches a hold passes'
 Assert-Contains @((Test-DeployRequest (New-Request @{ allowHeld = [string[]]@($inScope) }) $unitsOn $bounds).errors) '*matches no hold*' 'an allowHeld ID without a hold is refused'
-$on3 = Copy-Object $unitsHand; $hx = @($on3.units) | Where-Object { $_.name -eq 'rg-demo-web-hash-excluded' }; $hx.enabled = $true; $hx.PSObject.Properties.Remove('route')
-Assert-Contains @((Test-DeployRequest (New-Request @{ unit = 'rg-demo-web-hash-excluded' }) $on3 $bounds).errors) '*never runs in the pipeline*' 'a hash-excluded unit stays by hand even without its route field'
-$on4 = Copy-Object $unitsOn; (@($on4.units) | Where-Object { $_.name -eq 'demo-subscription' }).enabled = $true
-Assert-Contains @((Test-DeployRequest (New-Request @{ unit = 'demo-subscription' }) $on4 $bounds).errors) '*never runs in the pipeline*' 'a subscription unit (main.bicep) is refused, it deploys by hand'
-$on5 = Copy-Object $on4; (@($on5.units) | Where-Object { $_.name -eq 'demo-subscription' }).PSObject.Properties.Remove('route')
-Assert-Contains @((Test-DeployRequest (New-Request @{ unit = 'demo-subscription' }) $on5 $bounds).errors) '*main.bicep holds role assignments*' 'a subscription unit stays by hand even without its route field'
 $subMain = @(@($units.units) | Where-Object { Test-SubscriptionMainUnit $_ })
 Assert-Equal 1 $subMain.Count 'the 1 subscription unit is found by its main.bicep'
-Assert-Equal 0 @($subMain | Where-Object { [string]$_.route -ne 'hand' }).Count 'it is marked "route": "hand" in deploy/units.json'
+Assert-Equal 0 @($units.units | Where-Object { $null -ne $_.PSObject.Properties['route'] }).Count 'no unit has a route field any more'
+Assert-Equal 7 @($units.units).Count 'deploy/units.json lists 7 units'
+Assert-Equal 1 @($units.units | Where-Object { $_.kind -eq 'subscription' -and $null -eq $_.PSObject.Properties['tier'] }).Count 'there is 1 production subscription unit'
+Assert-Equal 3 @($units.units | Where-Object { $null -ne $_.PSObject.Properties['tier'] -and $_.tier -ceq 'privileged' }).Count 'there are 3 privileged units (1 subscription, 2 tenant)'
 $o = Get-DeployOptions (New-Request @{ acknowledgeReview = $true; allowModify = [string[]]@($inScope) })
 Assert-True ($o.acknowledgeReview -and $o.allowModify.Count -eq 1 -and $o.allowCreate.Count -eq 0) 'the options are read from a request'
 
@@ -218,9 +251,11 @@ try {
   [IO.File]::WriteAllText($wi, $text)
   $nsg = "$rgPrefix/Microsoft.Network/networkSecurityGroups/nsg1"
   $gr = Join-Path $tmp 'gate-repo'
-  foreach ($d in @('scripts', 'deploy', (Split-Path -Parent ([string]$pilot.template)))) { New-Item -ItemType Directory -Force -Path (Join-Path $gr $d) | Out-Null }
+  foreach ($d in @('scripts', 'deploy', (Split-Path -Parent ([string]$pilot.template)), 'infra/tenant')) { New-Item -ItemType Directory -Force -Path (Join-Path $gr $d) | Out-Null }
   Copy-Item -LiteralPath (Join-Path $repo 'scripts/deploy-unit.ps1') -Destination (Join-Path $gr 'scripts/deploy-unit.ps1')
   Copy-Item -LiteralPath (Join-Path $repo ([string]$pilot.template)) -Destination (Join-Path $gr ([string]$pilot.template))
+  Copy-Item -LiteralPath (Join-Path $repo 'infra/tenant/governance.bicep') -Destination (Join-Path $gr 'infra/tenant/governance.bicep')
+  Copy-Item -LiteralPath (Join-Path $repo 'infra/tenant/governance.mg-demo.bicepparam') -Destination (Join-Path $gr 'infra/tenant/governance.mg-demo.bicepparam')
   [IO.File]::WriteAllText((Join-Path $gr 'deploy/units.json'), (ConvertTo-Json -InputObject $units -Depth 20))
   [IO.File]::WriteAllText((Join-Path $gr 'deploy/boundaries.json'), (ConvertTo-Json -InputObject $bounds -Depth 20))
   $gateScript = Join-Path $gr 'scripts/deploy-unit.ps1'
@@ -277,10 +312,10 @@ try {
   $v = New-Verdict 'pilot-empty-rg' 'plan' 2 (Join-Path $tmp 'nothing')
   Assert-True $v.technical 'no gate result is a technical failure'
   Assert-True ((Format-VerdictMarkdown (New-Verdict 'pilot-empty-rg' 'code' 1 $ev1)) -like '*for information*') 'a code verdict is marked as information'
-  $planObj = [pscustomobject][ordered]@{ unit = 'pilot-empty-rg'; subscription = 'demo'; commit = ('a' * 40); trigger = 'push'; startedBy = 'it-user-one'
+  $planObj = [pscustomobject][ordered]@{ unit = 'pilot-empty-rg'; subscription = 'demo'; scope = 'demo'; tier = 'production'; environment = 'mirror-production-demo'; commit = ('a' * 40); trigger = 'push'; startedBy = 'it-user-one'
     changeRef = 'CHG0012345'; reason = "Merged pull request #4: add`na thing"; options = [ordered]@{ acknowledgeReview = $true; allowCreate = @(); allowModify = @($inScope); allowHeld = @() } }
   $md = Format-PlanMarkdown $planObj (New-Verdict 'pilot-empty-rg' 'plan' 1 $ev2)
-  Assert-True ($md -like '*## Plan for pilot-empty-rg*Change ticket: CHG0012345*Options in force: acknowledgeReview, allowModify (1)*allowModify: /subscriptions/*' -and $md -notlike '*add' + "`n" + 'a thing*') 'the plan markdown leads with the unit, the ticket and the options in force, on one line each'
+  Assert-True ($md -like '*## Plan for pilot-empty-rg*Scope: demo, tier production, environment mirror-production-demo*Change ticket: CHG0012345*Options in force: acknowledgeReview, allowModify (1)*allowModify: /subscriptions/*' -and $md -notlike '*add' + "`n" + 'a thing*') 'the plan markdown leads with the unit, the ticket and the options in force, on one line each'
   $tpl = Join-Path $tmp 'plan-dir'; New-Item -ItemType Directory -Path $tpl | Out-Null
   Copy-Item -LiteralPath (Split-Path -Parent $sum2) -Destination (Join-Path $tpl 'gate') -Recurse
   [IO.File]::WriteAllText((Join-Path $tpl 'plan.json'), (ConvertTo-Json -InputObject $planObj -Depth 6))
@@ -288,6 +323,20 @@ try {
   Assert-True ($rp.plan.unit -eq 'pilot-empty-rg' -and (Test-Path -LiteralPath $rp.gate) -and (Test-Path -LiteralPath $rp.summary)) 'a reviewed plan folder is read with its gate files'
   $ga2 = Get-GateArguments (Get-DeployOptions $rp.plan.options) (Join-Path $tmp 'out') $tpl -Deploy
   Assert-Equal (Split-Path -Parent $rp.gate) $ga2.ApprovedChanges 'the apply holds allowModify to the gate file of the reviewed plan'
+
+  # A tenant-kind unit works at management group scope. Its records are judged against the management groups.
+  $evM = Join-Path $tmp 'evm'
+  $mgOut = & $gateScript -Unit 'demo-tenant-governance' -WhatIfJson (Join-Path $fixtures 'whatif-mg.json') -EvidenceRoot $evM 2>&1 | ForEach-Object { "$_" }
+  Assert-Equal 0 $LASTEXITCODE "a tenant-kind unit is judged offline, two management group records pass ($($mgOut -join ' | '))"
+  $sumM = @(Get-ChildItem -LiteralPath $evM -Recurse -Filter 'pre-summary.txt')
+  Assert-True ($sumM.Count -eq 1 -and ([IO.File]::ReadAllText($sumM[0].FullName)) -like '*Scope:      management group mg-demo*') 'the dry run header names the management group as the scope'
+  $badMg = Join-Path $tmp 'whatif-badmg.json'
+  [IO.File]::WriteAllText($badMg, ([IO.File]::ReadAllText((Join-Path $fixtures 'whatif-mg.json'))).Replace('/providers/Microsoft.Management/managementGroups/mg-demo/providers/Microsoft.Authorization/roleAssignments/00000000-0000-0000-0000-0000000000a2', "/subscriptions/$subId/providers/Microsoft.Authorization/roleAssignments/00000000-0000-0000-0000-0000000000a2"))
+  $evB = Join-Path $tmp 'evb'
+  & $gateScript -Unit 'demo-tenant-governance' -WhatIfJson $badMg -EvidenceRoot $evB *> $null
+  $badCode = $LASTEXITCODE
+  $badSum = @(Get-ChildItem -LiteralPath $evB -Recurse -Filter 'pre-summary.txt')
+  Assert-True ($badCode -ne 0 -and $badSum.Count -eq 1 -and ([IO.File]::ReadAllText($badSum[0].FullName)) -like '*outside the unit scope*') 'a record under a subscription is outside the scope of a tenant-kind unit'
 
   Write-Host '--- step outputs'
   $out = Join-Path $tmp 'output.txt'
@@ -307,16 +356,10 @@ $files = Get-UnitFiles $units $repo
 $r = Resolve-AffectedUnits @('infra/subscriptions/demo/main.bicep') $units $files
 Assert-True (@($r.preview) -contains 'demo-subscription') 'a subscription main.bicep previews its subscription unit'
 Assert-True (@($r.preview) -notcontains 'rg-demo-network') 'and not an unrelated resource group unit'
-Assert-Contains @($r.notes) '*previewed here for information and deployed by hand*demo-subscription*' 'the note says the subscription units deploy by hand'
-Assert-True (@($r.hand) -notcontains 'demo-subscription') 'a subscription unit is previewed, not set aside like the other by-hand units'
 $r = Resolve-AffectedUnits @('infra/subscriptions/demo/resource-groups/rg-demo-routing.bicep') $units $files
 Assert-Equal 'rg-demo-routing' (@($r.preview) -join ',') 'a resource group file previews its own unit only'
-$byHand = Copy-Object $units; @($byHand.units | Where-Object { $_.name -eq 'rg-demo-routing' })[0] | Add-Member -NotePropertyName route -NotePropertyValue 'hand'
-$r = Resolve-AffectedUnits @('infra/subscriptions/demo/resource-groups/rg-demo-routing.bicep') $byHand (Get-UnitFiles $byHand $repo)
-Assert-True (@($r.hand) -contains 'rg-demo-routing') 'a file of a by-hand unit touches that unit'
-Assert-True (@($r.preview) -notcontains 'rg-demo-routing') 'which is never previewed here'
 # This estate has no module, so the next tests take a small tree in a temporary folder: a shared module that a
-# subscription main.bicep calls, and a module that only a by-hand unit calls.
+# subscription main.bicep calls, and a module that only a gateway unit calls.
 $mt = Join-Path ([IO.Path]::GetTempPath()) ('mirror-modules-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path (Join-Path $mt 'infra/modules/governance') | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $mt 'infra/subscriptions/demo/resource-groups') | Out-Null
@@ -327,31 +370,32 @@ try {
   [IO.File]::WriteAllText((Join-Path $mt 'infra/subscriptions/demo/network-gateways.bicep'), "targetScope = 'subscription'`nmodule g './resource-groups/rg-demo-network.vpn-gateways.bicep' = {`n  name: 'g'`n  scope: resourceGroup('rg-demo-network')`n}`n")
   [IO.File]::WriteAllText((Join-Path $mt 'infra/subscriptions/demo/resource-groups/rg-demo-network.vpn-gateways.bicep'), "output o string = 'x'`n")
   $mu = [pscustomobject]@{ units = @(
-    [pscustomobject]@{ name = 'demo-subscription'; kind = 'subscription'; subscription = 'demo'; template = 'infra/subscriptions/demo/main.bicep'; route = 'hand'; enabled = $false },
+    [pscustomobject]@{ name = 'demo-subscription'; kind = 'subscription'; subscription = 'demo'; template = 'infra/subscriptions/demo/main.bicep'; enabled = $false },
     [pscustomobject]@{ name = 'rg-demo-network'; kind = 'resourceGroup'; subscription = 'demo'; resourceGroup = 'rg-demo-network'; template = 'infra/subscriptions/demo/resource-groups/rg-demo-network.bicep'; enabled = $false },
-    [pscustomobject]@{ name = 'demo-vpn-gateways'; kind = 'subscription'; subscription = 'demo'; template = 'infra/subscriptions/demo/network-gateways.bicep'; route = 'hand'; enabled = $false }) }
+    [pscustomobject]@{ name = 'demo-vpn-gateways'; kind = 'subscription'; subscription = 'demo'; template = 'infra/subscriptions/demo/network-gateways.bicep'; enabled = $false }) }
   $mf = Get-UnitFiles $mu $mt
   $r = Resolve-AffectedUnits @('infra/modules/governance/shared-policies.bicep') $mu $mf
-  Assert-True (@($r.preview) -contains 'demo-subscription') 'a shared module previews the subscription unit that calls it'
-  Assert-True (@($r.preview) -notcontains 'rg-demo-network') 'and not a resource group unit that does not call it'
-  Assert-Contains @($r.notes) '*previewed here for information and deployed by hand*demo-subscription*' 'the note says the subscription unit that calls the module deploys by hand'
-  Assert-True (@($r.hand) -notcontains 'demo-subscription') 'a subscription unit reached through a module is previewed, not set aside like the other by-hand units'
+  Assert-True (@($r.preview) -contains 'demo-subscription') 'a shared module previews the subscription units that call it'
+  Assert-True (@($r.preview) -notcontains 'rg-demo-network') 'and not an unrelated resource group unit'
   $r = Resolve-AffectedUnits @('infra/subscriptions/demo/resource-groups/rg-demo-network.vpn-gateways.bicep') $mu $mf
-  Assert-True (@($r.hand) -contains 'demo-vpn-gateways') 'a module file touches the by-hand unit that calls it'
-  Assert-True (@($r.preview) -notcontains 'demo-vpn-gateways' -and @($r.preview) -notcontains 'rg-demo-network') 'which is never previewed here, and no unit that does not call it is touched'
+  Assert-True (@($r.preview) -contains 'demo-vpn-gateways') 'a gateway file previews the gateway unit like any other'
 } finally {
   Remove-Item -LiteralPath $mt -Recurse -Force -ErrorAction SilentlyContinue
 }
 $r = Resolve-AffectedUnits @('deploy/boundaries.json', 'infra/subscriptions/demo/main.bicep') $units $files
 Assert-True ($r.sweep -and @($r.preview).Count -eq 0) 'boundaries.json asks for a sweep and previews nothing'
 $r = Resolve-AffectedUnits @('infra/tenant/governance.bicep') $units $files
-Assert-Contains @($r.notes) '*tenant units*' 'a tenant file is noted as by hand'
+Assert-True (@($r.preview) -contains 'demo-tenant-governance' -and @($r.preview) -notcontains 'demo-tenant-management-group') 'a tenant file previews the tenant unit that uses it'
+$hashDoc = Copy-Object $units; $hashDoc.units = @($hashDoc.units) + @($extraUnit)
+$r = Resolve-AffectedUnits @('infra/subscriptions/demo/resource-groups/rg-demo-web.hash-excluded.bicep') $hashDoc (Get-UnitFiles $hashDoc $repo)
+Assert-Equal 0 @($r.preview).Count 'the hash-excluded unit is never previewed'
+Assert-Contains @($r.notes) '*rg-demo-web-hash-excluded cannot be previewed*' 'and the note says why'
 $r = Resolve-AffectedUnits @('README.md') $units $files
 Assert-Equal 0 @($r.preview).Count 'a document previews nothing'
 # This estate has fewer than 13 resource group units, so the test takes a copy with twelve more that share one file.
 $manyUnits = Copy-Object $units; $net = @($manyUnits.units | Where-Object { $_.name -eq 'rg-demo-network' })[0]
 foreach ($i in 1..12) { $c = Copy-Object $net; $c.name = "rg-demo-network-$i"; $manyUnits.units = @($manyUnits.units) + @($c) }
-$many = @(@($manyUnits.units) | Where-Object { $_.kind -eq 'resourceGroup' -and -not (Get-HandRouteReason $_) } | Select-Object -First 13 | ForEach-Object { $_.template })
+$many = @(@($manyUnits.units) | Where-Object { $_.kind -eq 'resourceGroup' -and -not (Get-UnrunnableReason $_) } | Select-Object -First 13 | ForEach-Object { $_.template })
 $r = Resolve-AffectedUnits $many $manyUnits (Get-UnitFiles $manyUnits $repo)
 Assert-True (@($r.preview).Count -eq 0 -and (@($r.notes) -join ' ') -like '*more than the 12*') 'more than 12 units ask for a sweep'
 $changedUnits = Copy-Object $units; $flipUnit = (@($changedUnits.units) | Where-Object { $_.name -eq 'rg-demo-network' })[0]; $flipUnit.enabled = -not [bool]$flipUnit.enabled
@@ -365,6 +409,10 @@ Assert-True ($wa -contains '--location' -and $wa -contains [string]$units.deploy
 Assert-True ($wa -contains 'ProviderNoRbac' -and $wa -contains 'FullResourcePayloads') 'the reader validation level and full payloads'
 $wa = Get-WhatIfArguments $pilot $units $repo
 Assert-True ($wa -contains '--template-file' -and $wa -contains '--resource-group') 'a unit without a parameters file previews its template'
+$wa = Get-WhatIfArguments (@($units.units) | Where-Object { $_.name -eq 'demo-tenant-governance' })[0] $units $repo
+Assert-True ($wa[0] -ceq 'deployment' -and $wa[1] -ceq 'mg' -and $wa -contains '--management-group-id' -and $wa -contains 'mg-demo' -and $wa -contains '--location' -and $wa -notcontains '--subscription') 'a tenant unit previews at management group scope, with no subscription'
+$wa = Get-WhatIfArguments (@($units.units) | Where-Object { $_.name -eq 'demo-privileged' })[0] $units $repo
+Assert-True ($wa -contains 'sub' -and $wa -contains '--subscription') 'a privileged subscription unit previews at subscription scope'
 
 Write-Host '--- workflow rules'
 $wf = @{}
@@ -448,6 +496,17 @@ $one = '{ "resources": [ { "type": "Microsoft.Resources/deployments", "name": "r
 $hits = @(Find-AuthorizationResources $one)
 Assert-Equal 1 $hits.Count "a module with a single role assignment, in the list form, is found ($($hits -join '; '))"
 
+$pa = Read-Fixture 'template-privileged.json'
+$hits = @(Find-PrivilegedAuthorization $pa)
+Assert-Equal 4 $hits.Count "an Owner assignment, an assignment whose role cannot be read, a role definition and an assignment in a module are found, and the Contributor and Reader assignments, the policy assignment, the lock and the existing reference are not ($($hits -join '; '))"
+Assert-Contains $hits '*ownerAssignment*Owner, User Access Administrator or Role Based Access Control Administrator*' 'the Owner assignment is found, whatever the case of its GUID'
+Assert-Contains $hits '*paramRole*the role cannot be read from the compiled template' 'an assignment whose role is a parameter is found, the check fails closed'
+Assert-Contains $hits '*roleDefinitions (customRole): a role definition' 'a role definition is found'
+Assert-Contains $hits 'governance > Microsoft.Authorization/roleAssignments (uaaAssignment)*' 'an assignment in a module is found with the module name'
+Assert-Equal 0 @(Find-PrivilegedAuthorization (Read-Fixture 'template-no-authorization.json')).Count 'a template with no authorization passes'
+$one = '{ "resources": [ { "type": "Microsoft.Resources/deployments", "name": "ra-mod", "properties": { "template": { "resources": [ { "type": "Microsoft.Authorization/roleAssignments", "name": "x", "properties": { "roleDefinitionId": "[subscriptionResourceId(''Microsoft.Authorization/roleDefinitions'', ''f58310d9-a9f6-439a-9e8d-f62e7b41a168'')]" } } ] } } } ] }' | ConvertFrom-Json
+Assert-Equal 1 @(Find-PrivilegedAuthorization $one).Count 'a module with a single Role Based Access Control Administrator assignment, in the list form, is found'
+
 Write-Host '--- Bicep inputs from a branch'
 $bt = Join-Path ([IO.Path]::GetTempPath()) ('mirror-inputs-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path (Join-Path $bt 'infra/x') -Force | Out-Null
@@ -470,7 +529,7 @@ try {
   Assert-Contains $f '*line 8 loads a file whose path is not plain text' 'and so is the escaped path itself'
   Assert-Contains $f '*line 9 loads a file outside the repository' 'code after a block comment on the same line is read'
   Assert-Contains $f '*line 10 calls loadResourceContent, a load function this check does not know' 'an unknown load function is refused'
-  $routine = @(@($units.units) | Where-Object { -not (Get-HandRouteReason $_) -or (Test-SubscriptionMainUnit $_) })
+  $routine = @(@($units.units) | Where-Object { -not (Get-UnrunnableReason $_) })
   $rmap = Get-UnitFiles ([pscustomobject]@{ units = $routine }) $repo
   $f = @(); foreach ($u in $routine) { $f += @(Find-UnsafeBicepInputs @($rmap[[string]$u.name]) $repo) }
   Assert-Equal 0 $f.Count "the units a pull request can preview use none of these inputs ($($f -join '; '))"
@@ -538,7 +597,7 @@ try {
   Invoke-InputCase 'an escaped load path in the template itself' @{ 'infra/t.bicep' = "var s = loadTextContent('sub\u{2F}\u{2E}\u{2E}/../../../secret.txt')`n" } $oneUnit 'u' 2 '*infra/t.bicep line 1 uses a \u{...} escape*'
   Invoke-InputCase 'a parameters file that extends another' @{ 'infra/t.bicep' = "param p string`n"; 'infra/leaf.bicepparam' = "using './t.bicep'`nextends './base.bicepparam'`n"; 'infra/base.bicepparam' = "using none`nparam p = readEnvironmentVariable('LEAKME', 'none')`n" } '{ "units": [ { "name": "u", "kind": "resourceGroup", "template": "infra/t.bicep", "parameters": "infra/leaf.bicepparam" } ] }' 'u' 2 '*infra/base.bicepparam line 2 reads an environment variable*'
   Invoke-InputCase 'an import written over several lines' @{ 'infra/t.bicep' = "import {`n  leaked`n} from './lib.bicep'`noutput o string = leaked`n"; 'infra/lib.bicep' = "@export()`nvar leaked = loadTextContent('../../secret.txt')`n" } $oneUnit 'u' 2 '*infra/lib.bicep line 2 loads a file outside the repository*'
-  Invoke-InputCase 'a disabled measuredWith unit, in the drift check with no UNIT' @{ 'infra/t.bicep' = "output o string = 'x'`n"; 'infra/sib.bicep' = $child.Replace('../../../', '../../') } '{ "units": [ { "name": "routine", "kind": "resourceGroup", "template": "infra/t.bicep", "enabled": true, "measuredWith": [ "routine-deploy-excluded" ] }, { "name": "routine-deploy-excluded", "kind": "resourceGroup", "template": "infra/sib.bicep", "enabled": false, "route": "hand" } ] }' '' 2 '*infra/sib.bicep line 1 loads a file outside the repository*'
+  Invoke-InputCase 'a disabled measuredWith unit, in the drift check with no UNIT' @{ 'infra/t.bicep' = "output o string = 'x'`n"; 'infra/sib.bicep' = $child.Replace('../../../', '../../') } '{ "units": [ { "name": "routine", "kind": "resourceGroup", "template": "infra/t.bicep", "enabled": true, "measuredWith": [ "routine-deploy-excluded" ] }, { "name": "routine-deploy-excluded", "kind": "resourceGroup", "template": "infra/sib.bicep", "enabled": false } ] }' '' 2 '*infra/sib.bicep line 1 loads a file outside the repository*'
   Invoke-InputCase 'a unit name and a measuredWith entry that climb out of the evidence folder' @{ 'infra/t.bicep' = "output o string = 'x'`n" } '{ "units": [ { "name": "u", "kind": "resourceGroup", "template": "infra/t.bicep", "enabled": true, "measuredWith": [ "../../m" ] }, { "name": "x/../../../escaped-2", "kind": "resourceGroup", "template": "infra/t.bicep", "enabled": false } ] }' 'u' 2 "*u: the measuredWith entry '../../m' is not lower-case letters*the unit name 'x/../../../escaped-2' is not lower-case letters*"
   Invoke-InputCase 'a unit name in another case' @{ 'infra/t.bicep' = "output o string = 'x'`n" } '{ "units": [ { "name": "Mixed-Case", "kind": "resourceGroup", "template": "infra/t.bicep", "enabled": true } ] }' 'mixed-case' 2 "*UNIT 'mixed-case' must name exactly one unit*"
   Invoke-InputCase 'a bicepconfig.json in a subfolder and an extension alias' @{ 'infra/t.bicep' = "extension evil`n"; 'infra/bicepconfig.json' = '{ "extensions": { "evil": "br:attackerreg123.azurecr.io/bicep/ext:1.0.0" } }' } $oneUnit 'u' 2 '*infra/bicepconfig.json is a Bicep configuration file below the repository root*declares a Bicep extension*'
@@ -587,9 +646,9 @@ Write-Host '--- hardening checks'
 Assert-Equal 'a | ::warning::b | c | d' (ConvertTo-OneLine ("a`r::warning::b" + [char]0x2028 + "c`r`nd")) 'a lone carriage return or a line separator cannot start a workflow command line'
 
 Write-Host '--- the deploy workflow rules'
-$goodDeploy = "on:`n  push:`n    branches: [ master ]`n  workflow_dispatch:`n    inputs: {}`njobs:`n  plan:`n    environment:`n      name: mirror-reader-dispatch`n    permissions:`n      id-token: write`n  apply:`n    needs: collect`n    environment: mirror-production-`${{ matrix.subscription }}`n    permissions:`n      id-token: write`n"
+$goodDeploy = "on:`n  push:`n    branches: [ master ]`n  workflow_dispatch:`n    inputs: {}`njobs:`n  plan:`n    environment:`n      name: mirror-reader-dispatch`n    permissions:`n      id-token: write`n  apply:`n    needs: collect`n    environment: mirror-production-`${{ matrix.scope }}`n    permissions:`n      id-token: write`n  apply-privileged:`n    needs: collect`n    environment: mirror-privileged-`${{ matrix.scope }}`n    permissions:`n      id-token: write`n"
 $e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy } | Where-Object { $_ -notlike '*runner check*' -and $_ -notlike '*pipeline switch*' -and $_ -notlike '*Check the Bicep inputs*' -and $_ -notlike '*run step*' })
-Assert-Equal 0 $e.Count "a deploy workflow that starts on a push to master and by Run workflow, with the apply as the only production job, passes ($($e -join '; '))"
+Assert-Equal 0 $e.Count "a deploy workflow that starts on a push to master and by Run workflow, with the apply and apply-privileged as the only production and privileged jobs, passes ($($e -join '; '))"
 $e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace('  workflow_dispatch:', '  schedule:') })
 Assert-Contains $e '*has no schedule or pull_request trigger*' 'a schedule on the deploy workflow is refused'
 Assert-Contains $e '*must start on push with branches `[ master `] and on workflow_dispatch*' 'a deploy workflow without Run workflow is refused'
@@ -597,12 +656,22 @@ $e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace('b
 Assert-Contains $e '*must start on push with branches `[ master `]*' 'a push trigger on another branch is refused'
 $e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace('workflow_dispatch:', "pull_request:`n  workflow_dispatch:") })
 Assert-Contains $e '*has no schedule or pull_request trigger*' 'a pull request trigger on the deploy workflow is refused'
-$e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace('mirror-production-${{ matrix.subscription }}', 'mirror-production-demo') })
-Assert-Contains $e '*the apply job must have environment: mirror-production-*matrix.subscription*' 'the apply job may not name a fixed production environment'
+$e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace('mirror-production-${{ matrix.scope }}', 'mirror-production-demo') })
+Assert-Contains $e '*the apply job must have environment: mirror-production-*matrix.scope*' 'the apply job may not name a fixed production environment'
+$e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace('mirror-privileged-${{ matrix.scope }}', 'mirror-privileged-tenant') })
+Assert-Contains $e '*the apply-privileged job must have environment: mirror-privileged-*matrix.scope*' 'the apply-privileged job may not name a fixed privileged environment'
+$e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace('mirror-privileged-${{ matrix.scope }}', 'mirror-production-${{ matrix.scope }}') })
+Assert-Contains $e '*the apply-privileged job must have environment: mirror-privileged-*matrix.scope*' 'the apply-privileged job may not use a production environment'
+$e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace("  apply-privileged:`n    needs: collect", "  apply-privileged:`n    needs: plan") })
+Assert-Contains $e '*the apply-privileged job must need the collect job*' 'the apply-privileged job must wait for the collect job'
+$e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace('name: mirror-reader-dispatch', 'name: mirror-privileged-tenant') })
+Assert-Contains $e '*the job plan names a mirror-production or mirror-privileged environment*' 'the plan job may not name a privileged environment'
+$e = @(Test-WorkflowHygiene @{ 'x.yml' = "jobs:`n  a:`n    environment: mirror-privileged-x`n" })
+Assert-Contains $e 'x.yml: names a mirror-production or mirror-privileged*' 'another workflow may not name a privileged environment'
 $e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace('needs: collect', 'needs: plan') })
 Assert-Contains $e '*the apply job must need the collect job*' 'the apply job must wait for the collect job'
 $e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace('name: mirror-reader-dispatch', 'name: mirror-production-demo') })
-Assert-Contains $e '*the job plan names a mirror-production environment, and only the apply job may*' 'the plan job may not name a production environment'
+Assert-Contains $e '*the job plan names a mirror-production or mirror-privileged environment*' 'the plan job may not name a production environment'
 $e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace("    environment:`n      name: mirror-reader-dispatch`n", '') })
 Assert-Contains $e '*the job plan requests id-token: write and has no environment*' 'a job that asks for a token without an environment is refused'
 $e = @(Test-WorkflowHygiene @{ 'v.yml' = "permissions:`n  contents: read`n  id-token: write`njobs:`n  a:`n    runs-on: windows-2025`n" })
@@ -763,7 +832,7 @@ exit 0
   Invoke-TestMode 'DeployPlan' $dpPush 'a push whose plan holds no effective change deploys nothing and waits for nobody' 0 'A push publishes this plan and deploys nothing' -Answers $tipNow -Evidence $ev
   Assert-True (-not ([bool]((ConvertFrom-Json ([IO.File]::ReadAllText((Join-Path $ev 'plan.json')))).offerApply))) 'the plan of a push without an effective change offers no apply'
   Assert-True ([IO.File]::ReadAllText((Join-Path $ev 'verdict.md')).Contains('- Reason: `Pilot, see [x](http://example.invalid) code`'))
-  $span = Format-PlanMarkdown ([pscustomobject][ordered]@{ unit = 'u'; subscription = 's'; commit = ('a' * 40); trigger = 'push'; startedBy = 'x'; changeRef = 'CHG1'; reason = 'a `b` [l](http://e.invalid) <img src=x onerror=y>'; options = [ordered]@{ acknowledgeReview = $false; allowCreate = @(); allowModify = @(); allowHeld = @() } }) (New-Verdict 'u' 'plan' 2 '')
+  $span = Format-PlanMarkdown ([pscustomobject][ordered]@{ unit = 'u'; subscription = 's'; scope = 's'; tier = 'production'; environment = 'mirror-production-s'; commit = ('a' * 40); trigger = 'push'; startedBy = 'x'; changeRef = 'CHG1'; reason = 'a `b` [l](http://e.invalid) <img src=x onerror=y>'; options = [ordered]@{ acknowledgeReview = $false; allowCreate = @(); allowModify = @(); allowHeld = @() } }) (New-Verdict 'u' 'plan' 2 '')
   $rl = @($span -split "`n" | Where-Object { $_ -like '- Reason: *' })
   Assert-True ($rl.Count -eq 1 -and $rl[0] -ceq '- Reason: `a b [l](http://e.invalid) <img src=x onerror=y>`' -and ($rl[0].Substring(10).Trim('`')).IndexOf('`') -lt 0) 'a reason with a backtick, a link and an HTML tag is one code span with no backtick inside' 'the reason is written as a code span with its backticks removed'
   $ev = Join-Path $gx 'dp-push-change'
@@ -783,7 +852,7 @@ exit 0
   $pd = Join-Path $gx 'plan-ok'; New-Item -ItemType Directory -Force (Join-Path $pd 'gate/r1') | Out-Null
   $planned = [DateTimeOffset]::UtcNow.AddHours(-1).ToString('o')
   function New-PlanJson([string]$Sha, [string]$Time, [bool]$Offer = $true) {
-    return (ConvertTo-Json -Depth 6 ([ordered]@{ schema = 1; unit = 'pilot-empty-rg'; subscription = $pilotSub; commit = $Sha; planned = $Time; trigger = 'push'; startedBy = 'it-user-one'
+    return (ConvertTo-Json -Depth 6 ([ordered]@{ schema = 2; unit = 'pilot-empty-rg'; subscription = $pilotSub; scope = $pilotSub; tier = 'production'; environment = "mirror-production-$pilotSub"; commit = $Sha; planned = $Time; trigger = 'push'; startedBy = 'it-user-one'
       changeRef = 'CHG0012345'; reason = 'Pilot.'; applyRequested = $true
       options = [ordered]@{ acknowledgeReview = $false; allowCreate = @(); allowModify = @(); allowHeld = @() }
       gate = 'PASS'; counts = 'Create=1'; approvable = $true; hasChanges = $true; offerApply = $Offer }))
@@ -792,7 +861,7 @@ exit 0
   [IO.File]::WriteAllText((Join-Path $pd 'gate/r1/pre-summary.txt'), "Unit:       pilot-empty-rg`nCommit:     $c2`nTaken:      2026-11-01 10:00:00Z`nMode:       dry run`nGate:       PASS`nCounts:     Create=1`n`nPASS    Create   x`n")
   [IO.File]::WriteAllText((Join-Path $pd 'gate/r1/pre-gate.json'), [IO.File]::ReadAllText((Join-Path $fixtures 'gate-pass.json')))
   $tip = "{`"commit`":{`"sha`":`"$c2`"}}"
-  $ca = @{ UNIT = 'pilot-empty-rg'; GITHUB_SHA = $c2; GITHUB_RUN_ATTEMPT = '1' }
+  $ca = @{ UNIT = 'pilot-empty-rg'; GITHUB_SHA = $c2; GITHUB_RUN_ATTEMPT = '1'; TIER = 'production' }
   Invoke-TestMode 'CheckApply' $ca 'a plan reviewed at the commit master still holds can be applied' 0 'checked after the approval' $pd -Answers @{ 'branch.json' = $tip }
   Invoke-TestMode 'CheckApply' $ca 'master moved after the plan' 1 'master moved to' $pd -Answers @{ 'branch.json' = "{`"commit`":{`"sha`":`"$c3`"}}" }
   $ca2 = $ca.Clone(); $ca2['GITHUB_RUN_ATTEMPT'] = '2'
@@ -805,9 +874,17 @@ exit 0
   $caLong = $ca.Clone(); $caLong['MIRROR_MAX_PLAN_AGE_HOURS'] = '48'
   Invoke-TestMode 'CheckApply' $caLong 'the limit follows MIRROR_MAX_PLAN_AGE_HOURS' 0 'checked after the approval' $old -Answers @{ 'branch.json' = $tip }
   $subBad = Join-Path $gx 'plan-othersub'; Copy-Item -LiteralPath $pd -Destination $subBad -Recurse
-  $pj = (New-PlanJson $c2 $planned) | ConvertFrom-Json; $pj.subscription = 'demo-other'
+  $pj = (New-PlanJson $c2 $planned) | ConvertFrom-Json; $pj.scope = 'demo-other'
   [IO.File]::WriteAllText((Join-Path $subBad 'plan.json'), (ConvertTo-Json -InputObject $pj -Depth 6))
-  Invoke-TestMode 'CheckApply' $ca 'a plan that names another subscription folder than units.json' 1 'names the subscription folder' $subBad -Answers @{ 'branch.json' = $tip }
+  Invoke-TestMode 'CheckApply' $ca 'a plan that names another scope than units.json' 1 'names the scope' $subBad -Answers @{ 'branch.json' = $tip }
+  $caPriv = $ca.Clone(); $caPriv['TIER'] = 'privileged'
+  Invoke-TestMode 'CheckApply' $caPriv 'a production plan in the privileged job is refused' 1 'this job deploys the tier privileged' $pd -Answers @{ 'branch.json' = $tip }
+  $caNone = $ca.Clone(); $caNone.Remove('TIER')
+  Invoke-TestMode 'CheckApply' $caNone 'a job that names no tier is refused' 2 'it must be production or privileged' $pd -Answers @{ 'branch.json' = $tip }
+  $tierBad = Join-Path $gx 'plan-tier'; Copy-Item -LiteralPath $pd -Destination $tierBad -Recurse
+  $pj = (New-PlanJson $c2 $planned) | ConvertFrom-Json; $pj.tier = 'privileged'
+  [IO.File]::WriteAllText((Join-Path $tierBad 'plan.json'), (ConvertTo-Json -InputObject $pj -Depth 6))
+  Invoke-TestMode 'CheckApply' $ca 'a plan whose tier differs from units.json now is refused' 1 'the reviewed plan is of the tier' $tierBad -Answers @{ 'branch.json' = $tip }
   $nof = Join-Path $gx 'plan-nooffer'; Copy-Item -LiteralPath $pd -Destination $nof -Recurse
   [IO.File]::WriteAllText((Join-Path $nof 'plan.json'), (New-PlanJson $c2 $planned $false))
   Invoke-TestMode 'CheckApply' $ca 'a plan that offered no apply' 1 'did not offer an apply' $nof -Answers @{ 'branch.json' = $tip }
@@ -832,18 +909,26 @@ exit 0
   # Collect.
   $cd = Join-Path $gx 'plans'
   foreach ($n in @('a', 'b')) { New-Item -ItemType Directory -Force (Join-Path $cd "reviewed-plan-$n") | Out-Null }
-  $defA = @($unitsOn.units)[0]; $defB = @($unitsOn.units)[1]
-  $pa = (New-PlanJson $c2 $planned) | ConvertFrom-Json; $pa.unit = [string]$defA.name; $pa.subscription = [string]$defA.subscription
-  $pb = (New-PlanJson $c2 $planned $false) | ConvertFrom-Json; $pb.unit = [string]$defB.name; $pb.subscription = [string]$defB.subscription; $pb.approvable = $false
+  $defA = @($unitsOn.units | Where-Object { $_.name -eq 'pilot-empty-rg' })[0]; $defB = @($unitsOn.units | Where-Object { $_.name -eq 'rg-demo-network' })[0]
+  $defP = @($unitsOn.units | Where-Object { $_.name -eq 'demo-tenant-management-group' })[0]
+  New-Item -ItemType Directory -Force (Join-Path $cd 'reviewed-plan-p') | Out-Null
+  $pa = (New-PlanJson $c2 $planned) | ConvertFrom-Json; $pa.unit = [string]$defA.name; $pa.subscription = [string]$defA.subscription; $pa.scope = Get-UnitScope $defA; $pa.tier = Get-UnitTier $defA
+  $pb = (New-PlanJson $c2 $planned $false) | ConvertFrom-Json; $pb.unit = [string]$defB.name; $pb.subscription = [string]$defB.subscription; $pb.scope = Get-UnitScope $defB; $pb.tier = Get-UnitTier $defB; $pb.approvable = $false
+  $pp = (New-PlanJson $c2 $planned) | ConvertFrom-Json; $pp.unit = [string]$defP.name; $pp.subscription = ''; $pp.scope = 'tenant'; $pp.tier = 'privileged'
   [IO.File]::WriteAllText((Join-Path $cd 'reviewed-plan-a/plan.json'), (ConvertTo-Json -InputObject $pa -Depth 6))
   [IO.File]::WriteAllText((Join-Path $cd 'reviewed-plan-b/plan.json'), (ConvertTo-Json -InputObject $pb -Depth 6))
-  $matrix = ConvertTo-Json -Compress @([ordered]@{ unit = [string]$defA.name }, [ordered]@{ unit = [string]$defB.name }, [ordered]@{ unit = 'unit-c' })
-  Invoke-TestMode 'Collect' @{ GITHUB_SHA = $c2; MATRIX = $matrix } 'only the plan that offered an apply waits for a reviewer' 0 ('applyMatrix=[{"unit":"' + $defA.name + '","subscription":"' + $defA.subscription + '"}]') $cd
+  [IO.File]::WriteAllText((Join-Path $cd 'reviewed-plan-p/plan.json'), (ConvertTo-Json -InputObject $pp -Depth 6))
+  $matrix = ConvertTo-Json -Compress @([ordered]@{ unit = [string]$defA.name }, [ordered]@{ unit = [string]$defB.name }, [ordered]@{ unit = 'unit-c' }, [ordered]@{ unit = [string]$defP.name })
+  Invoke-TestMode 'Collect' @{ GITHUB_SHA = $c2; MATRIX = $matrix } 'only the production plan that offered an apply waits in the production list' 0 ('applyMatrix=[{"unit":"' + $defA.name + '","scope":"' + $defA.subscription + '"}]') $cd
+  Invoke-TestMode 'Collect' @{ GITHUB_SHA = $c2; MATRIX = $matrix } 'a privileged plan that offered an apply waits in the privileged list' 0 ('privilegedMatrix=[{"unit":"' + $defP.name + '","scope":"tenant"}]') $cd
   Invoke-TestMode 'Collect' @{ GITHUB_SHA = $c2; MATRIX = $matrix } 'a plan that did not finish is named' 0 '| unit-c | none | none | The plan did not finish' $cd
   Invoke-TestMode 'Collect' @{ GITHUB_SHA = $c2; MATRIX = $matrix } 'a plan that is not approvable says so' 0 ('| ' + $defB.name + ' | PASS | Create=1 | Not approvable') $cd
   Invoke-TestMode 'Collect' @{ GITHUB_SHA = $c3; MATRIX = $matrix } 'a plan of another commit applies nothing' 0 'applyMatrix=[]' $cd
-  $pa.subscription = 'demo-other'; [IO.File]::WriteAllText((Join-Path $cd 'reviewed-plan-a/plan.json'), (ConvertTo-Json -InputObject $pa -Depth 6))
-  Invoke-TestMode 'Collect' @{ GITHUB_SHA = $c2; MATRIX = $matrix } 'a plan that names another subscription folder than units.json waits for nobody' 0 'applyMatrix=[]' $cd
+  Invoke-TestMode 'Collect' @{ GITHUB_SHA = $c3; MATRIX = $matrix } 'and nothing in the privileged list either' 0 'privilegedMatrix=[]' $cd
+  $pa.scope = 'demo-other'; [IO.File]::WriteAllText((Join-Path $cd 'reviewed-plan-a/plan.json'), (ConvertTo-Json -InputObject $pa -Depth 6))
+  Invoke-TestMode 'Collect' @{ GITHUB_SHA = $c2; MATRIX = $matrix } 'a plan that names another scope than units.json waits for nobody' 0 'applyMatrix=[]' $cd
+  $pp.tier = 'production'; [IO.File]::WriteAllText((Join-Path $cd 'reviewed-plan-p/plan.json'), (ConvertTo-Json -InputObject $pp -Depth 6))
+  Invoke-TestMode 'Collect' @{ GITHUB_SHA = $c2; MATRIX = $matrix } 'a privileged unit planned as production waits for nobody' 0 'privilegedMatrix=[]' $cd
 } finally {
   $script:RepoRoot = $keepRoot
   Remove-Item -LiteralPath $g, $gx -Recurse -Force -ErrorAction SilentlyContinue

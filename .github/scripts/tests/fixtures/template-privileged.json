@@ -1,0 +1,57 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "languageVersion": "2.0",
+  "contentVersion": "1.0.0.0",
+  "resources": {
+    "ownerAssignment": {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid('owner')]",
+      "properties": { "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '8E3AF657-a8ff-443c-a75c-2fe8c4bcb635')]", "principalId": "00000000-0000-0000-0000-000000000001" }
+    },
+    "contributorAssignment": {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid('contributor')]",
+      "properties": { "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b24988ac-6180-42a0-ab88-20f7382dd24c')]", "principalId": "00000000-0000-0000-0000-000000000002" }
+    },
+    "paramRole": {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid('param')]",
+      "properties": { "roleDefinitionId": "[parameters('roleId')]", "principalId": "00000000-0000-0000-0000-000000000003" }
+    },
+    "customRole": {
+      "type": "Microsoft.Authorization/roleDefinitions",
+      "apiVersion": "2022-04-01",
+      "name": "[guid('custom')]",
+      "properties": { "roleName": "Custom", "permissions": [ { "actions": [ "Microsoft.Resources/deployments/*" ] } ] }
+    },
+    "existingOwnerRole": {
+      "existing": true,
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "existing-one"
+    },
+    "policy": {
+      "type": "Microsoft.Authorization/policyAssignments",
+      "apiVersion": "2024-04-01",
+      "name": "policy1"
+    },
+    "governance": {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "governance",
+      "properties": {
+        "mode": "Incremental",
+        "template": {
+          "resources": [
+            { "type": "Microsoft.Authorization/roleAssignments", "apiVersion": "2022-04-01", "name": "uaaAssignment", "properties": { "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9')]" } },
+            { "type": "Microsoft.Authorization/roleAssignments", "apiVersion": "2022-04-01", "name": "readerAssignment", "properties": { "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'acdd72a7-3385-48ef-bd42-f606fba81ae7')]" } },
+            { "condition": "[parameters('deployLocks')]", "type": "Microsoft.Authorization/locks", "apiVersion": "2020-05-01", "name": "lock1" }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -19,7 +19,7 @@
 # the request URL with "400 Invalid URL"), and deployment names must not contain newlines.
 set -u
 set -o pipefail
-SUB=6117ea3e-9dcc-49d8-8b4b-3616d8a5c252
+SUB=77488719-1168-4d53-af9a-f5c3bc9291d7
 # The expected sign-in and tenant come from the environment, so no account is written into the script.
 # The script refuses to start, before any Azure call, when either is missing. A person runs a sweep by hand
 # with their own sign-in name, typed out rather than read back from the CLI.

@@ -328,6 +328,16 @@ try {
   $units = @($u.units)
   foreach ($unit in $units) {
     if (-not $unit.template) { $failures.Add("units.json: $($unit.name) has no template"); continue }
+    # Every unit deploys from the pipeline. The tier is absent (production) or privileged, a tenant-kind unit has no
+    # subscription and names its management group, and no other unit names one. A route field is no longer allowed.
+    $tierProp = $unit.PSObject.Properties['tier']
+    if ($null -ne $tierProp -and -not ($tierProp.Value -is [string] -and $tierProp.Value -ceq 'privileged')) { $failures.Add("units.json: $($unit.name) has tier '$($tierProp.Value)', which must be absent (production) or exactly privileged") }
+    if ($null -ne $unit.PSObject.Properties['route']) { $failures.Add("units.json: $($unit.name) has a route field, which is no longer used") }
+    $mgProp = $unit.PSObject.Properties['managementGroup']
+    if ($unit.kind -eq 'tenant') {
+      if ($unit.subscription) { $failures.Add("units.json: $($unit.name) is a tenant-kind unit and must have subscription null") }
+      if ($null -eq $mgProp -or -not ($mgProp.Value -is [string]) -or $mgProp.Value -notmatch '^[A-Za-z0-9._()-]{1,90}$') { $failures.Add("units.json: $($unit.name) is a tenant-kind unit and must name a valid managementGroup") }
+    } elseif ($null -ne $mgProp) { $failures.Add("units.json: $($unit.name) is not a tenant-kind unit and must not name a managementGroup") }
     foreach ($rel in @($unit.template, $unit.parameters)) {
       if ($rel -and -not (Test-Path -LiteralPath (Get-RepoPath $rel))) { $failures.Add("units.json: $($unit.name) points at missing $rel") }
     }

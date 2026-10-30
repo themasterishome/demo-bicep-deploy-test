@@ -34,7 +34,7 @@
 
 .PARAMETER Units
   Unit names to check, as a list or as one string with the names separated by commas. The default is every
-  enabled unit in units.json except the three tenant-kind units and the skipped units above. A disabled unit
+  enabled unit in units.json except the skipped units above. A tenant-kind unit is checked at management group scope. A disabled unit
   named here is reported as ERROR. A unit named here is never skipped.
 
 .PARAMETER EvidenceRoot
@@ -66,7 +66,7 @@ if ($PSBoundParameters.ContainsKey('Units') -and @($Units).Count -eq 0) {
 $udoc = Get-Content -Raw -LiteralPath ([IO.Path]::Combine($repo, 'deploy', 'units.json')) | ConvertFrom-Json
 $skipped = @()
 if (-not $Units -or $Units.Count -eq 0) {
-  $enabled = @($udoc.units | Where-Object { $_.enabled -and $_.kind -ne 'tenant' } | Sort-Object wave, name)
+  $enabled = @($udoc.units | Where-Object { $_.enabled } | Sort-Object wave, name)
   # Units measured through an enabled unit's measuredWith list (deploy-unit.ps1 -Drift merges them).
   # Unit names are matched character by character, case included, as deploy-unit.ps1 matches them.
   $covered = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
