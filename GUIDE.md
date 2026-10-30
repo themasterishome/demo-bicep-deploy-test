@@ -25,7 +25,7 @@ The units, in the order they deploy:
 | 2 | `rg-demo-routing` | Production | `rg-demo-routing` | The route table `rt-demo` with no routes and the application security group `asg-demo`. |
 | none | `demo-subscription` | Production | The subscription | The three resource groups, declared in `infra/subscriptions/demo/main.bicep`. It stays disabled, because its drift check lists every live group in the subscription and the demo declares only its own three. |
 | 4 | `demo-privileged` | Privileged | The subscription | The Owner role assignment on `rg-demo-network` and the custom role definition `Demo Reader Plus`. |
-| 5 | `demo-tenant-management-group` | Privileged | The Tenant Root Group | The management group `mg-demo` under the Tenant Root Group. |
+| 5 | `demo-tenant-management-group` | Privileged | The Tenant Root Group | Declares the management group `mg-demo` under the Tenant Root Group, which step 3.15 item 8 creates once by hand. |
 | 6 | `demo-tenant-governance` | Privileged | The management group `mg-demo` | A Reader role assignment made on `mg-demo`. |
 
 Every resource the demo creates is free. That covers the resource groups, the virtual network and subnet, the network security group, the route table, the application security group, the four managed identities and their federated credentials, the custom roles, the role assignments, the lock, the policy assignments and the management group. Standard GitHub-hosted runners and artifact storage are free in a public repository.
@@ -696,6 +696,20 @@ Each identity holds its standing roles on its own scope only. Never give a deplo
 
 7. The project's item 5 declares these standing assignments in the privileged units after the pilot. The demo leaves it out.
 
+8. Create the management group `mg-demo` once by hand, like `rg-demo-pilot`. A preview cannot run for a management group that does not exist yet, and Azure answers `AuthorizationFailed` on the group's own scope "or the scope is invalid". Once the group exists, `demo-tenant-management-group` previews and deploys as NoChange. The project's group `FDMGroupResources` exists in the same way. The demo account needs Management Group Contributor at the Tenant Root Group for this one command. Grant it, create the group and remove the grant.
+
+   ```powershell
+   $root = '/providers/Microsoft.Management/managementGroups/d1a349ef-6ac8-4588-a88d-5dab272c700b'
+   $me = az ad signed-in-user show --query id -o tsv
+   az role assignment create --assignee-object-id $me --assignee-principal-type User --role 5d58bcaf-24a5-4b20-bdb6-eed9f69fbe4c --scope $root -o none
+   az account management-group create --name mg-demo --display-name Demo --parent d1a349ef-6ac8-4588-a88d-5dab272c700b
+   az role assignment delete --assignee $me --role 5d58bcaf-24a5-4b20-bdb6-eed9f69fbe4c --scope $root
+   ```
+
+   The create command prints the group in JSON, with the display name `Demo`. A new role assignment can take a few minutes to take effect, so wait if the create command is refused and run it again. In the browser, search for **Management groups**, select **Create**, type `mg-demo` as the ID and `Demo` as the display name, and select **Submit**.
+
+The demo run proved every grant of this step. A missing role shows first in the fresh preview of an apply job, as `AuthorizationFailed` for `Microsoft.Resources/deployments/whatIf/action` (section 5).
+
 Check that both lists of identities are complete.
 
 ```powershell
@@ -1166,7 +1180,7 @@ This is project sections 4.2 to 4.8 and 4.10, for a production unit that creates
 
 7. Approve it as the second account. In the private window, open the run, select **Review deployments**, tick `mirror-production-demo`, write a comment naming `DEMO-0004`, and select **Approve and deploy**.
 
-8. Watch the apply. The fresh preview matches the plan record for record, the gate step creates the five resources, and the second check ends with `NoChange=5`. The summary ends with `Gate step exit: 0, deployed, and the second check passed.` The audience can open the group in the portal. In the Azure portal, search for **Resource groups**, select `rg-demo-network` and read the list on the **Overview** page, which holds `nsg-demo` and `vnet-demo`. Select **Locks** in the left menu to see `lock-rg-demo-network`, and **Access control (IAM)** > **Role assignments** to see the Reader row for `id-mirror-reader`. The lock matters at the end, because section 6 must remove it before it can delete the group.
+8. Watch the apply. The fresh preview matches the plan record for record, the gate step creates the five resources, and the second check ends with `NoChange=5`. The policy assignment declares `definitionVersion: '2.*.*'`, because Azure sets that value on the write, and a file that left it out would show one Modify in the second check. The summary ends with `Gate step exit: 0, deployed, and the second check passed.` The audience can open the group in the portal. In the Azure portal, search for **Resource groups**, select `rg-demo-network` and read the list on the **Overview** page, which holds `nsg-demo` and `vnet-demo`. Select **Locks** in the left menu to see `lock-rg-demo-network`, and **Access control (IAM)** > **Role assignments** to see the Reader row for `id-mirror-reader`. The lock matters at the end, because section 6 must remove it before it can delete the group.
 
 9. Download the evidence as in wave 0, with `evidence-deploy-rg-demo-network` and `reviewed-plan-rg-demo-network`.
 
@@ -1235,7 +1249,7 @@ This is project step 3.23 item 8 and sections 4.2 to 4.8, for a privileged unit.
 
 ### 4.6 Wave 5, the management group
 
-This is the first tenant unit. It deploys at management group scope against the Tenant Root Group, whose name is the tenant ID, and it declares the management group `mg-demo` with `scope: tenant()`. The reader previews it with Reader and Mirror What-If Reader Tenant on the Tenant Root Group (step 3.14). `id-mirror-govern-tenant` deploys it, with User Access Administrator, Management Group Contributor and Mirror Deployment Operator Tenant there (step 3.15), after the approval in `mirror-privileged-tenant`.
+This is the first tenant unit. It deploys at management group scope against the Tenant Root Group, whose name is the tenant ID, and it declares the management group `mg-demo` with `scope: tenant()`. A preview cannot run for a management group that does not exist yet, so `mg-demo` was created once by hand in step 3.15 item 8, and this unit previews and deploys it as NoChange. The project's group `FDMGroupResources` exists in the same way. The reader previews it with Reader and Mirror What-If Reader Tenant on the Tenant Root Group (step 3.14). `id-mirror-govern-tenant` deploys it, with User Access Administrator, Management Group Contributor and Mirror Deployment Operator Tenant there (step 3.15), after the approval in `mirror-privileged-tenant`.
 
 1. Enable the unit in a pull request. Create a branch, set `"enabled": true` in the entry of `demo-tenant-management-group` in `deploy/units.json`, then commit, push and open the pull request.
 
@@ -1246,7 +1260,7 @@ This is the first tenant unit. It deploys at management group scope against the 
    gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head enable-tenant-mg --title "Enable the management group unit" --body "Change: DEMO-0007"
    ```
 
-2. Show the preview on the pull request. `whatif demo-tenant-management-group` shows the gate FAIL with `Create=1`, the management group `mg-demo`, marked for information.
+2. Show the preview on the pull request. `whatif demo-tenant-management-group` shows the gate PASS with `NoChange=1`, the management group `mg-demo`, because the group exists already.
 
 3. Approve the pull request as the second account, then, once every check is green, select **Squash and merge** and **Confirm squash and merge**.
 
@@ -1256,23 +1270,23 @@ This is the first tenant unit. It deploys at management group scope against the 
    git pull
    ```
 
-4. Show the push run. The plan names `allowCreate` with the ID of the group, and nothing waits.
+4. Show the push run. The plan passes with no effective change, and nothing waits.
 
-5. Start the deployment. A tenant unit may name the IDs of the management groups it declares.
+5. Start the deployment. It needs no option, because the plan holds no Create.
 
    ```powershell
-   gh workflow run mirror-deploy-unit.yml --ref master -f unit=demo-tenant-management-group -f changeRef=DEMO-0007 -f reason="Wave 5, the management group" -f apply=true -f allowCreate=/providers/Microsoft.Management/managementGroups/mg-demo --repo themasterishome/demo-bicep-deploy-test
+   gh workflow run mirror-deploy-unit.yml --ref master -f unit=demo-tenant-management-group -f changeRef=DEMO-0007 -f reason="Wave 5, the management group" -f apply=true --repo themasterishome/demo-bicep-deploy-test
    ```
 
 6. Show the waiting apply, `apply-privileged demo-tenant-management-group`, for the environment `mirror-privileged-tenant`. Approve it as the second account with **Review deployments**, ticking `mirror-privileged-tenant`, and a comment naming `DEMO-0007`.
 
-7. Watch the apply. It signs in as `id-mirror-govern-tenant` and the gate step runs `az deployment mg` against the Tenant Root Group. The second check ends with `NoChange=1`. In the Azure portal, search for **Management groups**. The Tenant Root Group holds a new group, `Demo` (`mg-demo`).
+7. Watch the apply. It signs in as `id-mirror-govern-tenant` and the gate step runs `az deployment mg` against the Tenant Root Group. The second check ends with `NoChange=1`. In the Azure portal, search for **Management groups**. The Tenant Root Group holds the group `Demo` (`mg-demo`) from step 3.15 item 8, unchanged.
 
 8. Download the evidence, `evidence-deploy-demo-tenant-management-group` and `reviewed-plan-demo-tenant-management-group`.
 
 ### 4.7 Wave 6, the role assignment on the management group
 
-This unit runs against `mg-demo`, which wave 5 created. That is why it has its own pull request. Its preview and its plan need the group to exist.
+This unit runs against `mg-demo`, which step 3.15 item 8 created. Its preview and its plan need the group to exist. It has its own pull request, so each tenant unit shows its own preview and approval.
 
 1. Enable the unit in a pull request. Create a branch and set `"enabled": true` in the entry of `demo-tenant-governance` in `deploy/units.json`. `readerPrincipalId` in `infra/tenant/governance.mg-demo.bicepparam` already holds the reader's `principalId`. Then commit, push and open the pull request.
 
@@ -1427,7 +1441,8 @@ A rollback cannot remove a resource that a deployment created with `allowCreate`
 | A drift run fails on resource groups the code does not declare | `demo-subscription` was enabled. Its drift check lists every live group in the Visual Studio subscription, and the demo declares only its own three | Keep `demo-subscription` disabled |
 | A plan of a tenant unit fails with `AuthorizationFailed` | The reader lacks Reader or Mirror What-If Reader Tenant on the Tenant Root Group, or the roles have not taken effect yet | Run the second check of step 3.14 item 3, wait about 10 minutes and start a new run |
 | A role assignment fails with `PrincipalNotFound` | A parameter file holds a `principalId` that differs from the identity's, for example after the identity was created again | Put the identity's `principalId` into `rg-demo-network.bicepparam`, `privileged.bicepparam` and `governance.mg-demo.bicepparam` through a code pull request |
-| The plan of `demo-tenant-governance` cannot be previewed | The management group `mg-demo` does not exist yet, because `demo-tenant-management-group` has not deployed | Deploy wave 5 first (section 4.6) |
+| A tenant unit cannot be previewed, with `AuthorizationFailed` on the group's own scope "or the scope is invalid" | The management group `mg-demo` does not exist, because step 3.15 item 8 was not done. A preview cannot run against a group that is not there | Create the group as step 3.15 item 8 shows |
+| A plan or the apply job fails with `AuthorizationFailed` for `Microsoft.Resources/deployments/whatIf/action` | The identity that signs in lacks a role. The fresh preview of the apply job shows a missing grant first | Compare the identity's roles with step 3.15 and the role table of step 3.13, grant the missing one and wait about 10 minutes |
 | A write of an Owner, User Access Administrator or Role Based Access Control Administrator assignment is refused, or `preflight` fails | The record sits in a production unit. The deploy identity's condition refuses it, and the preflight keeps it out of the production tier | Move it into a privileged unit, as `privileged.bicep` does for the Owner assignment |
 | `az policy assignment delete` fails with `ScopeLocked`, or a resource group cannot be deleted | The CanNotDelete lock on `rg-demo-identities` covers the assignment, and `lock-rg-demo-network` covers its group | Remove the locks first, as section 6 does |
 | The policy compliance list stays empty after step 3.17 | The first evaluation of a new assignment can take over an hour | Run `az policy state trigger-scan` with `--no-wait` as step 3.17 shows, and use the Deny check as the quicker proof |
