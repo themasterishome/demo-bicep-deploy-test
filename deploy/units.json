@@ -35,7 +35,7 @@
       "wave": 1,
       "risk": "low",
       "enabled": true,
-      "notes": "One network security group with no rules of its own and one virtual network with one subnet, which that network security group protects. Free resources only."
+      "notes": "One network security group with no rules of its own and one virtual network with one subnet, which that network security group protects, and the private endpoint of the secrets vault with its DNS zone, link and zone group. The group's lock, policy assignment and Reader role assignment are here too. Free resources apart from the private endpoint."
     },
     {
       "name": "rg-demo-routing",
@@ -47,7 +47,7 @@
       "wave": 2,
       "risk": "low",
       "enabled": true,
-      "notes": "One route table with no routes and one application security group. Free resources only."
+      "notes": "One route table with no routes, one application security group and one Automation account with a credential whose password is read from the secrets vault with getSecret. Free resources only."
     },
     {
       "name": "demo-subscription",
@@ -59,7 +59,7 @@
       "wave": 3,
       "risk": "medium",
       "enabled": true,
-      "notes": "Demo subscription layer: the three resource groups rg-demo-pilot, rg-demo-network and rg-demo-routing, written out as they are live. The resources inside the groups deploy from their own resource group files in resource-groups/, one unit each, and main.bicep does not call those files. The Owner role assignment and the custom role of the subscription are in demo-privileged. Deployed by the pipeline through mirror-production-demo like every other unit."
+      "notes": "Demo subscription layer: the four resource groups rg-demo-identities, rg-demo-pilot, rg-demo-network and rg-demo-routing, written out as they are live, and the Defender plan for virtual machines. The resources inside the groups deploy from their own resource group files in resource-groups/, one unit each, and main.bicep calls none of those files. It calls the identity group's file only when deployIdentityGroup is on, which parameters.bicepparam leaves off and parameters.verify.bicepparam turns on for a preview. The Owner role assignment and the custom role of the subscription are in demo-privileged. Deployed by the pipeline through mirror-production-demo like every other unit."
     },
     {
       "name": "demo-privileged",

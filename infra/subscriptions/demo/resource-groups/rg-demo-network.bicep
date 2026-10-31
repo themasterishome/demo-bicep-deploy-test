@@ -1,7 +1,8 @@
 // Resource group rg-demo-network in the demo subscription. It holds every resource in the group, written out exactly
 // as it is live. This is the resource group file, the one file to edit for a change to these resources. It holds one
 // network security group and one virtual network with one subnet, which the network security group protects, and the
-// group's own lock, policy assignment and Reader role assignment. All of them are free.
+// group's own lock, policy assignment and Reader role assignment, and the private endpoint of the secrets vault with
+// its DNS zone, link and zone group. All of them are free except the private endpoint, which costs a few pounds a month.
 // It is deployed by the unit rg-demo-network in deploy/units.json, with rg-demo-network.bicepparam beside it. A unit
 // is the smallest set of files that is approved and deployed together, and every unit stays disabled until it is
 // enabled in a pull request.
@@ -97,5 +98,78 @@ resource roleAssignment_reader 'Microsoft.Authorization/roleAssignments@2022-04-
     principalId: readerPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'acdd72a7-3385-48ef-bd42-f606fba81ae7')
+  }
+}
+
+// The private DNS zone for private endpoints of Key Vault. A private endpoint's address is registered in this zone, so
+// a machine on the linked network resolves the vault's name to the private address. A private DNS zone is global, so
+// its location is the word global. It is the same zone name the project's vault endpoint uses.
+resource privateDnsZone_privatelink_vaultcore_azure_net 'Microsoft.Network/privateDnsZones@2024-06-01' = {
+  name: 'privatelink.vaultcore.azure.net'
+  location: 'global'
+  tags: { purpose: 'demo-bicep-deploy' }
+  properties: {}
+}
+
+// The link that makes the zone visible on vnet-demo. Registration is off, because only the endpoint's zone group
+// writes records here.
+resource virtualNetworkLink_link_vnet_demo 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  parent: privateDnsZone_privatelink_vaultcore_azure_net
+  name: 'link-vnet-demo'
+  location: 'global'
+  tags: { purpose: 'demo-bicep-deploy' }
+  properties: {
+    registrationEnabled: false
+    resolutionPolicy: 'Default'
+    virtualNetwork: {
+      id: virtualNetwork_vnet_demo.id
+    }
+  }
+}
+
+// The private endpoint of the demo's secrets vault kv-demo-mirror-secrets, which lives in rg-demo-identities. The vault
+// has public network access disabled, so a person who writes a secret reaches it only through this address in the
+// subnet snet-default. A private endpoint must sit in the subscription of its network, which is why it is declared
+// here and not with the vault. A deployment that reads a secret with getSecret needs no endpoint, because Azure
+// Resource Manager is a trusted service of the vault. NIC, IP, DNS and connection status are reported by the provider
+// and are not declared. The API version is 2025-09-01, not 2026-01-01, because the newer version previews the
+// provider-set billingSku as a change.
+resource privateEndpoint_pe_kv_demo_mirror_secrets 'Microsoft.Network/privateEndpoints@2025-09-01' = {
+  name: 'pe-kv-demo-mirror-secrets'
+  location: location
+  tags: { purpose: 'demo-bicep-deploy' }
+  properties: {
+    ipVersionType: 'IPv4'
+    manualPrivateLinkServiceConnections: []
+    privateLinkServiceConnections: [
+      {
+        name: 'kv-demo-mirror-secrets'
+        properties: {
+          privateLinkServiceId: resourceId(subscription().subscriptionId, 'rg-demo-identities', 'Microsoft.KeyVault/vaults', 'kv-demo-mirror-secrets')
+          groupIds: [
+            'vault'
+          ]
+        }
+      }
+    ]
+    subnet: {
+      id: '${virtualNetwork_vnet_demo.id}/subnets/snet-default'
+    }
+  }
+}
+
+// The endpoint's record in the zone above, so that the vault's name resolves to the private address on vnet-demo.
+resource privateDnsZoneGroup_pe_kv_demo_mirror_secrets_default 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2026-01-01' = {
+  parent: privateEndpoint_pe_kv_demo_mirror_secrets
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'vaultcore'
+        properties: {
+          privateDnsZoneId: privateDnsZone_privatelink_vaultcore_azure_net.id
+        }
+      }
+    ]
   }
 }

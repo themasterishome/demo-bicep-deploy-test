@@ -10,7 +10,53 @@
   "alwaysAcceptedPropertyChangeTypes": [
     "NoEffect"
   ],
-  "boundaries": [],
-  "expectedIgnore": [],
+  "boundaries": [
+    {
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "path": "properties.privateDnsZoneConfigs[*].id",
+      "changeTypes": [
+        "Delete"
+      ],
+      "onDeploy": "inert",
+      "reason": "Provider response field on each zone config. A rewrite of the same zone group without it is accepted and leaves the A record untouched (same IP, TTL, id and record etag)."
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "path": "properties.privateDnsZoneConfigs[*].etag",
+      "changeTypes": [
+        "Delete"
+      ],
+      "onDeploy": "inert",
+      "reason": "Provider response field. Azure gives the zone group a new etag on every write, so the code cannot carry it (declaring it gives NoChange once and a Modify after every write). A rewrite without it is accepted, as for id."
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "path": "properties.privateDnsZoneConfigs[*].type",
+      "changeTypes": [
+        "Delete"
+      ],
+      "onDeploy": "inert",
+      "reason": "Provider response field. A rewrite without it is accepted and leaves the A record untouched, as for id."
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "path": "properties.privateDnsZoneConfigs[*].properties.provisioningState",
+      "changeTypes": [
+        "Delete"
+      ],
+      "onDeploy": "inert",
+      "reason": "Provider response field. A rewrite without it is accepted and leaves the A record untouched, as for id."
+    }
+  ],
+  "expectedIgnore": [
+    {
+      "pattern": "(?i)^/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft\\.Network/networkInterfaces/pe-kv-demo-mirror-secrets\\.nic\\.[0-9a-f-]+$",
+      "reason": "The network card Azure creates for the private endpoint pe-kv-demo-mirror-secrets. Azure names it after the endpoint with a generated suffix and owns it, so the code does not declare it."
+    },
+    {
+      "pattern": "(?i)^/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-identities/providers/(Microsoft\\.ManagedIdentity/userAssignedIdentities/id-mirror-[a-z-]+|Microsoft\\.KeyVault/vaults/kv-demo-mirror-secrets)$",
+      "reason": "The identities and the secrets vault of rg-demo-identities. The unit demo-subscription writes the group and never what is in it, and a preview of the unit lists the contents as Ignore. They are declared in resource-groups/rg-demo-identities.deploy-excluded.bicep and previewed with parameters.verify.bicepparam."
+    }
+  ],
   "holds": []
 }
