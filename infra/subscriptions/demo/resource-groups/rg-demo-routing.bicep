@@ -1,7 +1,7 @@
 // Resource group rg-demo-routing in the demo subscription. It holds every resource in the group, written out exactly
 // as it is live. This is the resource group file, the one file to edit for a change to these resources. It holds one
 // route table with no routes and one application security group, and an Automation account with one credential whose
-// password comes from the secrets vault. All of them are free.
+// password comes from the secrets vault. All of them cost nothing.
 // It is deployed by the unit rg-demo-routing in deploy/units.json, with rg-demo-routing.bicepparam beside it. A unit
 // is the smallest set of files that is approved and deployed together, and every unit stays disabled until it is
 // enabled in a pull request.
@@ -43,15 +43,39 @@ resource applicationSecurityGroup_asg_demo 'Microsoft.Network/applicationSecurit
   properties: {}
 }
 
-// The Automation account, on the Free tier, with no runbooks. It exists to hold the credential below, so a unit that
-// reads a secret from the vault has something to write it into.
+// The Automation account, with no runbooks. It exists to hold the credential below, so a unit that reads a secret from
+// the vault has something to write it into. Azure no longer creates an account on the Free tier. A write that asks for
+// Free is stored as Basic, which costs nothing while the account runs no job, so Basic is declared. The other values
+// below are the ones live returns after the first write: local authentication stays on, the keys are Microsoft's, and
+// Azure fills in the default PowerShell runtime configuration with its built-in Az module versions.
 resource automationAccount_aa_demo_secrets 'Microsoft.Automation/automationAccounts@2024-10-23' = {
   name: 'aa-demo-secrets'
   location: location
   tags: { purpose: 'demo-bicep-deploy' }
   properties: {
     sku: {
-      name: 'Free'
+      name: 'Basic'
+    }
+    disableLocalAuth: false
+    encryption: {
+      keySource: 'Microsoft.Automation'
+    }
+    RuntimeConfiguration: {
+      powershell: {
+        builtinModules: {
+          Az: '11.2.0'
+        }
+      }
+      powershell7: {
+        builtinModules: {
+          Az: '8.0.0'
+        }
+      }
+      powershell72: {
+        builtinModules: {
+          Az: '11.2.0'
+        }
+      }
     }
   }
 }
