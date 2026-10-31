@@ -185,7 +185,7 @@ Every `gh` command in this guide runs as `themasterishome`. The second account w
 
 ## 3. Set up once
 
-Do the steps in order, because each one needs the steps before it. Each step has the number it has in PIPELINE.md section 3, so you can show the project step next to the demo step. Every Azure command names `--subscription 77488719-1168-4d53-af9a-f5c3bc9291d7`, apart from the `az policy assignment` commands, `az role definition list` and `delete`, and the role assignments and management group commands at the Tenant Root Group. Those take `--scope` or a name and rely on the default subscription set in section 2.
+Do the steps in order, because each one needs the steps before it. Each step has the number it has in PIPELINE.md section 3, so you can show the project step next to the demo step. Every Azure command names `--subscription 77488719-1168-4d53-af9a-f5c3bc9291d7`, apart from the `az policy assignment` commands and the role assignments and management group commands at the Tenant Root Group. Those take `--scope` or a name and rely on the default subscription set in section 2.
 
 The placeholders used in this section:
 - `SECOND_LOGIN` is the second GitHub account's login, `klaudiomarashi`.
@@ -412,6 +412,8 @@ The project has 25 environments, one per identity that deploys, two for the read
 
 The project lists the approvers team as reviewers of the production environments and a second, smaller team, `mirror-privileged-approvers`, as reviewers of the privileged ones. A personal repository has no teams, so the demo lists the second account, as a user, in all three. Say so to the audience, because it is the one place where the two tiers share a reviewer.
 
+The required reviewers are the only thing that makes an apply job wait. An environment with no reviewer lets a Run workflow with `apply` on go from its plan straight to its write, and nobody can read the plan in between. So a production or privileged environment is never left without a reviewer, and the check below reads them back.
+
 Create all five before the switch. A workflow that names an environment that does not exist creates it without reviewers or branch rule. There is one environment per identity, because a federated credential is bound to one environment name.
 
 Create them in a PowerShell window. The commands are the main route. To show one environment in the browser, select **Settings** > **Environments** > **New environment**, type the name and select **Configure environment**. For `mirror-production-demo`, tick **Required reviewers**, search for and select the second account, tick **Prevent self-review** and select **Save protection rules**. In the **Deployment branches** dropdown, select **Selected branches and tags**, select **Add deployment branch or tag rule**, keep the ref type **Branch**, type `master` and select **Add rule**.
@@ -474,7 +476,7 @@ The project puts the identities in a group of the platform subscription. The dem
 
    The output is the lock in JSON, with `"level": "CanNotDelete"`. The portal shows this lock type as **Delete**.
 
-3. Project item 3 assigns a built-in policy that audits federated credentials against a list of trusted GitHub owners. The demo skips it. The demo does not assign it. Steps 3.17 items 3 to 5 and section 6 item 2 skip the policy as well.
+3. Project item 3 assigns a built-in policy that audits federated credentials against a list of trusted GitHub owners. The demo does not assign it. Steps 3.17 items 3 to 5 and section 6 item 2 skip the policy as well. The project writes the policy's parameters to a file and passes it with `--params "@FILE.json"`, because Windows PowerShell 5.1 drops the inner double quotes of an argument.
 
 4. Project item 4 (an eligible PIM assignment of Managed Identity Contributor) is left out. Your Owner on the subscription covers the demo.
 
@@ -532,6 +534,8 @@ az deployment sub what-if --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --
 
 The preview reports `NoChange` for the four identities, their five credentials, the vault and its two role assignments. Never deploy with the verify file. The lock of item 2 is not declared in the file, because the demo sets it by hand.
 
+Compare a plan with a preview taken with the same parameter file. The pipeline plans `demo-subscription` with `parameters.bicepparam`, which leaves the identity group out, so its plan counts fewer records than this preview by the records of the group's contents. The project has the same difference between a plan and the figures of REFERENCE.md section 7.11, which come from the verify file.
+
 ### 3.13 Create the custom roles
 
 The project needs nine custom roles, and the demo needs seven. Each carries only the actions its identity needs, so no pipeline identity holds more than its units use.
@@ -579,30 +583,31 @@ The reasons are these:
         Actions = @('Microsoft.Resources/deployments/*', 'Microsoft.Resources/subscriptions/resourceGroups/read', 'Microsoft.Resources/subscriptions/resourceGroups/write',
                     'Microsoft.Security/pricings/read', 'Microsoft.Security/pricings/write'); Scopes = @($sub) }
    )
+   $roleIds = @{}
    foreach ($r in $roles) {
      $file = Join-Path $folder ("$($r.Name -replace '[^A-Za-z0-9]+', '-').json")
      $json = [ordered]@{ Name = $r.Name; IsCustom = $true; Description = $r.Description; Actions = @($r.Actions); NotActions = @(); AssignableScopes = @($r.Scopes) } |
        ConvertTo-Json -Depth 4
      [System.IO.File]::WriteAllText($file, $json)
-     az role definition create --role-definition $file --only-show-errors -o none
-     Write-Host "created $($r.Name)"
+     $roleIds[$r.Name] = az role definition create --role-definition $file --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --only-show-errors --query name -o tsv
+     Write-Host "$($r.Name) $($roleIds[$r.Name])"
    }
    ```
 
-   The command writes one JSON file per role under `C:\demo-setup\roles`, outside the repository. The output is seven lines, `created Mirror What-If Reader` to `created Mirror Platform Deployment`. If a command fails because a role of that name exists, an earlier demo left it behind. Delete it as section 6 shows, or use it.
+   The command writes one JSON file per role under `C:\demo-setup\roles`, outside the repository, and creates the roles one at a time. The output is seven lines, each a role name and its ID, from `Mirror What-If Reader` to `Mirror Platform Deployment`. Keep the IDs, because item 3 uses them. If a command fails because a role of that name exists, an earlier demo left it behind. Run `az role definition update --role-definition FILE --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7` with the same file, or delete the role as section 6 shows.
 
 2. Check that each role exists with the scope you expect.
 
    ```powershell
-   az role definition list --custom-role-only true --scope /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[?starts_with(roleName, 'Mirror')].{role:roleName, scopes:assignableScopes}" -o json
+   az role definition list --custom-role-only true --scope /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7 --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[?starts_with(roleName, 'Mirror')].{role:roleName, scopes:assignableScopes}" -o json
    ```
 
    The output lists the roles that include the subscription, which are Mirror What-If Reader, Mirror Lock Writer, Mirror Deployment Operator and Mirror Platform Deployment. Check the other three by name with `az role definition list --name "ROLE_NAME"`, adding `--scope` with the Tenant Root Group path for the two tenant roles and the identity resource group for Mirror Key Vault Deployment. A new role takes a short while to replicate. If a command prints nothing, wait a minute and run it again.
 
-3. Read the ID of each role. The set-up commands assign every role by its ID, not its name, because a name can match a second role and an ID cannot.
+3. Keep the ID of each role. The set-up commands assign every role by its ID, not its name, because a name can match a second role and an ID cannot. The loop of item 1 printed them. To read one again, run the following.
 
    ```powershell
-   az role definition list --name "ROLE_NAME" --scope SCOPE --query "[0].name" -o tsv
+   az role definition list --name "ROLE_NAME" --scope SCOPE --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[0].name" -o tsv
    ```
 
    Replace `ROLE_NAME` with a role's name and `SCOPE` with one of its assignable scopes, for example `/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7`. The output is one GUID, new each time the role is created. Keep one per role as `WHATIF_ROLE_ID`, `WHATIF_TENANT_ROLE_ID`, `LOCK_ROLE_ID`, `OPERATOR_ROLE_ID`, `OPERATOR_TENANT_ROLE_ID` and `KEYVAULT_ROLE_ID`.
@@ -635,7 +640,7 @@ The reader identity runs every pipeline preview: pull request previews, the plan
    }
    ```
 
-   Replace `READER_PRINCIPAL`, `WHATIF_ROLE_ID` and `WHATIF_TENANT_ROLE_ID`. `acdd72a7-3385-48ef-bd42-f606fba81ae7` is the built-in Reader role. Each command prints nothing when it succeeds. If one says the role does not exist, the new role has not replicated yet. Wait a minute and run it again. The reader then previews the two tenant units, which have no subscription.
+   Replace `READER_PRINCIPAL`, `WHATIF_ROLE_ID` and `WHATIF_TENANT_ROLE_ID`. `acdd72a7-3385-48ef-bd42-f606fba81ae7` is the built-in Reader role. Each command prints nothing when it succeeds. A new identity can take a minute to be known to role assignments. If the first command answers `PrincipalNotFound`, wait a minute and run the loop again. If one says the role does not exist, the new role has not replicated yet, and the same wait helps. The reader then previews the two tenant units, which have no subscription.
 
 3. Check the assignments.
 
@@ -687,7 +692,7 @@ Each identity holds its standing roles on its own scope only. Never give a deplo
      --condition $condition --condition-version 2.0 -o none
    ```
 
-   Replace `DEPLOY_PRINCIPAL`, `LOCK_ROLE_ID` and `PLATFORM_ROLE_ID`. `b24988ac-6180-42a0-ab88-20f7382dd24c` is the built-in Contributor role and `36243c78-bf99-498c-9df9-86d9f8d28608` is Resource Policy Contributor. Each command prints nothing when it succeeds. Check the conditioned assignment afterwards. The command prints the condition and its version `2.0`.
+   Replace `DEPLOY_PRINCIPAL`, `LOCK_ROLE_ID` and `PLATFORM_ROLE_ID`. `b24988ac-6180-42a0-ab88-20f7382dd24c` is the built-in Contributor role and `36243c78-bf99-498c-9df9-86d9f8d28608` is Resource Policy Contributor. Each command prints nothing when it succeeds. If one answers `PrincipalNotFound`, the identity is only a minute old. Wait and run that command again. Check the conditioned assignment afterwards. The command prints the condition and its version `2.0`.
 
    ```powershell
    az role assignment list --assignee-object-id DEPLOY_PRINCIPAL --all --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 `
@@ -1035,8 +1040,12 @@ Do section 3 the day before, or at least two hours before the audience arrives. 
 - [ ] The second account is signed in, in the private window.
 - [ ] No run of mirror-deploy-unit waits for approval.
 - [ ] You merge nothing else while a deployment waits. A merge moves `master`, and the waiting apply then refuses (project section 4.1).
+- [ ] Before a unit's first deployment, every resource it declares that points at another resource finds that target in Azure.
+
+The last item protects the write. A what-if never checks that a resource's target exists, so a plan of NoChange passes the gate and Azure then refuses the write with `ResourceNotFound`. The pointers to check are an autoscale setting's `targetResourceUri`, a diagnostic setting's `workspaceId`, `storageAccountId` and `eventHubAuthorizationRuleId`, a private endpoint's `privateLinkServiceId`, a DNS zone link's `virtualNetwork`, a peering's `remoteVirtualNetwork`, the scopes of alerts, the receivers of action groups, backup and Site Recovery items, Logic App connections and the runbooks of job schedules. A resource whose target is gone is declared as an existing reference, not written (project REFERENCE.md sections 8.3 and 9.2). The demo has three pointers, the private endpoint to the vault, the zone link to `vnet-demo` and the zone group to the endpoint. The vault exists since step 3.12 and the other two targets sit in the same unit, which writes each target before the resource that points at it.
 
 Plan jobs take one to two minutes, and apply jobs about three.
+
 ### 4.2 Wave 0, the pilot
 
 This is project step 3.23 and sections 4.2 to 4.8. Project section 4.6, the check of the deploy identity's roles, is step 3.15 item 6 here, done once at set-up.
@@ -1115,16 +1124,31 @@ This is project step 3.23 and sections 4.2 to 4.8. Project section 4.6, the chec
    gh run watch --repo themasterishome/demo-bicep-deploy-test
    ```
 
-   Choose the run when the GitHub CLI asks. On screen, the apply job checks that it is the first attempt, that `master` is still at the planned commit and that the plan is less than 24 hours old. It signs in as the deploy identity, compares a fresh preview with the plan and runs the gate step. The log shows `Identity ok: *** (servicePrincipal)`, because `azure/login` masks the client ID. The ID itself is visible in the inputs of the `azure/login` step, in the environment of the step "Check the environment has a client ID", and in `approval.txt` and `post-summary.txt` as `identity=<client ID> (servicePrincipal)`. Its summary ends with `Gate step exit: 0, deployed, and the second check passed.`
+   Choose the run when the GitHub CLI asks. To read the result of a run later, list its jobs.
 
-10. Download the evidence. The run's ID is the long number after `/actions/runs/` in the run's address, not the `#N` number. In the browser, scroll to the "Artifacts" section of the run's page and select `evidence-deploy-pilot-empty-rg` to download it as a zip file. The commands below do the same and unpack the files.
+   ```powershell
+   gh run view RUN_ID --repo themasterishome/demo-bicep-deploy-test --json status,conclusion,jobs --jq "[.status, .conclusion, (.jobs[] | .name + ':' + .conclusion)]"
+   ```
+
+   Replace `RUN_ID` with the run's ID (item 10). The output lists the run's status, its conclusion and each job with its own. The deployment is recorded in the deployment history of its scope as `mirror-UNIT-SHORT_COMMIT`, for example `mirror-pilot-empty-rg-` and the first seven characters of the commit, and it stays there, a Failed one included. In the portal, select the resource group, then **Settings** > **Deployments**. On screen, the apply job checks that it is the first attempt, that `master` is still at the planned commit and that the plan is less than 24 hours old. It signs in as the deploy identity, compares a fresh preview with the plan and runs the gate step. The log shows `Identity ok: *** (servicePrincipal)`, because `azure/login` masks the client ID. The ID itself is visible in the inputs of the `azure/login` step, in the environment of the step "Check the environment has a client ID", and in `approval.txt` and `post-summary.txt` as `identity=<client ID> (servicePrincipal)`. Its summary ends with `Gate step exit: 0, deployed, and the second check passed.`
+
+10. Download the evidence. The run's ID is the long number after `/actions/runs/` in the run's address, not the `#N` number. In the browser, scroll to the "Artifacts" section of the run's page and select `evidence-deploy-pilot-empty-rg` to download it as a zip file. The commands below do the same and unpack the files, and they are the route when the browser's zip does not open.
+
+    `gh run download` can fail on these artifacts on Windows, because a zip holds the same entry twice. So fetch each zip through the API and unpack it with Python, whose `zipfile` module accepts it. First list the run's artifacts.
 
     ```powershell
-    gh run download RUN_ID --name evidence-deploy-pilot-empty-rg --dir C:\demo-setup\evidence-pilot --repo themasterishome/demo-bicep-deploy-test
-    gh run download RUN_ID --name reviewed-plan-pilot-empty-rg --dir C:\demo-setup\evidence-pilot\reviewed-plan --repo themasterishome/demo-bicep-deploy-test
+    gh api "repos/themasterishome/demo-bicep-deploy-test/actions/runs/RUN_ID/artifacts" --jq ".artifacts[] | [.id, .name] | @tsv"
     ```
 
-    Replace `RUN_ID` with the run's ID. The files sit under `C:\demo-setup\evidence-pilot`, in the folders the artifact itself holds. This command finds them.
+    Replace `RUN_ID` with the run's ID. The output has one line per artifact, its ID and its name. Then fetch and unpack `evidence-deploy-pilot-empty-rg` and `reviewed-plan-pilot-empty-rg`, each with its own ID.
+
+    ```powershell
+    New-Item -ItemType Directory -Force C:\demo-setup\evidence-pilot | Out-Null
+    cmd /c "gh api repos/themasterishome/demo-bicep-deploy-test/actions/artifacts/ARTIFACT_ID/zip > C:\demo-setup\evidence-pilot\ARTIFACT_NAME.zip"
+    python -I -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" C:\demo-setup\evidence-pilot\ARTIFACT_NAME.zip C:\demo-setup\evidence-pilot\ARTIFACT_NAME
+    ```
+
+    Replace `ARTIFACT_ID` and `ARTIFACT_NAME` with the ID and name from the list. The command goes through `cmd /c` because Windows PowerShell 5.1 would change the bytes of a redirected zip. The files sit under `C:\demo-setup\evidence-pilot`, in the folders the artifact itself holds. This command finds them.
 
     ```powershell
     Get-ChildItem -Path C:\demo-setup\evidence-pilot -Recurse -Include approval.txt, post-summary.txt | Select-Object -ExpandProperty FullName
@@ -1212,7 +1236,7 @@ The unit is enabled already, so this wave needs no pull request.
 
 2. Approve it as the second account, watch the apply and download `evidence-deploy-rg-demo-routing`, as in wave 1. The second check shows `rt-demo`, `asg-demo`, `aa-demo-secrets` and `demo-cred` NoChange.
 
-   The unit deploys the Automation account's credential with a password that no file in the repository holds. `rg-demo-routing.bicepparam` reads it from the vault with `az.getSecret`, the deploy identity holds Mirror Key Vault Deployment on the vault, and Azure Resource Manager reads the secret as a trusted service, although the vault's public network access is disabled. `parameters.json` in the evidence shows `<secure input, not recorded>` for the password. A preview does not evaluate the secret, so only the deployment proves it. Start the same unit again with no `allowCreate`. Both checks show `NoChange=4`, and nothing is deployed that changes a value.
+   The unit deploys the Automation account's credential with a password that no file in the repository holds. `rg-demo-routing.bicepparam` reads it from the vault with `az.getSecret`, the deploy identity holds Mirror Key Vault Deployment on the vault, and Azure Resource Manager reads the secret as a trusted service, although the vault's public network access is disabled. `parameters.json` in the evidence shows `<secure input, not recorded>` for the password. A preview does not evaluate the secret, so only the deployment proves it. Start the same unit again with no `allowCreate`. Both checks show `NoChange=4`, and nothing is deployed that changes a value. This is the proof of project section 4.8. A second deployment of the same commit changes nothing, so its plan, its first check and its second check all show the same records.
 
    Two units that depend on each other deploy one after the other, as the project's two VPN gateway units do. Start `rg-demo-routing` only after the run of `rg-demo-network` has finished, and approve each run on its own.
 
@@ -1460,7 +1484,10 @@ A rollback cannot remove a resource that a deployment created with `allowCreate`
 | The apply refuses after the approval because `master` moved | Something was merged while the apply waited | Reject the old run under **Review deployments**, then start a new run and approve its plan |
 | A drift run fails on a resource group the code does not declare | The Visual Studio subscription holds groups that are not part of the demo, and the drift check of `demo-subscription` lists every live group in it | Keep the demo's own groups the only ones the unit declares, and read the drift summary for the names it reports |
 | A plan of a tenant unit fails with `AuthorizationFailed` | The reader lacks Reader or Mirror What-If Reader Tenant on the Tenant Root Group, or the roles have not taken effect yet | Run the second check of step 3.14 item 3, wait about 10 minutes and start a new run |
-| A role assignment fails with `PrincipalNotFound` | A parameter file holds a `principalId` that differs from the identity's, for example after the identity was created again | Put the identity's `principalId` into `rg-demo-network.bicepparam`, `privileged.bicepparam` and `governance.mg-demo.bicepparam` through a code pull request |
+| A role assignment fails with `PrincipalNotFound` | A parameter file holds a `principalId` that differs from the identity's, for example after the identity was created again. Or the identity is only a minute old and Azure does not know it yet | Put the identity's `principalId` into `rg-demo-network.bicepparam`, `privileged.bicepparam` and `governance.mg-demo.bicepparam` through a code pull request. For a new identity, wait a minute and run the command again |
+| An apply job ran at once, with no pause for the second account | The environment has no required reviewer, for example because a workflow named an environment that did not exist and GitHub created it with no rules | Treat the run as unreviewed. Set the reviewers and the branch rule as step 3.11 shows, and check them with its read-back before the next run |
+| An apply fails in Azure with `ResourceNotFound` on one resource, after a plan of NoChange and a passed gate | A what-if never checks that a resource's target exists. The resource points at one that is gone, such as an autoscale setting on a deleted scale set. The deployment is left as Failed in the deployment history, and nothing was deleted | Make the resource an existing reference through a code pull request (project REFERENCE.md sections 8.3 and 9.2), then start a new run at the fixed commit. Do not retry the old run. The check before a first deployment is in section 4.1 |
+| `gh run download` fails with a zip error on Windows | The artifact's zip holds the same entry twice, which the command refuses | Fetch the zip through `gh api` and unpack it with Python, as 4.2 item 10 shows |
 | A tenant unit cannot be previewed, with `AuthorizationFailed` on the group's own scope "or the scope is invalid" | The management group `mg-demo` does not exist, because step 3.15 item 8 was not done. A preview cannot run against a group that is not there | Create the group as step 3.15 item 8 shows |
 | A plan or the apply job fails with `AuthorizationFailed` for `Microsoft.Resources/deployments/whatIf/action` | The identity that signs in lacks a role. The fresh preview of the apply job shows a missing grant first | Compare the identity's roles with step 3.15 and the role table of step 3.13, grant the missing one and wait about 10 minutes |
 | A write of an Owner, User Access Administrator or Role Based Access Control Administrator assignment is refused, or `preflight` fails | The record sits in a production unit. The deploy identity's condition refuses it, and the preflight keeps it out of the production tier | Move it into a privileged unit, as `privileged.bicep` does for the Owner assignment |
@@ -1476,7 +1503,7 @@ the AZURE_CLIENT_ID variable of the environment mirror-production-demo is not a 
 
 ## 6. Clean up
 
-Remove everything in the order Azure needs. Your CLI default is still the Visual Studio subscription.
+Remove everything in the order Azure needs. The lock on the identity group comes off first, because it refuses every delete inside the group. Each role assignment goes next, deleted by its ID, because Azure refuses to delete a role that is still assigned. The role definitions follow, deleted by ID, and the identities go with their group. When only the pipeline's identities go and the group stays, delete the identities before the role definitions and put the lock back at the end. Your CLI default is still the Visual Studio subscription, and every command names the subscription anyway. An `az role assignment delete --ids` without `--subscription` reaches the CLI default.
 
 1. Remove the two locks. A group with a lock cannot be deleted while its lock is on.
 
@@ -1502,7 +1529,7 @@ Remove everything in the order Azure needs. Your CLI default is still the Visual
      $ids += @(az role assignment list --assignee-object-id $p --scope $root --query "[?scope=='$root'].id" -o tsv)
      foreach ($id in $ids) {
        if ($id) {
-         az role assignment delete --ids $id
+         az role assignment delete --ids $id --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7
          Write-Host "removed $id"
        }
      }
@@ -1511,21 +1538,27 @@ Remove everything in the order Azure needs. Your CLI default is still the Visual
 
    Replace the four placeholders with the `principalId` values. The output is one `removed` line for each assignment. The Owner assignment of `id-mirror-govern-demo` sits on `rg-demo-network` and goes with that group.
 
-5. Remove the custom roles. A role can go only once nothing holds it, and a new removal can take a minute to show.
+5. Remove the custom roles, each by its ID. A role can go only once nothing holds it, and a new removal can take a minute to show.
 
    ```powershell
    $sub = '/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7'
    $root = '/providers/Microsoft.Management/managementGroups/d1a349ef-6ac8-4588-a88d-5dab272c700b'
-   foreach ($r in 'Mirror What-If Reader', 'Mirror Lock Writer', 'Mirror Deployment Operator', 'Mirror Platform Deployment', 'Demo Reader Plus') {
-     az role definition delete --name $r --scope $sub
-     Write-Host "removed $r"
+   $roles = @(
+     @('Mirror What-If Reader', $sub), @('Mirror Lock Writer', $sub), @('Mirror Deployment Operator', $sub),
+     @('Mirror Platform Deployment', $sub), @('Demo Reader Plus', $sub),
+     @('Mirror What-If Reader Tenant', $root), @('Mirror Deployment Operator Tenant', $root),
+     @('Mirror Key Vault Deployment', "$sub/resourceGroups/rg-demo-identities")
+   )
+   foreach ($r in $roles) {
+     $id = az role definition list --name $r[0] --scope $r[1] --custom-role-only true --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[0].name" -o tsv
+     if ($id) {
+       az role definition delete --name $id --scope $r[1] --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7
+       Write-Host "removed $($r[0]) $id"
+     }
    }
-   foreach ($r in 'Mirror What-If Reader Tenant', 'Mirror Deployment Operator Tenant') {
-     az role definition delete --name $r --scope $root
-     Write-Host "removed $r"
-   }
-   az role definition delete --name "Mirror Key Vault Deployment" --scope "$sub/resourceGroups/rg-demo-identities"
    ```
+
+   The output is one `removed` line for each role, with its ID.
 
 6. Delete the four resource groups. This removes the identities with their credentials, the network, the routing and the deployment history.
 
@@ -1544,7 +1577,7 @@ Remove everything in the order Azure needs. Your CLI default is still the Visual
 
    ```powershell
    az group list --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[?tags.purpose=='demo-bicep-deploy'].name" -o tsv
-   az role definition list --custom-role-only true --scope /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[].roleName" -o tsv
+   az role definition list --custom-role-only true --scope /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7 --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[].roleName" -o tsv
    az account management-group show --name mg-demo
    ```
 
@@ -1557,7 +1590,7 @@ Remove everything in the order Azure needs. Your CLI default is still the Visual
    gh repo delete themasterishome/demo-bicep-deploy-test --yes
    ```
 
-   In the browser, open the repository's **Settings** > **General**, scroll to the "Danger Zone" and select **Delete this repository**. Then select **I want to delete this repository** and **I have read and understand these effects**, type the repository name and select **Delete this repository**. Deleting it also removes the second account's access. To run the demo again, recreate it from step 3.3, because a new repository has a new ID and so new subjects.
+   In the browser, open the repository's **Settings** > **General**, scroll to the "Danger Zone" and select **Delete this repository**. Then select **I want to delete this repository** and **I have read and understand these effects**, type the repository name and select **Delete this repository**. Deleting it also removes the second account's access, the environments with their variables, and every run with its artifacts. To remove only the set-up and keep the repository, delete the switch with `gh variable delete MIRROR_PIPELINE_ENABLED --repo themasterishome/demo-bicep-deploy-test`, then each of the five environments with `gh api --method DELETE repos/themasterishome/demo-bicep-deploy-test/environments/ENVIRONMENT_NAME`. An environment's variables go with it. To run the demo again, recreate it from step 3.3, because a new repository has a new ID and so new subjects.
 
 9. Set the Azure CLI default back to the subscription you use day to day.
 
