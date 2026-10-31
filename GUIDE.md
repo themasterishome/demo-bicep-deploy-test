@@ -14,16 +14,16 @@ Contents:
 
 The repository holds the project's four workflows, the helper script `.github/scripts/mirror-pipeline.ps1`, the gate script `scripts/deploy-unit.ps1` and the preflight, unchanged in what they do. The estate is seven units in the Visual Studio subscription, in the project's two tiers. A merge plans a unit and deploys nothing. **Run workflow** deploys it, and only after a reviewer who did not start the run reads the plan and approves it in GitHub. A production unit deploys with the deploy identity `id-mirror-deploy-demo`. A privileged unit changes who has access, so it deploys with a govern identity and waits in a privileged environment. The identity then takes a fresh preview, deploys and takes the second check, and the run keeps the evidence.
 
-The scripts, the workflows and their comments are the production ones with only the names changed, so some comments speak of a team, IT or more subscriptions.
+The scripts, the workflows and their comments are the production ones with only the names changed, so some comments speak of a team, IT or more subscriptions. The preflight differs in two checks only. Its layout rules accept a deploy-excluded file that `main.bicep` calls behind a switch, and accept `parameters.verify.bicepparam`, because the demo keeps its identity group in one folder with its resource group files, where the project keeps it in a subscription folder of its own.
 
 The units, in the order they deploy:
 
 | Wave | Unit | Tier | Resource group or scope | What it deploys |
 |---|---|---|---|---|
 | 0 | `pilot-empty-rg` | Production | `rg-demo-pilot` | An empty template. It proves the identities, the approval, the gate and the evidence without touching a resource. |
-| 1 | `rg-demo-network` | Production | `rg-demo-network` | The network security group `nsg-demo`, the virtual network `vnet-demo` (10.250.0.0/24) and its subnet `snet-default` (10.250.0.0/26), linked to that network security group. Also the lock `lock-rg-demo-network` (CanNotDelete), the policy assignment of the built-in policy "Audit resource location matches resource group location" with the effect Audit, and a Reader role assignment for the reader identity. |
-| 2 | `rg-demo-routing` | Production | `rg-demo-routing` | The route table `rt-demo` with no routes and the application security group `asg-demo`. |
-| none | `demo-subscription` | Production | The subscription | The three resource groups and the Defender plan for virtual machines, declared in `infra/subscriptions/demo/main.bicep`. It stays disabled, because its drift check lists every live group in the subscription and the demo declares only its own three. |
+| 1 | `rg-demo-network` | Production | `rg-demo-network` | The network security group `nsg-demo`, the virtual network `vnet-demo` (10.250.0.0/24) and its subnet `snet-default` (10.250.0.0/26), linked to that network security group. Also the lock `lock-rg-demo-network` (CanNotDelete), the policy assignment of the built-in policy "Audit resource location matches resource group location" with the effect Audit, and a Reader role assignment for the reader identity, and the private endpoint `pe-kv-demo-mirror-secrets` of the secrets vault with the zone `privatelink.vaultcore.azure.net`, its link to `vnet-demo` and the endpoint's zone group. |
+| 2 | `rg-demo-routing` | Production | `rg-demo-routing` | The route table `rt-demo` with no routes, the application security group `asg-demo`, and the Automation account `aa-demo-secrets` with the credential `demo-cred`, whose password the unit reads from the secrets vault with `getSecret`. |
+| none | `demo-subscription` | Production | The subscription | The four resource groups (the identity group among them) and the Defender plan for virtual machines, declared in `infra/subscriptions/demo/main.bicep`. The identity group's contents are in `resource-groups/rg-demo-identities.deploy-excluded.bicep`, which `main.bicep` calls only when `deployIdentityGroup` is on. `parameters.bicepparam` leaves it off and `parameters.verify.bicepparam` turns it on for a preview. It stays disabled, because its drift check lists every live group in the subscription and the demo declares only its own four. |
 | 4 | `demo-privileged` | Privileged | The subscription | The Owner role assignment on `rg-demo-network` and the custom role definition `Demo Reader Plus`. |
 | 5 | `demo-tenant-management-group` | Privileged | The Tenant Root Group | Declares the management group `mg-demo` under the Tenant Root Group, which step 3.15 item 8 creates once by hand. |
 | 6 | `demo-tenant-governance` | Privileged | The management group `mg-demo` | A Reader role assignment made on `mg-demo`. |
@@ -107,7 +107,7 @@ What the demo cannot show:
 - the push ruleset `protect-github-folder` (project step 3.8), because push rulesets exist only for private and internal repositories
 - the enterprise issuer of step 3.16, item 3
 - PIM, because the demo needs no eligible roles. Owner on the Visual Studio subscription does the set-up, and the demo account already holds User Access Administrator at the Tenant Root Group, so the elevated access of step 3.13 is not needed
-- the secrets vault of step 3.12, item 5, and the roles tied to it, because the demo has no secret. The role Mirror Key Vault Deployment is created and nothing holds it
+- the 16 VPN shared keys that the project's vault holds first. The demo's vault holds one made-up secret, `demo-automation-password`, and the Automation credential reads it. The demo has no Log Analytics workspace of its own, so the vault has no audit log
 - a platform subscription of its own. The demo has one subscription, so the identity group sits next to the units and the deploy identity is kept out of it by holding Contributor on the three workload groups only
 - the custom roles Mirror Container Writer, Mirror Network Peering and Mirror Budget Writer, which the demo units do not need
 - the security alerts of step 3.24, which the demo leaves out
@@ -496,7 +496,43 @@ The project puts the identities in a group of the platform subscription. The dem
 
 4. Project item 4 (an eligible PIM assignment of Managed Identity Contributor) is left out. Your Owner on the subscription covers the demo.
 
-5. Project item 5 creates the secrets vault `kv-mirror-secrets`. The demo has no secret to keep, so the vault step is skipped. The role Mirror Key Vault Deployment of step 3.13 is still created, and nothing holds it.
+5. Create the secrets vault, as project item 5 does with `kv-mirror-secrets`. The demo's vault is `kv-demo-mirror-secrets`, because `kv-demo-secrets` was taken by another tenant. It has Azure role-based access, soft delete for 90 days, purge protection, access for template deployments, and a firewall that denies every address except Azure's trusted services. It is created with public network access disabled from the start.
+
+   ```powershell
+   az keyvault create --name kv-demo-mirror-secrets --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --location uksouth --sku standard `
+     --enable-rbac-authorization true --retention-days 90 --enable-purge-protection true --enabled-for-template-deployment true `
+     --public-network-access Disabled --default-action Deny --bypass AzureServices --tags purpose=demo-bicep-deploy
+   ```
+
+   The output is the vault in JSON, with `"publicNetworkAccess": "Disabled"`. A vault name is global, so a name that is taken fails with `VaultAlreadyExists`. Pick another and use it everywhere below.
+
+   The private endpoint, the zone and the zone group come with the unit `rg-demo-network` (wave 1), which declares them. The vault must exist before that unit runs, because the endpoint points at it. The audit log of the project's vault goes to a Log Analytics workspace, and the demo subscription has none of its own, so the demo vault has no audit setting.
+
+   Give your own account the role Key Vault Secrets Officer on the vault, so you can write a secret. Replace `YOUR_OBJECT_ID` with the object ID of your signed-in account.
+
+   ```powershell
+   az role assignment create --assignee-object-id YOUR_OBJECT_ID --assignee-principal-type User --role "Key Vault Secrets Officer" --scope /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-identities/providers/Microsoft.KeyVault/vaults/kv-demo-mirror-secrets
+   ```
+
+   The output is the assignment in JSON. The project writes secrets through the vault's private endpoint from a machine on the network. The demo has no such machine, so the one secret is written through a temporary opening. Open the vault to your address, write the secret from a file so the value never appears on a command line, and close the vault again.
+
+   ```powershell
+   $kv = 'kv-demo-mirror-secrets'
+   $rg = 'rg-demo-identities'
+   $sub = '77488719-1168-4d53-af9a-f5c3bc9291d7'
+   $myIp = (Invoke-RestMethod -Uri 'https://api.ipify.org').Trim()
+   az keyvault update --name $kv --resource-group $rg --subscription $sub --public-network-access Enabled --default-action Deny --bypass AzureServices -o none
+   az keyvault network-rule add --name $kv --resource-group $rg --subscription $sub --ip-address $myIp -o none
+   $tmp = Join-Path $env:TEMP 'demo-secret.txt'
+   [IO.File]::WriteAllText($tmp, [guid]::NewGuid().ToString('N') + 'Aa1!')
+   Start-Sleep -Seconds 60
+   az keyvault secret set --vault-name $kv --subscription $sub --name demo-automation-password --file $tmp --encoding utf-8 --content-type demo-password --query "{name:name, enabled:attributes.enabled}" -o json
+   Remove-Item $tmp -Force
+   az keyvault network-rule remove --name $kv --resource-group $rg --subscription $sub --ip-address $myIp -o none
+   az keyvault update --name $kv --resource-group $rg --subscription $sub --public-network-access Disabled --query "{publicAccess:properties.publicNetworkAccess, defaultAction:properties.networkAcls.defaultAction, bypass:properties.networkAcls.bypass}" -o json
+   ```
+
+   The first output names the secret with `"enabled": true`. The last one prints `Disabled`, `Deny` and `AzureServices`. A firewall change takes up to a minute to apply, which is why the block waits before the write. If the write answers Forbidden, wait and run it again. Nothing prints the value.
 
 Check the lock and the policy.
 
@@ -506,6 +542,14 @@ az policy assignment list --resource-group rg-demo-identities --subscription 774
 ```
 
 The first lists `mirror-identities-no-delete` with `CanNotDelete`. The second lists the policy, with a definition ID that ends in `fd1a8e20-2c4f-4a6c-9354-b58d786d9a1f`.
+
+The group is also written down as code, in `infra/subscriptions/demo/resource-groups/rg-demo-identities.deploy-excluded.bicep`. It declares the four identities with their federated credentials, the vault and the two role assignments on it, as they are live. `main.bicep` calls the file only when `deployIdentityGroup` is true. `parameters.bicepparam` leaves it false, so the unit `demo-subscription` never writes the group's contents, and the deploy identity could not anyway. `parameters.verify.bicepparam` sets it true, so a preview shows the contents. Check them against live after steps 3.12 to 3.17, read-only.
+
+```powershell
+az deployment sub what-if --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --location uksouth --template-file infra/subscriptions/demo/main.bicep --parameters infra/subscriptions/demo/parameters.verify.bicepparam --no-pretty-print -o json
+```
+
+The preview reports `NoChange` for the four identities, their five credentials, the vault and its two role assignments. Never deploy with the verify file. The group has no lock and no policy assignment declared here, because the file describes what the group holds and the lock and the policy of item 2 and item 3 are set by hand.
 
 ### 3.13 Create the custom roles
 
@@ -518,14 +562,14 @@ The project needs nine custom roles, and the demo needs seven. Each carries only
 | Mirror Lock Writer | `Microsoft.Authorization/locks/*` | The deploy identity |
 | Mirror Deployment Operator | `Microsoft.Resources/deployments/*` and `Microsoft.Resources/subscriptions/resourceGroups/read` | The govern identity |
 | Mirror Deployment Operator Tenant | The same actions, plus `Microsoft.Management/managementGroups/read` and `Microsoft.Management/managementGroups/subscriptions/read`, assignable at the Tenant Root Group only | `id-mirror-govern-tenant` |
-| Mirror Key Vault Deployment | `Microsoft.KeyVault/vaults/deploy/action` | Nobody in the demo, because it has no secrets vault |
+| Mirror Key Vault Deployment | `Microsoft.KeyVault/vaults/deploy/action` and `Microsoft.KeyVault/vaults/PrivateEndpointConnectionsApproval/action` | The deploy identity, on the vault `kv-demo-mirror-secrets` only |
 | Mirror Platform Deployment | `Microsoft.Resources/deployments/*`, `Microsoft.Resources/subscriptions/resourceGroups/read`, `Microsoft.Resources/subscriptions/resourceGroups/write`, `Microsoft.Security/pricings/read` and `Microsoft.Security/pricings/write` | The deploy identity, at the subscription |
 
 The reasons are these:
 - Mirror What-If Reader adds the one action Reader lacks for a preview at the validation level `ProviderNoRbac`, which every preview in this folder uses. The Tenant Root Group needs its own copy, because a custom role on a management group may name only one scope, and it cannot mix scopes. The project lists 11 subscriptions as the scopes of the first, and the demo one.
 - Mirror Lock Writer exists because only Owner and User Access Administrator carry `Microsoft.Authorization/locks/*`, and the deploy identity holds neither. The production unit `rg-demo-network` writes a lock.
 - Mirror Deployment Operator exists because User Access Administrator lacks the deployment actions, so the govern identity needs a role to start a deployment. It carries nothing else. The tenant copy adds the two read actions on management groups that a deployment at management group scope needs.
-- Mirror Key Vault Deployment is the right a template needs to read a secret through a reference. The demo creates the role so the list matches the project's, and assigns it to nobody.
+- Mirror Key Vault Deployment carries two rights, both on the vault only. The first lets a template read a secret through a reference. It does not let the identity read the secret itself, because Azure Resource Manager does that. The second is what Azure checks when a deployment writes a private endpoint that points at the vault. Without it the write of `pe-kv-demo-mirror-secrets` fails with `LinkedAuthorizationFailed`, although the identity may write endpoints in its own group, because the endpoint's connection is approved on the vault's side.
 - Mirror Platform Deployment exists because the deploy identity holds Contributor on the workload groups only. A subscription-scope deployment needs `Microsoft.Resources/deployments/*` at the subscription, a resource group declared in `main.bicep` needs the write on resource groups, and the Defender plan needs the write on pricings. It never deletes or moves a group.
 
 1. Create the seven roles. This needs Owner or User Access Administrator on the subscription and on the identity resource group. The two roles whose scope is the Tenant Root Group need the same right there, and the demo account holds User Access Administrator at the Tenant Root Group already, so no elevated access is needed. If a command prints `AuthorizationFailed` for one of those two roles, the signed-in account lacks that right, and project step 3.13 shows the elevated access that gives it.
@@ -548,8 +592,8 @@ The reasons are these:
      @{ Name = 'Mirror Deployment Operator Tenant'; Description = 'Start and read deployments at the Tenant Root Group. Changes nothing else.'
         Actions = @('Microsoft.Resources/deployments/*', 'Microsoft.Resources/subscriptions/resourceGroups/read',
                     'Microsoft.Management/managementGroups/read', 'Microsoft.Management/managementGroups/subscriptions/read'); Scopes = @($root) },
-     @{ Name = 'Mirror Key Vault Deployment'; Description = 'Let a template deployment read secrets of this vault through a reference.'
-        Actions = @('Microsoft.KeyVault/vaults/deploy/action'); Scopes = @($vaultGroup) },
+     @{ Name = 'Mirror Key Vault Deployment'; Description = 'Let a template deployment read secrets of this vault through a reference, and let a private endpoint in another group connect to it.'
+        Actions = @('Microsoft.KeyVault/vaults/deploy/action', 'Microsoft.KeyVault/vaults/PrivateEndpointConnectionsApproval/action'); Scopes = @($vaultGroup) },
      @{ Name = 'Mirror Platform Deployment'; Description = 'Deploy at subscription scope, write resource groups and the Defender plans. Changes nothing else.'
         Actions = @('Microsoft.Resources/deployments/*', 'Microsoft.Resources/subscriptions/resourceGroups/read', 'Microsoft.Resources/subscriptions/resourceGroups/write',
                     'Microsoft.Security/pricings/read', 'Microsoft.Security/pricings/write'); Scopes = @($sub) }
@@ -692,7 +736,13 @@ Each identity holds its standing roles on its own scope only. Never give a deplo
 
    Replace `TENANT_PRINCIPAL` and `OPERATOR_TENANT_ROLE_ID`. The command prints nothing when it succeeds.
 
-5. The project's item 3 gives the deploy identities extra rights on linked resources, which are Mirror Network Peering, Mirror Key Vault Deployment and Mirror Container Writer. None applies to the demo, because it has no peering, no vault and no data export. A missing right on a linked resource would show up late, because Azure checks it on the write and not in the preview.
+5. The project's item 3 gives the deploy identities extra rights on linked resources, which are Mirror Network Peering, Mirror Key Vault Deployment and Mirror Container Writer. Only Mirror Key Vault Deployment applies to the demo, because it has no peering and no data export. Give the deploy identity the role on the vault. A missing right on a linked resource would show up late, because Azure checks it on the write and not in the preview.
+
+   ```powershell
+   az role assignment create --assignee-object-id DEPLOY_PRINCIPAL --assignee-principal-type ServicePrincipal --role KEYVAULT_ROLE_ID --scope /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-identities/providers/Microsoft.KeyVault/vaults/kv-demo-mirror-secrets
+   ```
+
+   Replace `DEPLOY_PRINCIPAL` with the deploy identity's `principalId` and `KEYVAULT_ROLE_ID` with the ID of Mirror Key Vault Deployment from step 3.13. The output is the assignment in JSON.
 
 6. Check the assignments.
 
@@ -1157,7 +1207,7 @@ This is project sections 4.2 to 4.8 and 4.10, for a production unit that creates
    gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head enable-waves --title "Enable the network and routing units" --body "Change: DEMO-0004"
    ```
 
-2. Show the preview on the pull request. mirror-pr runs `whatif rg-demo-network` and `whatif rg-demo-routing`. The first shows the gate FAIL with `Create=5`, which are the network security group, the virtual network, the lock, the policy assignment and the role assignment. The second shows `Create=2`. Both are marked for information. The comments are on the **Conversation** tab of the pull request. A new resource is a Create, and the gate refuses a Create that nobody named. The check `pr-gate` is still green, because it fails only when a preview could not run.
+2. Show the preview on the pull request. mirror-pr runs `whatif rg-demo-network` and `whatif rg-demo-routing`. The first shows the gate FAIL with `Create=9`, which are the network security group, the virtual network, the lock, the policy assignment, the role assignment, the private DNS zone, its link, the private endpoint and the endpoint's zone group. The second shows `Create=4`, which are the route table, the application security group, the Automation account and its credential. Both are marked for information. The comments are on the **Conversation** tab of the pull request. A new resource is a Create, and the gate refuses a Create that nobody named. The check `pr-gate` is still green, because it fails only when a preview could not run.
 
 3. Approve the pull request as the second account, then, once every check is green, select **Squash and merge** and **Confirm squash and merge**.
 
@@ -1169,7 +1219,7 @@ This is project sections 4.2 to 4.8 and 4.10, for a production unit that creates
 
 4. Show the push run, as in 4.2 item 4. It plans both units and the plan jobs show red. Each plan is not approvable, because it holds Creates nobody named. The summary names the option that would accept them, `allowCreate`, and gives the ready `gh workflow run` command with the resource IDs. Nothing waits and nothing deploys.
 
-5. Start the deployment of `rg-demo-network`, with the five resource IDs in `allowCreate`. Copy the command from the plan summary, because it holds the IDs of the policy assignment and the role assignment, whose names are GUIDs that Bicep builds. The IDs are these.
+5. Start the deployment of `rg-demo-network`, with the nine resource IDs in `allowCreate`. Copy the command from the plan summary, because it holds the IDs of the policy assignment and the role assignment, whose names are GUIDs that Bicep builds. The IDs are these.
 
    ```text
    /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Network/networkSecurityGroups/nsg-demo
@@ -1177,21 +1227,25 @@ This is project sections 4.2 to 4.8 and 4.10, for a production unit that creates
    /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Authorization/locks/lock-rg-demo-network
    /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Authorization/policyAssignments/POLICY_ASSIGNMENT_NAME
    /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Authorization/roleAssignments/ROLE_ASSIGNMENT_NAME
+/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Network/privateDnsZones/privatelink.vaultcore.azure.net
+/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Network/privateDnsZones/privatelink.vaultcore.azure.net/virtualNetworkLinks/link-vnet-demo
+/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Network/privateEndpoints/pe-kv-demo-mirror-secrets
+/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Network/privateEndpoints/pe-kv-demo-mirror-secrets/privateDnsZoneGroups/default
    ```
 
-   Type it in PowerShell with the five IDs joined by commas and no space.
+   Type it in PowerShell with the nine IDs joined by commas and no space.
 
    ```powershell
-   gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-network -f changeRef=DEMO-0004 -f reason="Wave 1, create the network" -f apply=true -f allowCreate="ID1,ID2,ID3,ID4,ID5" --repo themasterishome/demo-bicep-deploy-test
+   gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-network -f changeRef=DEMO-0004 -f reason="Wave 1, create the network" -f apply=true -f allowCreate="ID1,ID2,ID3,ID4,ID5,ID6,ID7,ID8,ID9" --repo themasterishome/demo-bicep-deploy-test
    ```
 
-   Replace `ID1` to `ID5` with the five IDs. In the **Run workflow** form of the **Actions** tab, fill in **Deployment unit (name from deploy/units.json)** (`unit`) with `rg-demo-network`, **Change ticket number** (`changeRef`) with `DEMO-0004` and **What this deployment is for** (`reason`), tick **Deploy after a reviewer approves the plan. Leave off for a plan only** (`apply`), and paste the IDs into **Resource IDs that may show as Create, separated by commas** (`allowCreate`), separated by a comma and no space.
+   Replace `ID1` to `ID9` with the nine IDs. In the **Run workflow** form of the **Actions** tab, fill in **Deployment unit (name from deploy/units.json)** (`unit`) with `rg-demo-network`, **Change ticket number** (`changeRef`) with `DEMO-0004` and **What this deployment is for** (`reason`), tick **Deploy after a reviewer approves the plan. Leave off for a plan only** (`apply`), and paste the IDs into **Resource IDs that may show as Create, separated by commas** (`allowCreate`), separated by a comma and no space.
 
-6. Show the plan. The summary of `plan rg-demo-network` shows the verdict approvable, the option `allowCreate` with all five IDs, and the five Create records with their properties. `apply rg-demo-network` waits. Point at the role assignment record. A reviewer reads every role assignment in a production unit's plan as an access change (project section 1.5), and this one grants Reader only.
+6. Show the plan. The summary of `plan rg-demo-network` shows the verdict approvable, the option `allowCreate` with all nine IDs, and the nine Create records with their properties. `apply rg-demo-network` waits. Point at the role assignment record. A reviewer reads every role assignment in a production unit's plan as an access change (project section 1.5), and this one grants Reader only.
 
 7. Approve it as the second account. In the private window, open the run, select **Review deployments**, tick `mirror-production-demo`, write a comment naming `DEMO-0004`, and select **Approve and deploy**.
 
-8. Watch the apply. The fresh preview matches the plan record for record, the gate step creates the five resources, and the second check ends with `NoChange=5`. The policy assignment declares `definitionVersion: '2.*.*'`, because Azure sets that value on the write, and a file that left it out would show one Modify in the second check. The summary ends with `Gate step exit: 0, deployed, and the second check passed.` The audience can open the group in the portal. In the Azure portal, search for **Resource groups**, select `rg-demo-network` and read the list on the **Overview** page, which holds `nsg-demo` and `vnet-demo`. Select **Locks** in the left menu to see `lock-rg-demo-network`, and **Access control (IAM)** > **Role assignments** to see the Reader row for `id-mirror-reader`. The lock matters at the end, because section 6 must remove it before it can delete the group.
+8. Watch the apply. The fresh preview matches the plan record for record, the gate step creates the nine resources, and the second check ends with `NoChange=8`, one `Ignore` and one `Modify`. The `Ignore` is the network card Azure creates for the private endpoint, which `deploy/boundaries.json` lists as expected. The `Modify` is the endpoint's zone group, whose provider-set fields (`id`, `etag`, `type` and `provisioningState` of the zone configuration) the code cannot carry, and `deploy/boundaries.json` lists them as inert, so the gate passes it. The policy assignment declares `definitionVersion: '2.*.*'`, because Azure sets that value on the write, and a file that left it out would show one Modify in the second check. The summary ends with `Gate step exit: 0, deployed, and the second check passed.` The audience can open the group in the portal. In the Azure portal, search for **Resource groups**, select `rg-demo-network` and read the list on the **Overview** page, which holds `nsg-demo` and `vnet-demo`. Select **Locks** in the left menu to see `lock-rg-demo-network`, and **Access control (IAM)** > **Role assignments** to see the Reader row for `id-mirror-reader`. The lock matters at the end, because section 6 must remove it before it can delete the group.
 
 9. Download the evidence as in wave 0, with `evidence-deploy-rg-demo-network` and `reviewed-plan-rg-demo-network`.
 
@@ -1205,7 +1259,11 @@ The unit is enabled already, so this wave needs no pull request.
    gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-routing -f changeRef=DEMO-0005 -f reason="Wave 2, create the routing" -f apply=true -f allowCreate="/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-routing/providers/Microsoft.Network/routeTables/rt-demo,/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-routing/providers/Microsoft.Network/applicationSecurityGroups/asg-demo" --repo themasterishome/demo-bicep-deploy-test
    ```
 
-2. Approve it as the second account, watch the apply and download `evidence-deploy-rg-demo-routing`, as in wave 1. The second check shows `rt-demo` and `asg-demo` NoChange.
+2. Approve it as the second account, watch the apply and download `evidence-deploy-rg-demo-routing`, as in wave 1. The second check shows `rt-demo`, `asg-demo`, `aa-demo-secrets` and `demo-cred` NoChange.
+
+   The unit deploys the Automation account's credential with a password that no file in the repository holds. `rg-demo-routing.bicepparam` reads it from the vault with `az.getSecret`, the deploy identity holds Mirror Key Vault Deployment on the vault, and Azure Resource Manager reads the secret as a trusted service, although the vault's public network access is disabled. `parameters.json` in the evidence shows `<secure input, not recorded>` for the password. A preview does not evaluate the secret, so only the deployment proves it. Start the same unit again with no `allowCreate`. Both checks show `NoChange=4`, and nothing is deployed that changes a value.
+
+   Two units that depend on each other deploy one after the other, as the project's two VPN gateway units do. Start `rg-demo-routing` only after the run of `rg-demo-network` has finished, and approve each run on its own.
 
 ### 4.5 Wave 4, the privileged unit
 
@@ -1449,7 +1507,7 @@ A rollback cannot remove a resource that a deployment created with `allowCreate`
 | The gate step stops with exit 2 and `identity '...' (servicePrincipal) is neither in allowedPrincipals nor the client ID of this GitHub Actions job (MIRROR_CLIENT_ID)` | The identity that signed in is not the one in the job's `AZURE_CLIENT_ID`. This happens when a service principal signed in outside a GitHub Actions job | In a pipeline job, make sure the job signed in with `azure/login`. By hand, sign in as a person listed in `allowedPrincipals` |
 | **Run workflow** is missing, or a run starts an old copy of the workflow | The workflow file is not on the default branch, or the default branch is not `master` and holds an older copy | Set the default branch as in step 3.5 |
 | The apply refuses after the approval because `master` moved | Something was merged while the apply waited | Reject the old run under **Review deployments**, then start a new run and approve its plan |
-| A drift run fails on resource groups the code does not declare | `demo-subscription` was enabled. Its drift check lists every live group in the Visual Studio subscription, and the demo declares only its own three | Keep `demo-subscription` disabled |
+| A drift run fails on resource groups the code does not declare | `demo-subscription` was enabled. Its drift check lists every live group in the Visual Studio subscription, and the demo declares only its own four | Keep `demo-subscription` disabled |
 | A plan of a tenant unit fails with `AuthorizationFailed` | The reader lacks Reader or Mirror What-If Reader Tenant on the Tenant Root Group, or the roles have not taken effect yet | Run the second check of step 3.14 item 3, wait about 10 minutes and start a new run |
 | A role assignment fails with `PrincipalNotFound` | A parameter file holds a `principalId` that differs from the identity's, for example after the identity was created again | Put the identity's `principalId` into `rg-demo-network.bicepparam`, `privileged.bicepparam` and `governance.mg-demo.bicepparam` through a code pull request |
 | A tenant unit cannot be previewed, with `AuthorizationFailed` on the group's own scope "or the scope is invalid" | The management group `mg-demo` does not exist, because step 3.15 item 8 was not done. A preview cannot run against a group that is not there | Create the group as step 3.15 item 8 shows |
@@ -1532,6 +1590,8 @@ Remove everything in the order Azure needs. Your CLI default is still the Visual
    ```
 
    The output ends each group with `exists: false`.
+
+   The vault `kv-demo-mirror-secrets` is not gone for good. It has purge protection, so Azure keeps it soft-deleted for 90 days and nobody can purge it earlier, even the owner. Its name stays reserved for that time, which is why a second run of the demo needs another vault name. The vault costs nothing while it waits. List it with `az keyvault list-deleted --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7`.
 
 7. Check that nothing is left.
 
