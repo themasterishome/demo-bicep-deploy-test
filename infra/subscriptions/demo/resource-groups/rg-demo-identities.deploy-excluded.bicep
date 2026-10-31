@@ -9,7 +9,7 @@
 // Edit a block here only to bring it in line with live, and preview it with parameters.verify.bicepparam.
 // Do NOT turn deployIdentityGroup on in parameters.bicepparam. The pipeline's own preview of the unit would then fail
 // on this group with AuthorizationFailed, which is the right answer.
-// The group has no lock and no policy assignment of its own at the moment, so none is declared.
+// The group has a lock of its own, set by hand and not declared here.
 
 // The one parameter is the region of the group. A resource with `location: location` uses that region.
 @description('Azure region for resources in this resource group. Defaults to the resource group location.')

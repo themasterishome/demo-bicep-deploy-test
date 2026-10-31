@@ -23,7 +23,7 @@ The units, in the order they deploy:
 | 0 | `pilot-empty-rg` | Production | `rg-demo-pilot` | An empty template. It proves the identities, the approval, the gate and the evidence without touching a resource. |
 | 1 | `rg-demo-network` | Production | `rg-demo-network` | The network security group `nsg-demo`, the virtual network `vnet-demo` (10.250.0.0/24) and its subnet `snet-default` (10.250.0.0/26), linked to that network security group. Also the lock `lock-rg-demo-network` (CanNotDelete), the policy assignment of the built-in policy "Audit resource location matches resource group location" with the effect Audit, and a Reader role assignment for the reader identity, and the private endpoint `pe-kv-demo-mirror-secrets` of the secrets vault with the zone `privatelink.vaultcore.azure.net`, its link to `vnet-demo` and the endpoint's zone group. |
 | 2 | `rg-demo-routing` | Production | `rg-demo-routing` | The route table `rt-demo` with no routes, the application security group `asg-demo`, and the Automation account `aa-demo-secrets` with the credential `demo-cred`, whose password the unit reads from the secrets vault with `getSecret`. |
-| none | `demo-subscription` | Production | The subscription | The four resource groups (the identity group among them) and the Defender plan for virtual machines, declared in `infra/subscriptions/demo/main.bicep`. The identity group's contents are in `resource-groups/rg-demo-identities.deploy-excluded.bicep`, which `main.bicep` calls only when `deployIdentityGroup` is on. `parameters.bicepparam` leaves it off and `parameters.verify.bicepparam` turns it on for a preview. It stays disabled, because its drift check lists every live group in the subscription and the demo declares only its own four. |
+| none | `demo-subscription` | Production | The subscription | The four resource groups (the identity group among them) and the Defender plan for virtual machines, declared in `infra/subscriptions/demo/main.bicep`. The identity group's contents are in `resource-groups/rg-demo-identities.deploy-excluded.bicep`, which `main.bicep` calls only when `deployIdentityGroup` is on. `parameters.bicepparam` leaves it off and `parameters.verify.bicepparam` turns it on for a preview. |
 | 4 | `demo-privileged` | Privileged | The subscription | The Owner role assignment on `rg-demo-network` and the custom role definition `Demo Reader Plus`. |
 | 5 | `demo-tenant-management-group` | Privileged | The Tenant Root Group | Declares the management group `mg-demo` under the Tenant Root Group, which step 3.15 item 8 creates once by hand. |
 | 6 | `demo-tenant-governance` | Privileged | The management group `mg-demo` | A Reader role assignment made on `mg-demo`. |
@@ -52,10 +52,12 @@ This follows project section 1.5. The pipeline signs in to Azure as user-assigne
 |---|---|---|
 | `id-mirror-reader` | Reader and Mirror What-If Reader on the subscription, and Reader and Mirror What-If Reader Tenant on the Tenant Root Group | Every preview. It writes nothing. |
 | `id-mirror-deploy-demo` | On `rg-demo-pilot`, `rg-demo-network` and `rg-demo-routing`: Contributor and Mirror Lock Writer. On the subscription: Resource Policy Contributor, Mirror Platform Deployment and Role Based Access Control Administrator with a condition. Nothing on `rg-demo-identities` | The production units |
-| `id-mirror-govern-demo` | On the subscription: User Access Administrator and Mirror Deployment Operator | `demo-privileged` |
+| `id-mirror-govern-demo` | On the subscription: User Access Administrator with a condition, and Mirror Deployment Operator | `demo-privileged` |
 | `id-mirror-govern-tenant` | On the Tenant Root Group: User Access Administrator, Management Group Contributor and Mirror Deployment Operator Tenant | The two tenant units |
 
 The condition on the deploy identity's Role Based Access Control Administrator assignment is Microsoft's "allow all except specific roles". It lets the identity assign any role except Owner, Role Based Access Control Administrator and User Access Administrator, and the list of this identity adds the Key Vault and managed identity roles that step 3.15 names. Azure then refuses the identity any write or delete of an assignment of those three roles, even an unchanged record. This is why those records live in the privileged units. Step 3.15 gives the condition.
+
+The govern identity's User Access Administrator assignment carries a condition too. It lets the identity assign Owner, User Access Administrator and Role Based Access Control Administrator, which the privileged unit needs, and refuses it any write or delete of an assignment of the eight Key Vault and managed identity roles. So even the privileged tier cannot grant itself or anyone else a read of the secrets vault or the use of another identity. Step 3.15 gives this condition as well.
 
 The privileged units have their own identities because User Access Administrator together with Contributor is in effect Owner of the subscription. An identity with both could raise its own rights through a change to the code. So the everyday identity can never grant Owner, because of the condition. The govern identity can write those assignments but holds no Contributor, so it can write nothing else. The right to start a deployment comes from the custom role Mirror Deployment Operator, which carries `Microsoft.Resources/deployments/*` and nothing else. The tenant units work at management group scope, and `id-mirror-govern-tenant` holds its three roles on the Tenant Root Group only, with a copy of Mirror Deployment Operator whose assignable scope is the Tenant Root Group.
 
@@ -83,7 +85,7 @@ Nobody can deploy alone in the normal flow. The person who starts a run cannot a
 | GitHub plan | Free. Every environment control works on Free for a public repository | Enterprise Cloud, which a private repository needs for required reviewers |
 | Reviewers | The second account `klaudiomarashi`, as a user, with Prevent self-review on. A personal repository has no teams | Two approvers teams, `technology-services-platforms` for the production environments and `mirror-privileged-approvers` for the 12 privileged ones, with Prevent self-review on |
 | Code owners | `@themasterishome`, plus the second account | The approvers team |
-| Units | 7 pipeline units, 4 production and 3 privileged. `demo-subscription` stays disabled | 67 pipeline units, 53 production and 14 privileged |
+| Units | 7 pipeline units, 4 production and 3 privileged. all seven enabled | 67 pipeline units, 53 production and 14 privileged |
 | Identities | 4, with 5 federated credentials | 24, with 25 federated credentials |
 | Environments | 5, `mirror-reader`, `mirror-reader-dispatch`, `mirror-production-demo`, `mirror-privileged-demo` and `mirror-privileged-tenant` | 25 |
 | Custom roles | 7, which are Mirror What-If Reader, Mirror What-If Reader Tenant, Mirror Lock Writer, Mirror Deployment Operator, Mirror Deployment Operator Tenant, Mirror Key Vault Deployment and Mirror Platform Deployment | 9 |
@@ -98,7 +100,7 @@ What stays identical:
 - the switch `MIRROR_PIPELINE_ENABLED`, the variables `AZURE_CLIENT_ID` and `AZURE_TENANT_ID` per environment, and the optional `MIRROR_RUNNER` and `MIRROR_MAX_PLAN_AGE_HOURS`
 - the environment names `mirror-reader`, `mirror-reader-dispatch`, `mirror-production-<folder>` and `mirror-privileged-<folder>`, which here are `mirror-production-demo` and `mirror-privileged-demo`, and `mirror-privileged-tenant`, all with the branch rule `master`
 - the identities and their roles, with the condition on the deploy identity's Role Based Access Control Administrator assignment
-- the OpenID Connect subjects, in the form `repo:OWNER@OWNER_ID/REPOSITORY@REPOSITORY_ID:environment:ENVIRONMENT`, and the trusted-owners policy on the identity group
+- the OpenID Connect subjects, in the form `repo:OWNER@OWNER_ID/REPOSITORY@REPOSITORY_ID:environment:ENVIRONMENT`, and the lock on the identity group
 - the flow, which is a code pull request with a preview, a merge that plans, Run workflow with the options, the approval, the apply, the second check, the evidence and the drift check
 
 What the demo cannot show:
@@ -133,7 +135,7 @@ To install the pinned Bicep CLI, run `az bicep install --version v0.48.1`.
 Run every command in a Windows PowerShell window, never in Git Bash. Git Bash rewrites any argument that starts with `/subscriptions/` into a Windows path, and the command then fails or is refused (section 5).
 
 You also need:
-- Owner on the Visual Studio subscription, for the custom roles, the role assignments, the lock and the policy assignment
+- Owner on the Visual Studio subscription, for the custom roles, the role assignments and the lock
 - User Access Administrator at the Tenant Root Group, which the demo account holds already, for the two tenant roles and the role assignments there
 - the GitHub account `themasterishome`
 - a second GitHub account, to show the approval and Prevent self-review as the project has them. If you have none, follow [section 3.0](#30-if-you-run-the-demo-alone) instead
@@ -464,7 +466,7 @@ The project puts the identities in a group of the platform subscription. The dem
 
    The output is the group in JSON, with `"provisioningState": "Succeeded"`.
 
-2. Lock the group against deletion. The lock stops anyone deleting the identities or their credentials. It also stops the deletion of the policy assignment of item 3, which section 6 needs to know.
+2. Lock the group against deletion. The lock stops anyone deleting the identities or their credentials.
 
    ```powershell
    az lock create --name mirror-identities-no-delete --lock-type CanNotDelete --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7
@@ -472,27 +474,7 @@ The project puts the identities in a group of the platform subscription. The dem
 
    The output is the lock in JSON, with `"level": "CanNotDelete"`. The portal shows this lock type as **Delete**.
 
-3. Assign the built-in policy that allows federated credentials only from trusted GitHub owners.
-   1. Check that the compliance provider is registered.
-
-      ```powershell
-      az provider show --namespace Microsoft.PolicyInsights --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query registrationState -o tsv
-      ```
-
-      The output is `Registered`. If it is not, run `az provider register --namespace Microsoft.PolicyInsights --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --wait` and check again.
-   2. Assign the policy with the effect Audit.
-
-      ```powershell
-      az policy assignment create --name mirror-fic-trusted-owners `
-        --display-name "GitHub federated credentials only from themasterishome" `
-        --policy fd1a8e20-2c4f-4a6c-9354-b58d786d9a1f `
-        --scope /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-identities `
-        --params "{ 'allowedRepoOwners': { 'value': [ 'themasterishome@49098959' ] }, 'effect': { 'value': 'Audit' } }"
-      ```
-
-      The output is the assignment in JSON, with `allowedRepoOwners` and `effect` under `parameters`. The owner value is the login, `@` and the owner ID, because the subjects of step 3.16 carry the ID.
-
-   Create the assignment with this command only. The portal gives a new assignment a GUID as its name, and step 3.17 and section 6 find it by the name `mirror-fic-trusted-owners`. Use the portal only to show the assignment, under **Policy** > **Authoring** > **Assignments** with the scope `rg-demo-identities`.
+3. Project item 3 assigns a built-in policy that audits federated credentials against a list of trusted GitHub owners. The demo skips it. The demo has one owner, a personal account, and its five credentials are the only ones in the group, so the policy has nothing to separate. The group is still protected the way the project's is, because no pipeline identity can write in it. Steps 3.17 items 3 to 5 and section 6 item 2 skip the policy as well.
 
 4. Project item 4 (an eligible PIM assignment of Managed Identity Contributor) is left out. Your Owner on the subscription covers the demo.
 
@@ -534,14 +516,13 @@ The project puts the identities in a group of the platform subscription. The dem
 
    The first output names the secret with `"enabled": true`. The last one prints `Disabled`, `Deny` and `AzureServices`. A firewall change takes up to a minute to apply, which is why the block waits before the write. If the write answers Forbidden, wait and run it again. Nothing prints the value.
 
-Check the lock and the policy.
+Check the lock.
 
 ```powershell
 az lock list --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[].{name:name, level:level}" -o table
-az policy assignment list --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[].{name:displayName, definition:policyDefinitionId}" -o table
 ```
 
-The first lists `mirror-identities-no-delete` with `CanNotDelete`. The second lists the policy, with a definition ID that ends in `fd1a8e20-2c4f-4a6c-9354-b58d786d9a1f`.
+The output lists `mirror-identities-no-delete` with `CanNotDelete`.
 
 The group is also written down as code, in `infra/subscriptions/demo/resource-groups/rg-demo-identities.deploy-excluded.bicep`. It declares the four identities with their federated credentials, the vault and the two role assignments on it, as they are live. `main.bicep` calls the file only when `deployIdentityGroup` is true. `parameters.bicepparam` leaves it false, so the unit `demo-subscription` never writes the group's contents, and the deploy identity could not anyway. `parameters.verify.bicepparam` sets it true, so a preview shows the contents. Check them against live after steps 3.12 to 3.17, read-only.
 
@@ -549,7 +530,7 @@ The group is also written down as code, in `infra/subscriptions/demo/resource-gr
 az deployment sub what-if --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --location uksouth --template-file infra/subscriptions/demo/main.bicep --parameters infra/subscriptions/demo/parameters.verify.bicepparam --no-pretty-print -o json
 ```
 
-The preview reports `NoChange` for the four identities, their five credentials, the vault and its two role assignments. Never deploy with the verify file. The group has no lock and no policy assignment declared here, because the file describes what the group holds and the lock and the policy of item 2 and item 3 are set by hand.
+The preview reports `NoChange` for the four identities, their five credentials, the vault and its two role assignments. Never deploy with the verify file. The lock of item 2 is not declared in the file, because the demo sets it by hand.
 
 ### 3.13 Create the custom roles
 
@@ -569,7 +550,7 @@ The reasons are these:
 - Mirror What-If Reader adds the one action Reader lacks for a preview at the validation level `ProviderNoRbac`, which every preview in this folder uses. The Tenant Root Group needs its own copy, because a custom role on a management group may name only one scope, and it cannot mix scopes. The project lists 11 subscriptions as the scopes of the first, and the demo one.
 - Mirror Lock Writer exists because only Owner and User Access Administrator carry `Microsoft.Authorization/locks/*`, and the deploy identity holds neither. The production unit `rg-demo-network` writes a lock.
 - Mirror Deployment Operator exists because User Access Administrator lacks the deployment actions, so the govern identity needs a role to start a deployment. It carries nothing else. The tenant copy adds the two read actions on management groups that a deployment at management group scope needs.
-- Mirror Key Vault Deployment carries two rights, both on the vault only. The first lets a template read a secret through a reference. It does not let the identity read the secret itself, because Azure Resource Manager does that. The second is what Azure checks when a deployment writes a private endpoint that points at the vault. Without it the write of `pe-kv-demo-mirror-secrets` fails with `LinkedAuthorizationFailed`, although the identity may write endpoints in its own group, because the endpoint's connection is approved on the vault's side.
+- Mirror Key Vault Deployment carries two rights, both on the vault only. The first lets a template read a secret through a reference. It does not let the identity read the secret itself, because Azure Resource Manager does that. The second is what Azure checks when a deployment writes a private endpoint that points at the vault, because the endpoint's connection is approved on the vault's side. Without it Azure refuses the write of `pe-kv-demo-mirror-secrets` with `LinkedAuthorizationFailed`, although the identity may write endpoints in its own group, and a preview does not show the refusal.
 - Mirror Platform Deployment exists because the deploy identity holds Contributor on the workload groups only. A subscription-scope deployment needs `Microsoft.Resources/deployments/*` at the subscription, a resource group declared in `main.bicep` needs the write on resource groups, and the Defender plan needs the write on pricings. It never deletes or moves a group.
 
 1. Create the seven roles. This needs Owner or User Access Administrator on the subscription and on the identity resource group. The two roles whose scope is the Tenant Root Group need the same right there, and the demo account holds User Access Administrator at the Tenant Root Group already, so no elevated access is needed. If a command prints `AuthorizationFailed` for one of those two roles, the signed-in account lacks that right, and project step 3.13 shows the elevated access that gives it.
@@ -713,16 +694,19 @@ Each identity holds its standing roles on its own scope only. Never give a deplo
      --query "[?roleDefinitionName=='Role Based Access Control Administrator'].{role:roleDefinitionName, version:conditionVersion, condition:condition}" -o json
    ```
 
-3. Give the govern identity User Access Administrator and Mirror Deployment Operator on the subscription.
+3. Give the govern identity User Access Administrator and Mirror Deployment Operator on the subscription. The User Access Administrator assignment carries a condition that excludes the eight Key Vault and managed identity roles of item 2, and nothing else. The govern identity must still be able to write Owner, User Access Administrator and Role Based Access Control Administrator, because the privileged unit declares them. Microsoft's condition for User Access Administrator uses the same two halves as the one of item 2, one for the write and one for the delete of a role assignment.
 
    ```powershell
-   foreach ($roleId in '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9', 'OPERATOR_ROLE_ID') {
-     az role assignment create --assignee-object-id GOVERN_PRINCIPAL --assignee-principal-type ServicePrincipal `
-       --role $roleId --scope /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7 --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 -o none
-   }
+   $govern = "00482a5a-887f-4fb3-b363-3b7fe8e74483, b86a8fe4-44ce-4948-aee5-eccb2c155cd7, 4633458b-17de-408a-b874-0445c86b69e6, db79e9a7-68ee-4b58-9aeb-b90e7c24fcba, 8b54135c-b56d-4d72-a534-26097cfdc8d8, f25e0fa2-a7c8-4377-a976-54943a77a395, e40ec5ca-96e0-45a2-b4ff-59039f2c2b59, f1a07417-d97a-45cb-824c-7a7467783830"
+   $conditionGovern = "((!(ActionMatches{'Microsoft.Authorization/roleAssignments/write'})) OR (@Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAllValues:GuidNotEquals {$govern})) AND ((!(ActionMatches{'Microsoft.Authorization/roleAssignments/delete'})) OR (@Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAllValues:GuidNotEquals {$govern}))"
+   az role assignment create --assignee-object-id GOVERN_PRINCIPAL --assignee-principal-type ServicePrincipal `
+     --role 18d7d88d-d35e-4fb5-a5c3-7773c20a72d9 --scope /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7 --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 `
+     --condition $conditionGovern --condition-version 2.0 -o none
+   az role assignment create --assignee-object-id GOVERN_PRINCIPAL --assignee-principal-type ServicePrincipal `
+     --role OPERATOR_ROLE_ID --scope /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7 --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 -o none
    ```
 
-   Replace `GOVERN_PRINCIPAL` and `OPERATOR_ROLE_ID`.
+   Replace `GOVERN_PRINCIPAL` and `OPERATOR_ROLE_ID`. The commands print nothing when they succeed. The condition is written to the assignment, so check it in item 6.
 
 4. Give `id-mirror-govern-tenant` User Access Administrator, Management Group Contributor (`5d58bcaf-24a5-4b20-bdb6-eed9f69fbe4c`) and Mirror Deployment Operator Tenant on the Tenant Root Group. Granting a role there needs Owner or User Access Administrator at the Tenant Root Group, which the demo account holds already, so there is no elevated access to turn on or remove.
 
@@ -753,7 +737,7 @@ Each identity holds its standing roles on its own scope only. Never give a deplo
    az role assignment list --assignee-object-id TENANT_PRINCIPAL --scope /providers/Microsoft.Management/managementGroups/d1a349ef-6ac8-4588-a88d-5dab272c700b --query "[?scope=='/providers/Microsoft.Management/managementGroups/d1a349ef-6ac8-4588-a88d-5dab272c700b'].{role:roleDefinitionName, scope:scope}" -o table
    ```
 
-   The deploy identity lists Contributor and Mirror Lock Writer on each of the three workload groups, and Resource Policy Contributor, Mirror Platform Deployment and Role Based Access Control Administrator on the subscription. It lists nothing on `rg-demo-identities`. The govern identity lists User Access Administrator and Mirror Deployment Operator. The tenant identity lists its three roles on the Tenant Root Group. Nothing else is listed. A new role assignment can take about 10 minutes to take effect, so wait that long before the first deployment.
+   The deploy identity lists Contributor and Mirror Lock Writer on each of the three workload groups, and Resource Policy Contributor, Mirror Platform Deployment and Role Based Access Control Administrator on the subscription. It lists nothing on `rg-demo-identities`. The govern identity lists User Access Administrator and Mirror Deployment Operator, and its User Access Administrator row carries the condition. Read it with `az role assignment list --assignee-object-id GOVERN_PRINCIPAL --all --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[].{role:roleDefinitionName, version:conditionVersion}" -o table`, which shows version `2.0` on that row. The tenant identity lists its three roles on the Tenant Root Group. Nothing else is listed. A new role assignment can take about 10 minutes to take effect, so wait that long before the first deployment.
 
 7. The project's item 5 declares these standing assignments in the privileged units after the pilot. The demo leaves it out.
 
@@ -858,40 +842,7 @@ That makes five credentials, one for each environment. Create them one at a time
 
    In the portal, search for **Managed Identities** and select it. Select `id-mirror-reader`, then, in the left menu under **Settings**, select **Federated credentials**. The list shows the credentials of that identity with their subject.
 
-3. Check that the credentials are compliant with the policy. The first evaluation of a new assignment can take over an hour. In the run of these steps the listing stayed empty for about 45 minutes and showed all credentials as `Compliant` about 90 minutes after the assignment. Start a scan, so Azure does not wait for its own schedule.
-
-   ```powershell
-   az policy state trigger-scan --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --no-wait
-   az policy state list --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --filter "policyAssignmentName eq 'mirror-fic-trusted-owners'" --query "[].{res:resourceId, state:complianceState}" -o table
-   ```
-
-   The `--no-wait` option returns at once, and the scan runs in the background. Run the second command again later. Once the evaluation is done, the output lists the five credentials as `Compliant`. An empty list means the evaluation has not finished, not that something is wrong. The faster proof is the Deny check of item 5.
-
-   In the browser, open the Azure portal, search for **Policy** and select it. Select **Compliance**, find the assignment `GitHub federated credentials only from themasterishome` and select its name. The **Resource compliance** tab lists the credentials with their **Compliance state**.
-
-4. Switch the policy to Deny.
-
-   ```powershell
-   az policy assignment update --name mirror-fic-trusted-owners `
-     --scope /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-identities `
-     --params "{ 'allowedRepoOwners': { 'value': [ 'themasterishome@49098959' ] }, 'effect': { 'value': 'Deny' } }"
-   ```
-
-   The output is the assignment in JSON, with `Deny` as the value of `effect`. Azure can take up to about 30 minutes to apply a changed assignment.
-
-5. Show the audience that Deny works. This is the quicker proof than the compliance listing. Do this only after the wait of item 4. If you run it too early, it creates the credential, and the lock keeps it until section 6. A credential for another owner is refused with `RequestDisallowedByPolicy`, and nothing is created.
-
-   ```powershell
-   az identity federated-credential create --name deny-check --identity-name id-mirror-reader --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --issuer https://token.actions.githubusercontent.com --subject "repo:someone-else@1/other@2:environment:mirror-reader" --audiences api://AzureADTokenExchange
-   ```
-
-   Then check that no credential `deny-check` exists.
-
-   ```powershell
-   az identity federated-credential list --identity-name id-mirror-reader --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[].name" -o tsv
-   ```
-
-   The output is `github-mirror-reader` and `github-mirror-reader-dispatch`. If it also lists `deny-check`, Deny was not in force yet. Leave the credential, because nothing signs in with that subject, and section 6 removes it with the group.
+3. Project items 3 to 5 check the trusted-owners policy, switch it to Deny and show a credential for another owner being refused. The demo has no such policy (step 3.12, item 3), so these items are skipped.
 
 Wait a few minutes before the first run. A token request right after a credential is created can fail with `AADSTS70021`.
 
@@ -1507,7 +1458,7 @@ A rollback cannot remove a resource that a deployment created with `allowCreate`
 | The gate step stops with exit 2 and `identity '...' (servicePrincipal) is neither in allowedPrincipals nor the client ID of this GitHub Actions job (MIRROR_CLIENT_ID)` | The identity that signed in is not the one in the job's `AZURE_CLIENT_ID`. This happens when a service principal signed in outside a GitHub Actions job | In a pipeline job, make sure the job signed in with `azure/login`. By hand, sign in as a person listed in `allowedPrincipals` |
 | **Run workflow** is missing, or a run starts an old copy of the workflow | The workflow file is not on the default branch, or the default branch is not `master` and holds an older copy | Set the default branch as in step 3.5 |
 | The apply refuses after the approval because `master` moved | Something was merged while the apply waited | Reject the old run under **Review deployments**, then start a new run and approve its plan |
-| A drift run fails on resource groups the code does not declare | `demo-subscription` was enabled. Its drift check lists every live group in the Visual Studio subscription, and the demo declares only its own four | Keep `demo-subscription` disabled |
+| A drift run fails on a resource group the code does not declare | The Visual Studio subscription holds groups that are not part of the demo, and the drift check of `demo-subscription` lists every live group in it | Keep the demo's own groups the only ones the unit declares, and read the drift summary for the names it reports |
 | A plan of a tenant unit fails with `AuthorizationFailed` | The reader lacks Reader or Mirror What-If Reader Tenant on the Tenant Root Group, or the roles have not taken effect yet | Run the second check of step 3.14 item 3, wait about 10 minutes and start a new run |
 | A role assignment fails with `PrincipalNotFound` | A parameter file holds a `principalId` that differs from the identity's, for example after the identity was created again | Put the identity's `principalId` into `rg-demo-network.bicepparam`, `privileged.bicepparam` and `governance.mg-demo.bicepparam` through a code pull request |
 | A tenant unit cannot be previewed, with `AuthorizationFailed` on the group's own scope "or the scope is invalid" | The management group `mg-demo` does not exist, because step 3.15 item 8 was not done. A preview cannot run against a group that is not there | Create the group as step 3.15 item 8 shows |
@@ -1527,18 +1478,14 @@ the AZURE_CLIENT_ID variable of the environment mirror-production-demo is not a 
 
 Remove everything in the order Azure needs. Your CLI default is still the Visual Studio subscription.
 
-1. Remove the two locks. Nothing else in the identity group, and no group with a lock, can be deleted while its lock is on.
+1. Remove the two locks. A group with a lock cannot be deleted while its lock is on.
 
    ```powershell
    az lock delete --name mirror-identities-no-delete --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7
    az lock delete --name lock-rg-demo-network --resource-group rg-demo-network --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7
    ```
 
-2. Remove the policy assignment on the identity group. The one in `rg-demo-network` goes with that group.
-
-   ```powershell
-   az policy assignment delete --name mirror-fic-trusted-owners --scope /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-identities
-   ```
+2. The project removes the trusted-owners policy assignment here. The demo has none, so go on.
 
 3. Remove the management group `mg-demo`. It holds no subscription, and its Reader assignment goes with it.
 
