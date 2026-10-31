@@ -205,7 +205,6 @@ $retiredPatterns = @(
   '^infra/typed/',
   "^infra/subscriptions/$mainFolder/candidates-[^/]*\.bicep$",
   "^infra/subscriptions/$mainFolder/verify-candidates\.bicep$",
-  "^infra/subscriptions/$mainFolder/parameters\.verify\.bicepparam$",
   "^infra/subscriptions/$mainFolder/resource-groups/_report\.txt$",
   '^infra/subscriptions/.+/workload-candidates[^/]*\.bicep$',
   '^infra/subscriptions/.+/reviewed-[^/]*\.bicep$',
@@ -496,6 +495,8 @@ foreach ($f in $bicepFiles) {
   if ($n -gt 0) { Add-LayoutFailure 'd' "$(Get-RelPath $f.FullName) has $n '// deploy-excluded:' marker(s). Those resources belong in the group's *.deploy-excluded.bicep file" }
 }
 foreach ($f in @($mainRgFiles | Where-Object { $_.Name -like '*.deploy-excluded.bicep' })) {
+  # A deploy-excluded file that main.bicep calls as a module behind a switch is previewed with parameters.verify.bicepparam and is no unit's template.
+  if ($mainModuleTargets.ContainsKey($f.Name.ToLowerInvariant())) { continue }
   $own = @($units | Where-Object { $_.template -and (Get-RepoPath $_.template) -ieq $f.FullName })
   if ($own.Count -eq 0) { Add-LayoutFailure 'd' "$(Get-RelPath $f.FullName) is the template of no unit in deploy/units.json"; continue }
   $routine = Join-Path $mainRgDir (($f.Name -replace '\.deploy-excluded\.bicep$', '') + '.bicep')
