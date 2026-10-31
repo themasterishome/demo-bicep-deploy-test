@@ -60,6 +60,9 @@ resource automationAccount_aa_demo_secrets 'Microsoft.Automation/automationAccou
     encryption: {
       keySource: 'Microsoft.Automation'
     }
+    // The type definition of the resource leaves RuntimeConfiguration out, but live returns it and a file without it previews
+    // as a Modify. `#disable-next-line BCP037` tells the compiler to skip its warning for the next line only.
+    #disable-next-line BCP037
     RuntimeConfiguration: {
       powershell: {
         builtinModules: {
