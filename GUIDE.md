@@ -474,7 +474,7 @@ The project puts the identities in a group of the platform subscription. The dem
 
    The output is the lock in JSON, with `"level": "CanNotDelete"`. The portal shows this lock type as **Delete**.
 
-3. Project item 3 assigns a built-in policy that audits federated credentials against a list of trusted GitHub owners. The demo skips it. The demo has one owner, a personal account, and its five credentials are the only ones in the group, so the policy has nothing to separate. The group is still protected the way the project's is, because no pipeline identity can write in it. Steps 3.17 items 3 to 5 and section 6 item 2 skip the policy as well.
+3. Project item 3 assigns a built-in policy that audits federated credentials against a list of trusted GitHub owners. The demo skips it. The demo does not assign it. Steps 3.17 items 3 to 5 and section 6 item 2 skip the policy as well.
 
 4. Project item 4 (an eligible PIM assignment of Managed Identity Contributor) is left out. Your Owner on the subscription covers the demo.
 
