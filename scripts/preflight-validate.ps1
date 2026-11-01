@@ -62,9 +62,10 @@
           file that names it, so a .. in the path is checked as well. In a .bicepparam file the using and
           extends lines and the load functions count.
        j. no two files or folders in one folder of infra/, deploy/, scripts/, pipelines/ or .github/ have names
-          that differ only in case, which Linux keeps apart and Windows cannot, and no path in those folders is
-          longer than 200 characters from the root of the folder, so it fits Windows' limit of about 260 with the
-          checkout folder in front of it.
+          that differ only in case, which Linux keeps apart and Windows cannot, no name there is one Windows
+          refuses (a reserved name such as con or aux, a name that ends in a dot or a space, a character such as
+          : or ?), and no path in those folders is longer than 200 characters from the root of the repository, so
+          it fits Windows' limit of about 260 with the checkout folder in front of it.
     5. find-duplicate-declarations.ps1 on every subscription and resource group unit with its
        parameters file (ResourceDeployedMultipleTimes would fail that deployment), as deploy-unit.ps1
        does, and on the three subscriptions that keep a parameters.verify.bicepparam with that file, so
@@ -1029,6 +1030,9 @@ foreach ($root in $portableRoots) {
   }
   foreach ($item in @(Get-ChildItem -LiteralPath $root -Recurse -Force)) {
     $rel = Get-RelPath $item.FullName
+    if ($item.Name -match '^(?i:con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)' -or $item.Name -match '[. ]$' -or $item.Name -match '[<>:"|?*\x00-\x1f]') {
+      Add-LayoutFailure 'j' "$rel has a name that Windows refuses (a reserved name, a dot or space at the end, or one of the characters <>:""|?*). Rename it"
+    }
     if ($rel.Length -gt 200) { Add-LayoutFailure 'j' "$rel is $($rel.Length) characters long. Keep every path under 200 characters, so a Windows checkout stays under its limit of about 260" }
   }
 }
