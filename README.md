@@ -28,6 +28,15 @@ starts disabled in `deploy/units.json`.
 GUIDE.md has the set-up and the demo, step by step: the identities and their roles, the GitHub settings, the first pull
 request, the plan, the approval, the deployment, the second check and the drift check.
 
+STEPS.md is the page to follow when you run the demo. It lists what must exist first and then every step in order, with the
+exact command, what you should see and what to do if you do not. GUIDE.md holds the detail behind each step.
+
+A merge into `master` starts no run and deploys nothing. The pull request's preview shows what the merge would change, and
+a deployment starts only with **Run workflow** on `master`. The drift check, `mirror-drift`, starts the same way, and every
+Monday at 05:00 UTC once the repository variable `MIRROR_DRIFT_SCHEDULE_ENABLED` is `true`. Its `report` job keeps one GitHub
+issue up to date. It opens the issue when a run finds drift or cannot check a unit, adds a comment when the findings change
+and closes the issue when a run finds every unit clean.
+
 ## What is where
 
 | Path | What it holds |

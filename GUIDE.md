@@ -12,7 +12,7 @@ Contents:
 
 ## 1. What the demo is
 
-The repository holds the project's four workflows, the helper script `.github/scripts/mirror-pipeline.ps1`, the gate script `scripts/deploy-unit.ps1` and the preflight, unchanged in what they do. The estate is seven units in the Visual Studio subscription, in the project's two tiers. A merge plans a unit and deploys nothing. **Run workflow** deploys it, and only after a reviewer who did not start the run reads the plan and approves it in GitHub. A production unit deploys with the deploy identity `id-mirror-deploy-demo`. A privileged unit changes who has access, so it deploys with a govern identity and waits in a privileged environment. The identity then takes a fresh preview, deploys and takes the second check, and the run keeps the evidence.
+The repository holds the project's four workflows, the helper script `.github/scripts/mirror-pipeline.ps1`, the gate script `scripts/deploy-unit.ps1` and the preflight, unchanged in what they do. The estate is seven units in the Visual Studio subscription, in the project's two tiers. A merge starts no run and deploys nothing, because the pull request's preview already shows what it would change. **Run workflow** plans a unit and deploys it, and only after a reviewer who did not start the run reads the plan and approves it in GitHub. A production unit deploys with the deploy identity `id-mirror-deploy-demo`. A privileged unit changes who has access, so it deploys with a govern identity and waits in a privileged environment. The identity then takes a fresh preview, deploys and takes the second check, and the run keeps the evidence.
 
 The scripts, the workflows and their comments are the production ones with only the names changed, so some comments speak of a team, IT or more subscriptions. The preflight differs in two checks only. Its layout rules accept a deploy-excluded file that `main.bicep` calls behind a switch, and accept `parameters.verify.bicepparam`, because the demo keeps its identity group in one folder with its resource group files, where the project keeps it in a subscription folder of its own.
 
@@ -97,11 +97,12 @@ Nobody can deploy alone in the normal flow. The person who starts a run cannot a
 What stays identical:
 - the four workflows `mirror-validate`, `mirror-pr`, `mirror-deploy-unit` and `mirror-drift`, with their jobs, inputs and required checks, among them the two apply jobs `apply` and `apply-privileged`
 - the helper script and its checks (Select, InputCheck, CheckApply, ComparePlan and the others), and the gate script with its exit codes
-- the switch `MIRROR_PIPELINE_ENABLED`, the variables `AZURE_CLIENT_ID` and `AZURE_TENANT_ID` per environment, and the optional `MIRROR_RUNNER` and `MIRROR_MAX_PLAN_AGE_HOURS`
+- the switch `MIRROR_PIPELINE_ENABLED`, the variables `AZURE_CLIENT_ID` and `AZURE_TENANT_ID` per environment, and the optional `MIRROR_RUNNER`, `MIRROR_MAX_PLAN_AGE_HOURS` and `MIRROR_DRIFT_SCHEDULE_ENABLED`
 - the environment names `mirror-reader`, `mirror-reader-dispatch`, `mirror-production-<folder>` and `mirror-privileged-<folder>`, which here are `mirror-production-demo` and `mirror-privileged-demo`, and `mirror-privileged-tenant`, all with the branch rule `master`
 - the identities and their roles, with the condition on the deploy identity's Role Based Access Control Administrator assignment
 - the OpenID Connect subjects, in the form `repo:OWNER@OWNER_ID/REPOSITORY@REPOSITORY_ID:environment:ENVIRONMENT`, and the lock on the identity group
-- the flow, which is a code pull request with a preview, a merge that plans, Run workflow with the options, the approval, the apply, the second check, the evidence and the drift check
+- the flow, which is a code pull request with a preview, a merge that starts nothing, Run workflow with the options, the approval, the apply, the second check and the evidence
+- the drift check, which starts with Run workflow or every Monday at 05:00 UTC once `MIRROR_DRIFT_SCHEDULE_ENABLED` is `true`, and whose `report` job keeps one GitHub issue up to date
 
 What the demo cannot show:
 - a team as reviewer and as code owner, and a second, smaller team for the privileged environments, because a personal account has no teams. Here the same second account approves both tiers
@@ -323,7 +324,7 @@ The output is two lines, `@SECOND_LOGIN` and `@themasterishome`.
 
    Do this now, before step 3.7. **Run workflow** lists only workflows that exist on the default branch, and once the ruleset blocks force pushes, an administrator cannot change the default branch without a bypass.
 
-The push starts mirror-validate and mirror-deploy-unit. Every job of both shows as skipped, because the switch is not set yet (step 3.20). No runner starts and nothing signs in to Azure.
+The push starts mirror-validate. Every job of it shows as skipped, because the switch is not set yet (step 3.20). No runner starts and nothing signs in to Azure. mirror-deploy-unit does not start at all, because it starts only with Run workflow.
 
 ### 3.6 Set the Actions settings
 
@@ -359,7 +360,7 @@ The project's organization ruleset already blocks force pushes and branch deleti
    | Block force pushes | On (on by default) |
    | Require a pull request before merging | On, with **Required approvals** 1, or 0 when you run alone |
    | Require review from Code Owners | On, or off when you run alone. It is one of the options under the pull request rule |
-   | Allowed merge methods | **Squash** only. It is also an option under the pull request rule. The push run and the change ticket lookup expect one commit per pull request |
+   | Allowed merge methods | **Squash** only. It is also an option under the pull request rule. The change ticket lookup expects one commit per pull request |
    | Require status checks to pass before merging | On, with **Require branches to be up to date before merging** |
 
    The run of these steps on a public Free repository ended with the rules deletion, non-fast-forward and pull request (squash only) on the branch ruleset.
@@ -879,7 +880,7 @@ Check each environment, for example with `gh variable list --env mirror-reader-d
 
 To show it in the browser, select **Settings** > **Environments** and the environment's name. Under **Environment variables**, select **Add variable**, type the name and the value, and select **Add variable** again. GitHub cannot store a variable with an empty value, so it refuses an empty one with the message "Variable value cannot be empty".
 
-Leave `MIRROR_RUNNER` and `MIRROR_MAX_PLAN_AGE_HOURS` unset. Every job then runs on `windows-2025`, apart from `portability`, which runs on `ubuntu-24.04`. A plan may wait 24 hours for its approval. The switch `MIRROR_PIPELINE_ENABLED` waits for step 3.20.
+Leave `MIRROR_RUNNER`, `MIRROR_MAX_PLAN_AGE_HOURS` and `MIRROR_DRIFT_SCHEDULE_ENABLED` unset. Every job then runs on `windows-2025`, apart from `portability`, which runs on `ubuntu-24.04`. A plan may wait 24 hours for its approval. The weekly start of mirror-drift, every Monday at 05:00 UTC, skips every job until `MIRROR_DRIFT_SCHEDULE_ENABLED` is `true`, and section 4.9 sets it. Run workflow starts the drift check at any time without it. The switch `MIRROR_PIPELINE_ENABLED` waits for step 3.20.
 
 ### 3.19 Check the client IDs of the environments
 
@@ -950,7 +951,7 @@ The command prints nothing. If a line says `False`, or the second command prints
 
 3. Project item 3 turns Dependabot on. The demo leaves `.github/dependabot.yml` with `open-pull-requests-limit: 0`, so no Dependabot pull request moves `master` during a demo. Dependabot's pull requests also run like a fork's and cannot sign in to Azure.
 
-To stop every job again, set the variable to `false`.
+To stop every job again, set the variable to `false`. The weekly drift start has its own variable, `MIRROR_DRIFT_SCHEDULE_ENABLED`, which section 4.9 sets and the end of the demo unsets.
 
 ### 3.21 First run: the validate workflow
 
@@ -979,7 +980,15 @@ Project step 3.21 also checks the push ruleset against a branch made at an older
 
 ### 3.22 First run: the drift workflow with no unit enabled
 
-This run proves the reader's sign-in through `mirror-reader-dispatch`. With every unit disabled the drift check has nothing to check, so it fails on purpose.
+This run proves the reader's sign-in through `mirror-reader-dispatch`. With every unit disabled the drift check has nothing to check, so it fails on purpose. The `report` job then opens the drift issue, which proves that the workflow may write issues.
+
+The `report` job writes the issue with the workflow's own token, so Issues must be on in the repository. Check it before the run.
+
+```powershell
+gh api repos/themasterishome/demo-bicep-deploy-test --jq .has_issues
+```
+
+The output is `true`. If it is `false`, select **Settings** > **General** in the repository, scroll to **Features** and tick **Issues**. Then, in the private window of the second account, open the repository, select **Watch** > **Custom**, tick **Issues** and select **Apply**. GitHub notifies a watcher when the issue is opened and when a comment is added to it.
 
 1. Start it on `master`.
 
@@ -989,7 +998,7 @@ This run proves the reader's sign-in through `mirror-reader-dispatch`. With ever
 
    In the browser, open the repository's **Actions** tab, select **mirror-drift** in the left sidebar and select the **Run workflow** button above the list of runs. In the **Branch** dropdown keep `master`, and select **Run workflow** in the pop-up. The workflow has no input boxes.
 
-2. Open the finished run by selecting its name in the list. The `azure/login` step is green. The step "Drift sweep (read-only)" fails, and its last line starts with `STOP: no enabled unit to check in deploy/units.json`. The upload of the `drift` artifact then warns that no files were found.
+2. Open the finished run by selecting its name in the list. The `azure/login` step is green. The step "Drift sweep (read-only)" fails, and its last line starts with `STOP: no enabled unit to check in deploy/units.json`. The upload of the `drift` artifact then warns that no files were found. The `report` job is green, and its summary says `Drift report: issue #N is opened (error).` Open the repository's **Issues** tab. The issue is titled "The drift check found a difference between live Azure and the code, or a unit it could not check", and its text says the drift job ended before it wrote its summary.
 
 3. Check the branch rule. Start the workflow on the branch of step 3.21.
 
@@ -1005,6 +1014,15 @@ This run proves the reader's sign-in through `mirror-reader-dispatch`. With ever
    git push origin --delete first-checks
    git branch --delete --force first-checks
    ```
+
+5. Close the drift issue of item 2 after reading it. The next run that finds every unit clean would close it too, but with every unit disabled there is no clean run yet.
+
+   ```powershell
+   gh issue list --state open --repo themasterishome/demo-bicep-deploy-test
+   gh issue close ISSUE_NUMBER --repo themasterishome/demo-bicep-deploy-test
+   ```
+
+   Replace `ISSUE_NUMBER` with the number the first command prints. The second command prints that the issue is closed.
 
 If the sign-in fails with `AADSTS70021`, the credential's subject does not match, or it was created only a minute ago (section 5).
 
@@ -1039,6 +1057,7 @@ Do section 3 the day before, or at least two hours before the audience arrives. 
 - [ ] `gh auth status` shows `themasterishome` as the active account.
 - [ ] The second account is signed in, in the private window.
 - [ ] No run of mirror-deploy-unit waits for approval.
+- [ ] No drift issue is open, or you know why the one that is open is there. Check with `gh issue list --state open --repo themasterishome/demo-bicep-deploy-test`.
 - [ ] You merge nothing else while a deployment waits. A merge moves `master`, and the waiting apply then refuses (project section 4.1).
 - [ ] Before a unit's first deployment, every resource it declares that points at another resource finds that target in Azure.
 
@@ -1085,13 +1104,13 @@ This is project step 3.23 and sections 4.2 to 4.8. Project section 4.6, the chec
    git pull
    ```
 
-4. Show the push run. Open the repository's **Actions** tab, select **mirror-deploy-unit** in the left sidebar and select the newest run, named "Plan the units changed by the push" and the commit. Or list it.
+4. Show that the merge started no run. Open the repository's **Actions** tab and select **mirror-deploy-unit** in the left sidebar. Or list the runs.
 
    ```powershell
    gh run list --workflow mirror-deploy-unit.yml --branch master --limit 3 --repo themasterishome/demo-bicep-deploy-test
    ```
 
-   On screen, `select` lists `pilot-empty-rg`, and the job `plan pilot-empty-rg` signs in as the reader through `mirror-reader-dispatch`. Its summary shows "Gate PASS, approvable", with PASS in bold, and ends with "A push publishes this plan and deploys nothing. The plan holds no effective change, so nothing waits for a reviewer. A change is applied with Run workflow, which names the ticket, the reason and the options." The apply job is skipped. The merge deployed nothing. The summary is on the run's page, under the job list.
+   On screen, no run began at the merge. If the list is empty, that is the answer. The workflow starts only with **Run workflow**, because a deployment needs a change ticket, a reason and a reviewer, which only that form carries. The preview in the pull request's comment of item 2 was the look at the change, and the merge deployed nothing.
 
 5. Start the deployment by hand.
 
@@ -1162,7 +1181,7 @@ This is project step 3.23 and sections 4.2 to 4.8. Project section 4.6, the chec
     gh workflow run mirror-deploy-unit.yml --ref master -f unit=pilot-empty-rg -f changeRef=DEMO-0003 -f reason="Pilot, plan only" --repo themasterishome/demo-bicep-deploy-test
     ```
 
-    The run ends after the plan, with the gate PASS and no waiting job.
+    The run ends after the plan, with the gate PASS and no waiting job. The summary ends with "This run was started as a plan only (apply is off). Nothing waits for a reviewer."
 
 ### 4.3 Wave 1, the network
 
@@ -1192,7 +1211,13 @@ This is project sections 4.2 to 4.8 and 4.10, for a production unit that creates
    git pull
    ```
 
-4. Show the push run, as in 4.2 item 4. It plans both units and the plan jobs show red. Each plan is not approvable, because it holds Creates nobody named. The summary names the option that would accept them, `allowCreate`, and gives the ready `gh workflow run` command with the resource IDs. Nothing waits and nothing deploys.
+4. Show that the merge started no run, as in 4.2 item 4, and read what the deployment needs. Both units hold Creates nobody named, so a deployment needs `allowCreate` with their resource IDs. The IDs are in the comment of the pull request's preview, where each Create record shows its ID. Or read them from a plan only, which is a run with `apply` off.
+
+   ```powershell
+   gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-network -f changeRef=DEMO-0004 -f reason="Wave 1, read the plan" --repo themasterishome/demo-bicep-deploy-test
+   ```
+
+   Open the run from the **Actions** tab. The `plan rg-demo-network` job is red, because the plan is not approvable. The summary says "Nothing deploys from this plan", names the option `allowCreate` and gives the ready `gh workflow run` command with the resource IDs. Nothing waits and nothing deploys.
 
 5. Start the deployment of `rg-demo-network`, with the nine resource IDs in `allowCreate`. Copy the command from the plan summary, because it holds the IDs of the policy assignment and the role assignment, whose names are GUIDs that Bicep builds. The IDs are these.
 
@@ -1268,7 +1293,7 @@ This is project step 3.23 item 8 and sections 4.2 to 4.8, for a privileged unit.
    git pull
    ```
 
-4. Show the push run, as in 4.2 item 4. The plan of `demo-privileged` is not approvable and names `allowCreate`. Nothing waits and nothing deploys.
+4. Show that the merge started no run, as in 4.2 item 4. The pull request's preview names the two Creates of `demo-privileged`. A plan only, started as in 4.3 item 4 with `unit=demo-privileged`, is not approvable and names `allowCreate`. Nothing waits and nothing deploys.
 
 5. Start the deployment with the two IDs in `allowCreate`. Copy the command from the plan summary. The IDs have this form.
 
@@ -1314,7 +1339,7 @@ This is the first tenant unit. It deploys at management group scope against the 
    git pull
    ```
 
-4. Show the push run. The plan passes with no effective change, and nothing waits.
+4. Show that the merge started no run, as in 4.2 item 4. The pull request's preview showed no effective change, and nothing waits.
 
 5. Start the deployment. It needs no option, because the plan holds no Create.
 
@@ -1351,7 +1376,7 @@ This unit runs against `mg-demo`, which step 3.15 item 8 created. Its preview an
    git pull
    ```
 
-4. Start the deployment with the assignment's ID in `allowCreate`. The plan summary gives the ready command. The ID has this form.
+4. Start the deployment with the assignment's ID in `allowCreate`. The pull request's preview shows the ID, and a plan only (4.3 item 4) gives the ready command. The merge started no run. The ID has this form.
 
    ```text
    /providers/Microsoft.Management/managementGroups/mg-demo/providers/Microsoft.Authorization/roleAssignments/ROLE_ASSIGNMENT_NAME
@@ -1405,7 +1430,7 @@ This is project section 4.9. The resources now exist, and a real change names it
 
    On screen, `whatif rg-demo-network` shows the gate FAIL with `Modify=1` on `nsg-demo`, the new rule under `securityRules`, for information. The comment is on the **Conversation** tab of the pull request.
 
-3. Approve it as the second account and, once every check is green, select **Squash and merge** and **Confirm squash and merge**. The push run plans `rg-demo-network`, and the plan stops with a message that names the NSG's ID for `allowModify`. The merge deploys nothing.
+3. Approve it as the second account and, once every check is green, select **Squash and merge** and **Confirm squash and merge**. The merge starts no run and deploys nothing. The NSG's ID for `allowModify` is in the preview's comment of item 2. A plan only (4.3 item 4) would stop with a message that names it.
 
 4. Start the deployment with that ID in `allowModify`. In the **Run workflow** form, fill in **Deployment unit (name from deploy/units.json)** (`unit`) with `rg-demo-network`, **Change ticket number** (`changeRef`) with `DEMO-0009` and **What this deployment is for** (`reason`), tick **Deploy after a reviewer approves the plan. Leave off for a plan only** (`apply`), and paste the ID into **Resource IDs whose changes the plan shows and the deployment may write, separated by commas** (`allowModify`).
 
@@ -1419,27 +1444,46 @@ This is project section 4.9. The resources now exist, and a real change names it
 
 This is project section 5.3, with the repair of REFERENCE.md section 5.2.
 
+The drift check starts in two ways. Run workflow starts it at any time. Every Monday at 05:00 UTC it starts by itself, but only when the repository variable `MIRROR_DRIFT_SCHEDULE_ENABLED` is `true`. Until then the weekly start skips every job. The workflow has two jobs. The `drift` job takes a read-only preview of every enabled unit with the reader identity. The `report` job never signs in to Azure and runs only on `master`. It keeps one GitHub issue up to date from the `drift` job's summary. It opens the issue when a run finds drift or cannot check a unit, adds a comment when the findings change, updates only the link to the run when the findings are the same, and closes the issue with a comment when a run finds every unit clean. The issue is the alert, because everyone who watches the repository is notified of a new issue or a new comment.
+
 1. Run the drift check once with everything in line.
 
    ```powershell
    gh workflow run mirror-drift.yml --ref master --repo themasterishome/demo-bicep-deploy-test
    ```
 
-   The summary lists every enabled unit as clean, which are `pilot-empty-rg`, `rg-demo-network`, `rg-demo-routing`, `demo-privileged` and the two tenant units, and the run is green. The drift check runs with the reader identity for every tier. Run it once before the audience arrives, because the privileged units add records the first three do not have.
+   The summary of the `drift` job lists every enabled unit as clean, which are `pilot-empty-rg`, `rg-demo-network`, `rg-demo-routing`, `demo-privileged` and the two tenant units, and the run is green. The `report` job then prints `Drift report: every checked unit is clean, and no drift issue is open.` The drift check runs with the reader identity for every tier. Run it once before the audience arrives, because the privileged units add records the first three do not have.
 
 2. Change something outside the code. In the Azure portal, search for **Route tables** and select `rt-demo`. In its left menu select **Tags**, type the name `changedBy` and the value `portal`, and select **Apply**.
 
-3. Run the drift check again with the same command. The run is red, and its summary lists `rg-demo-routing` as `DRIFT`, with a Modify on `rt-demo` that removes the tag `changedBy`. In the log of the drift step, the line reads `FAIL Modify .../rt-demo` and the next line reads `unclassified delta tags.changedBy (Delete)`. A failed run is the alert, and GitHub notifies the person who started it. The `drift` artifact holds each unit's evidence.
+3. Run the drift check again with the same command. The `drift` job is red, and its summary lists `rg-demo-routing` as `DRIFT`, with a Modify on `rt-demo` that removes the tag `changedBy`. In the log of the drift step, the line reads `FAIL Modify .../rt-demo` and the next line reads `unclassified delta tags.changedBy (Delete)`. The `drift` artifact holds each unit's evidence. The `report` job is green and prints `Drift report: issue #N is opened (drift).`
 
-4. Repair it by putting the code's value back. Start a deployment of `rg-demo-routing` with `rt-demo` in `allowModify`.
+4. Show the drift issue. Open the repository's **Issues** tab. The issue is titled "The drift check found a difference between live Azure and the code, or a unit it could not check". Its text lists `rg-demo-routing` with the finding and links the run. The second account has a notification when it watches the repository (step 3.22).
+
+5. Run the drift check a second time without changing anything. The `report` job prints `Drift report: issue #N is updated with this run, and its findings are the same (drift).` The issue has no new comment, and only its link to the run changed.
+
+6. Repair it by putting the code's value back. Start a deployment of `rg-demo-routing` with `rt-demo` in `allowModify`.
 
    ```powershell
    gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-routing -f changeRef=DEMO-0010 -f reason="Undo the drift on rt-demo" -f apply=true -f allowModify=/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-routing/providers/Microsoft.Network/routeTables/rt-demo --repo themasterishome/demo-bicep-deploy-test
    ```
 
-   The plan shows the tag going away. Approve it as the second account with **Review deployments**. After the deployment, run the drift check again. Every enabled unit is clean, and the log says "No drift found" for each.
+   The plan shows the tag going away. Approve it as the second account with **Review deployments**. After the deployment, run the drift check again. Every enabled unit is clean, and the log says "No drift found" for each. The `report` job prints `Drift report: every checked unit is clean, so issue #N is closed.` The issue is closed, with a comment that links the run.
 
-   The other repair is to keep the live value. You then copy the tag into `rg-demo-routing.bicep` through a code pull request, and the next drift check is clean with nothing deployed.
+   The other repair is to keep the live value. You then copy the tag into `rg-demo-routing.bicep` through a code pull request, and the next drift check is clean with nothing deployed and closes the issue.
+
+7. Turn on the weekly start, so that the audience sees the schedule. Set the variable only once the units are enabled, because a run with every unit disabled fails on purpose and opens the drift issue.
+
+   ```powershell
+   gh variable set MIRROR_DRIFT_SCHEDULE_ENABLED --body true --repo themasterishome/demo-bicep-deploy-test
+   gh variable list --repo themasterishome/demo-bicep-deploy-test
+   ```
+
+   The list shows `MIRROR_DRIFT_SCHEDULE_ENABLED` with the value `true`. The next Monday at 05:00 UTC mirror-drift starts by itself, and its runs list shows the event `schedule`. The demo does not wait for it, because Run workflow runs the same two jobs. To turn the weekly start off again, unset the variable.
+
+   ```powershell
+   gh variable delete MIRROR_DRIFT_SCHEDULE_ENABLED --repo themasterishome/demo-bicep-deploy-test
+   ```
 
 ### 4.10 A rollback
 
@@ -1459,7 +1503,7 @@ This is REFERENCE.md section 4.1. It takes the rule of section 4.8 out again.
 
    Replace `BAD_COMMIT` with the ID of the commit "Deny remote desktop from the internet on nsg-demo" in the `git log` output. A squash merge is one ordinary commit, so `git revert` needs no `-m` option. The preview on the pull request shows a Modify on `nsg-demo` that removes the rule.
 
-2. Approve it as the second account and, once every check is green, select **Squash and merge** and **Confirm squash and merge**. The push run stops on the Modify, as in section 4.8.
+2. Approve it as the second account and, once every check is green, select **Squash and merge** and **Confirm squash and merge**. The merge starts no run, as in section 4.8.
 
 3. Start the deployment with the NSG in `allowModify`, as in section 4.8, item 4, with `changeRef=DEMO-0011` and the reason `Roll back the remote desktop rule`.
 
@@ -1482,6 +1526,11 @@ A rollback cannot remove a resource that a deployment created with `allowCreate`
 | The gate step stops with exit 2 and `identity '...' (servicePrincipal) is neither in allowedPrincipals nor the client ID of this GitHub Actions job (MIRROR_CLIENT_ID)` | The identity that signed in is not the one in the job's `AZURE_CLIENT_ID`. This happens when a service principal signed in outside a GitHub Actions job | In a pipeline job, make sure the job signed in with `azure/login`. By hand, sign in as a person listed in `allowedPrincipals` |
 | **Run workflow** is missing, or a run starts an old copy of the workflow | The workflow file is not on the default branch, or the default branch is not `master` and holds an older copy | Set the default branch as in step 3.5 |
 | The apply refuses after the approval because `master` moved | Something was merged while the apply waited | Reject the old run under **Review deployments**, then start a new run and approve its plan |
+| A merge started no run in mirror-deploy-unit | By design. The workflow starts only with Run workflow, because a deployment needs a change ticket, a reason and a reviewer | Start a run for the unit. The pull request's preview shows what the merge changes, and a run with `apply` off shows the plan |
+| A plan ends red with a message that names resource IDs, and the apply does not wait | The gate needs an option, such as an ID for `allowCreate` or `allowModify`, that the run did not name | Start Run workflow again with those IDs. The summary gives the ready command, and the pull request's preview lists the same IDs |
+| A drift issue is open | The `drift` job found a unit that differs from the code, or could not check a unit | Read the issue and the `drift` artifact of the run it links, and repair each finding as section 4.9 shows. The next run that finds every unit clean closes the issue |
+| The weekly drift run skipped every job | `MIRROR_DRIFT_SCHEDULE_ENABLED` is not `true`, or the switch `MIRROR_PIPELINE_ENABLED` is off | Set the variable (section 4.9, item 7) and the switch (step 3.20). Run workflow works without the weekly variable |
+| The `report` job fails when it opens the issue | Issues are off in the repository | Turn on Issues as step 3.22 shows and start mirror-drift again |
 | A drift run fails on a resource group the code does not declare | The Visual Studio subscription holds groups that are not part of the demo, and the drift check of `demo-subscription` lists every live group in it | Keep the demo's own groups the only ones the unit declares, and read the drift summary for the names it reports |
 | A plan of a tenant unit fails with `AuthorizationFailed` | The reader lacks Reader or Mirror What-If Reader Tenant on the Tenant Root Group, or the roles have not taken effect yet | Run the second check of step 3.14 item 3, wait about 10 minutes and start a new run |
 | A role assignment fails with `PrincipalNotFound` | A parameter file holds a `principalId` that differs from the identity's, for example after the identity was created again. Or the identity is only a minute old and Azure does not know it yet | Put the identity's `principalId` into `rg-demo-network.bicepparam`, `privileged.bicepparam` and `governance.mg-demo.bicepparam` through a code pull request. For a new identity, wait a minute and run the command again |
