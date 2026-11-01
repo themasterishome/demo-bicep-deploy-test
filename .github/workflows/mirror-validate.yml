@@ -17,10 +17,11 @@
 # Every job but one runs on windows-2025, or on ubuntu-24.04 when the repository variable MIRROR_RUNNER is
 # ubuntu-24.04. The portability job runs on the other image. It always parses every script and runs the workflow
 # rules and the helper tests there. It repeats the preflight on that image only for a Run workflow, for a change to
-# the scripts, to bicepconfig.json, .gitattributes, .gitignore or this workflow, and when the changed files cannot be
-# read. A change to Bicep, to the deployment unit files or to the documents compiles the same on both systems, as
-# the preflight's layout checks of path case, name case and path length make sure, so the preflight job alone
-# covers it. No other value of the variable reaches runs-on, and the first step of every job, the runner
+# the scripts, to bicepconfig.json, .gitattributes, .gitignore or this workflow, for a change that adds a name that
+# differs only in case from another path (a Windows checkout keeps only one of the two), and when the changed files
+# cannot be read. A change to Bicep, to the deployment unit files or to the documents compiles the same on both
+# systems, as the preflight's layout checks of path case, name case, names Windows refuses and path length make sure,
+# so the preflight job alone covers it. No other value of the variable reaches runs-on, and the first step of every job, the runner
 # check, stops the job on any other runner.
 name: mirror-validate
 
@@ -189,8 +190,8 @@ jobs:
     # when they use ubuntu-24.04. It always parses every script (bash -n for the .sh files), applies the workflow
     # rules and runs the helper tests, which also run scripts/deploy-unit.ps1 -WhatIfJson on a saved what-if. The
     # step "Decide the scope" then reads the change. For a Run workflow, a change to the scripts, to bicepconfig.json,
-    # .gitattributes, .gitignore or this workflow, and when the changed files cannot be read, the job also runs what
-    # the preflight job runs:
+    # .gitattributes, .gitignore or this workflow, a change that adds a name that differs only in case from another
+    # path, and when the changed files cannot be read, the job also runs what the preflight job runs:
     # the pinned Bicep CLI, scripts/preflight-validate.ps1 and the check of the pipeline units from its compile
     # cache. Any other change compiles the same on both systems, so the preflight job covers it. A required status
     # check. It has no needs, and its only job condition is the pipeline switch, so it never stays pending. No Azure
