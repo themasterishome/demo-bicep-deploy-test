@@ -12,7 +12,7 @@ The units, in the order they deploy:
 | 0 | `pilot-empty-rg` | Production | An empty template into the resource group `rg-demo-pilot`. It proves the sign-in, the roles, the approval and the evidence without touching a resource. |
 | 1 | `rg-demo-network` | Production | The network security group `nsg-demo` and the virtual network `vnet-demo` with one subnet, `snet-default`. Also a lock, a policy assignment and a Reader role assignment on the group. |
 | 2 | `rg-demo-routing` | Production | The route table `rt-demo` and the application security group `asg-demo`. |
-| none | `demo-subscription` | Production | The three resource groups, declared in `infra/subscriptions/demo/main.bicep`. It stays disabled. |
+| none | `demo-subscription` | Production | The three resource groups, declared in `infra/subscriptions/demo/main.bicep`. No deployment step enables it, and the drift check reads it when it is enabled. |
 | 4 | `demo-privileged` | Privileged | The Owner role assignment on `rg-demo-network` and the custom role `Demo Reader Plus`. |
 | 5 | `demo-tenant-management-group` | Privileged | The management group `mg-demo` under the Tenant Root Group. |
 | 6 | `demo-tenant-governance` | Privileged | A Reader role assignment on `mg-demo`. |
@@ -23,7 +23,7 @@ identity `id-mirror-deploy-demo` after an approval in the environment `mirror-pr
 Administrator and the custom role definitions. `demo-privileged` deploys with `id-mirror-govern-demo` after an approval in
 `mirror-privileged-demo`. The two tenant units deploy with `id-mirror-govern-tenant` after an approval in
 `mirror-privileged-tenant`. A fourth identity, `id-mirror-reader`, takes every preview and writes nothing. Every unit
-starts disabled in `deploy/units.json`.
+is disabled when the demo starts. Step 2 of STEPS.md disables the seven units in the committed `deploy/units.json`.
 
 GUIDE.md has the set-up and the demo, step by step: the identities and their roles, the GitHub settings, the first pull
 request, the plan, the approval, the deployment, the second check and the drift check.

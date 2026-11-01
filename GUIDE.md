@@ -962,8 +962,10 @@ To stop every job again, set the variable to `false`. The weekly drift start has
    Add-Content -Path README.md -Value ''
    git commit --all --message "First run of the checks"
    git push -u origin first-checks
-   gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head first-checks --title "First run of the checks" --body "Change: DEMO-0002"
+   gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head first-checks --title "First run of the checks" --body "First run of the checks"
    ```
+
+   The pull request body is only a description. The change ticket goes in the `changeRef` input of Run workflow, so nothing reads the body.
 
 2. Wait for the checks. To watch them, open the repository's **Pull requests** tab and select the pull request. The checks are listed at the bottom of the **Conversation** tab, and **Details** next to a check opens its run. On the small demo tree the run takes a few minutes. The five jobs of mirror-validate are green: `secret-scan`, `actionlint`, `workflow-hygiene`, `portability` and `preflight`. mirror-pr shows `plan`, no `whatif` job and a green `pr-gate`, because no unit is touched. If a job fails, read its first error. This change touches no script, so `portability` skips its full preflight and still shows green. To see the full preflight on the other image once, start mirror-validate by hand on `master` with `gh workflow run mirror-validate.yml --ref master --repo themasterishome/demo-bicep-deploy-test`, and check that this run is green too.
 
@@ -988,7 +990,9 @@ The `report` job writes the issue with the workflow's own token, so Issues must 
 gh api repos/themasterishome/demo-bicep-deploy-test --jq .has_issues
 ```
 
-The output is `true`. If it is `false`, select **Settings** > **General** in the repository, scroll to **Features** and tick **Issues**. Then, in the private window of the second account, open the repository, select **Watch** > **Custom**, tick **Issues** and select **Apply**. GitHub notifies a watcher when the issue is opened and when a comment is added to it.
+The output is `true`. If it is `false`, select **Settings** > **General** in the repository, scroll to **Features** and tick **Issues**.
+
+Then, in the private window of the second account, open the repository, select **Watch** > **Custom**, tick **Issues** and select **Apply**. GitHub notifies a watcher when the issue is opened and when a comment is added to it.
 
 1. Start it on `master`.
 
@@ -996,7 +1000,7 @@ The output is `true`. If it is `false`, select **Settings** > **General** in the
    gh workflow run mirror-drift.yml --ref master --repo themasterishome/demo-bicep-deploy-test
    ```
 
-   In the browser, open the repository's **Actions** tab, select **mirror-drift** in the left sidebar and select the **Run workflow** button above the list of runs. In the **Branch** dropdown keep `master`, and select **Run workflow** in the pop-up. The workflow has no input boxes.
+   Or, in the browser, open the repository's **Actions** tab, select **mirror-drift** in the left sidebar and select the **Run workflow** button above the list of runs. In the **Branch** dropdown keep `master`, and select **Run workflow** in the pop-up. The workflow has no input boxes. Use one route only, because a second start while the first runs is queued behind it.
 
 2. Open the finished run by selecting its name in the list. The `azure/login` step is green. The step "Drift sweep (read-only)" fails, and its last line starts with `STOP: no enabled unit to check in deploy/units.json`. The upload of the `drift` artifact then warns that no files were found. The `report` job is green, and its summary says `Drift report: issue #N is opened (error).` Open the repository's **Issues** tab. The issue is titled "The drift check found a difference between live Azure and the code, or a unit it could not check", and its text says the drift job ended before it wrote its summary.
 
@@ -1006,7 +1010,7 @@ The output is `true`. If it is `false`, select **Settings** > **General** in the
    gh workflow run mirror-drift.yml --ref first-checks --repo themasterishome/demo-bicep-deploy-test
    ```
 
-   The run fails before any step, with `Branch "first-checks" is not allowed to deploy to mirror-reader-dispatch due to environment protection rules`. If it signs in instead, `mirror-reader-dispatch` has no branch rule. Add it (step 3.11) and run this check again.
+   The run fails before any step, with `Branch "first-checks" is not allowed to deploy to mirror-reader-dispatch due to environment protection rules`, and the `report` job is skipped because the run is not on `master`. If it signs in instead, `mirror-reader-dispatch` has no branch rule. Add it (step 3.11) and run this check again.
 
 4. Delete the branch.
 
@@ -1091,7 +1095,7 @@ This is project step 3.23 and sections 4.2 to 4.8. Project section 4.6, the chec
    ```powershell
    git commit --all --message "Enable the pilot unit"
    git push -u origin enable-pilot
-   gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head enable-pilot --title "Enable the pilot unit" --body "Change: DEMO-0003"
+   gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head enable-pilot --title "Enable the pilot unit" --body "Enable the pilot unit"
    ```
 
    On screen, open the repository's **Pull requests** tab and select the pull request. The checks at the bottom of the **Conversation** tab show mirror-validate and mirror-pr. mirror-pr has a job `whatif pilot-empty-rg`, the reader's first sign-in through `mirror-reader`. Its comment on the pull request shows the pilot's preview with the gate PASS and no records. The comment says `Identity: not checked (offline)`.
@@ -1118,7 +1122,7 @@ This is project step 3.23 and sections 4.2 to 4.8. Project section 4.6, the chec
    gh workflow run mirror-deploy-unit.yml --ref master -f unit=pilot-empty-rg -f changeRef=DEMO-0003 -f reason="Pilot" -f apply=true --repo themasterishome/demo-bicep-deploy-test
    ```
 
-   In the browser, open the **Actions** tab, select **mirror-deploy-unit** in the left sidebar and select the **Run workflow** button above the list of runs. In the **Branch** dropdown keep `master`. Fill in the boxes as the table shows, and select **Run workflow** in the pop-up. The run is named "Deploy pilot-empty-rg (DEMO-0003)". The inputs `acknowledgeReview`, `allowCreate`, `allowModify` and `allowHeld` stay empty or unticked here. The form labels each box with the input's description from the workflow file, so check the labels on screen once before the audience.
+   Or, in the browser, open the **Actions** tab, select **mirror-deploy-unit** in the left sidebar and select the **Run workflow** button above the list of runs. In the **Branch** dropdown keep `master`. Fill in the boxes as the table shows, and select **Run workflow** in the pop-up. The run is named "Deploy pilot-empty-rg (DEMO-0003)". The inputs `acknowledgeReview`, `allowCreate`, `allowModify` and `allowHeld` stay empty or unticked here. The form labels each box with the input's description from the workflow file, so check the labels on screen once before the audience.
 
    | Input | What the form shows | What you enter |
    | --- | --- | --- |
@@ -1198,7 +1202,7 @@ This is project sections 4.2 to 4.8 and 4.10, for a production unit that creates
    ```powershell
    git commit --all --message "Enable the network and routing units"
    git push -u origin enable-waves
-   gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head enable-waves --title "Enable the network and routing units" --body "Change: DEMO-0004"
+   gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head enable-waves --title "Enable the network and routing units" --body "Enable the network and routing units"
    ```
 
 2. Show the preview on the pull request. mirror-pr runs `whatif rg-demo-network` and `whatif rg-demo-routing`. The first shows the gate FAIL with `Create=9`, which are the network security group, the virtual network, the lock, the policy assignment, the role assignment, the private DNS zone, its link, the private endpoint and the endpoint's zone group. The second shows `Create=4`, which are the route table, the application security group, the Automation account and its credential. Both are marked for information. The comments are on the **Conversation** tab of the pull request. A new resource is a Create, and the gate refuses a Create that nobody named. The check `pr-gate` is still green, because it fails only when a preview could not run.
@@ -1280,7 +1284,7 @@ This is project step 3.23 item 8 and sections 4.2 to 4.8, for a privileged unit.
    ```powershell
    git commit --all --message "Enable the privileged unit"
    git push -u origin enable-privileged
-   gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head enable-privileged --title "Enable the privileged unit" --body "Change: DEMO-0006"
+   gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head enable-privileged --title "Enable the privileged unit" --body "Enable the privileged unit"
    ```
 
 2. Show the preview on the pull request. mirror-pr runs `whatif demo-privileged` with the reader, which has no right to write. It shows the gate FAIL with `Create=2`, the Owner role assignment on `rg-demo-network` and the role definition `Demo Reader Plus`, marked for information.
@@ -1326,7 +1330,7 @@ This is the first tenant unit. It deploys at management group scope against the 
    git switch --create enable-tenant-mg
    git commit --all --message "Enable the management group unit"
    git push -u origin enable-tenant-mg
-   gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head enable-tenant-mg --title "Enable the management group unit" --body "Change: DEMO-0007"
+   gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head enable-tenant-mg --title "Enable the management group unit" --body "Enable the management group unit"
    ```
 
 2. Show the preview on the pull request. `whatif demo-tenant-management-group` shows the gate PASS with `NoChange=1`, the management group `mg-demo`, because the group exists already.
@@ -1363,7 +1367,7 @@ This unit runs against `mg-demo`, which step 3.15 item 8 created. Its preview an
    git switch --create enable-tenant-governance
    git commit --all --message "Enable the management group governance unit"
    git push -u origin enable-tenant-governance
-   gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head enable-tenant-governance --title "Enable the management group governance unit" --body "Change: DEMO-0008"
+   gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head enable-tenant-governance --title "Enable the management group governance unit" --body "Enable the management group governance unit"
    ```
 
 2. Show the preview. `whatif demo-tenant-governance` shows the gate FAIL with `Create=1`, a Reader role assignment on `mg-demo`, marked for information.
@@ -1425,7 +1429,7 @@ This is project section 4.9. The resources now exist, and a real change names it
    ```powershell
    git commit --all --message "Deny remote desktop from the internet on nsg-demo"
    git push -u origin nsg-rule
-   gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head nsg-rule --title "Deny remote desktop from the internet on nsg-demo" --body "Change: DEMO-0009"
+   gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head nsg-rule --title "Deny remote desktop from the internet on nsg-demo" --body "Deny remote desktop from the internet on nsg-demo"
    ```
 
    On screen, `whatif rg-demo-network` shows the gate FAIL with `Modify=1` on `nsg-demo`, the new rule under `securityRules`, for information. The comment is on the **Conversation** tab of the pull request.
@@ -1446,13 +1450,21 @@ This is project section 5.3, with the repair of REFERENCE.md section 5.2.
 
 The drift check starts in two ways. Run workflow starts it at any time. Every Monday at 05:00 UTC it starts by itself, but only when the repository variable `MIRROR_DRIFT_SCHEDULE_ENABLED` is `true`. Until then the weekly start skips every job. The workflow has two jobs. The `drift` job takes a read-only preview of every enabled unit with the reader identity. The `report` job never signs in to Azure and runs only on `master`. It keeps one GitHub issue up to date from the `drift` job's summary. It opens the issue when a run finds drift or cannot check a unit, adds a comment when the findings change, updates only the link to the run when the findings are the same, and closes the issue with a comment when a run finds every unit clean. The issue is the alert, because everyone who watches the repository is notified of a new issue or a new comment.
 
+Wait for each run to finish before the next step, because a run started while another waits replaces the waiting one. To see the state of the runs, use the following command.
+
+```powershell
+gh run list --workflow mirror-drift.yml --limit 3 --repo themasterishome/demo-bicep-deploy-test
+```
+
 1. Run the drift check once with everything in line.
 
    ```powershell
    gh workflow run mirror-drift.yml --ref master --repo themasterishome/demo-bicep-deploy-test
    ```
 
-   The summary of the `drift` job lists every enabled unit as clean, which are `pilot-empty-rg`, `rg-demo-network`, `rg-demo-routing`, `demo-privileged` and the two tenant units, and the run is green. The `report` job then prints `Drift report: every checked unit is clean, and no drift issue is open.` The drift check runs with the reader identity for every tier. Run it once before the audience arrives, because the privileged units add records the first three do not have.
+   The summary of the `drift` job lists every unit enabled so far as clean, and the run is green. The `report` job then prints `Drift report: every checked unit is clean, and no drift issue is open.` The drift check runs with the reader identity for every tier. Run it once before the audience arrives, because the privileged units add records the first three do not have.
+
+   The Visual Studio subscription also holds resource groups that are not part of the demo, for example WinServ2022, Automation, coach01 to coach29 and consultant01 to consultant13. The demo code does not declare them, so when `demo-subscription` is enabled in `deploy/units.json`, the drift check reports each of them as NoRecord, lists `demo-subscription` as `DRIFT` and ends red. The `report` job then opens the issue titled "The drift check found a difference between live Azure and the code, or a unit it could not check". In the test repository this is issue #1, and it is open. A second run with the same findings updates the run link in the issue and adds no comment. Leave those groups alone. They are not part of the demo, and the issue stays open while they exist. The lines this section prints for a clean run, and for the closing of the issue, apply with `demo-subscription` disabled.
 
 2. Change something outside the code. In the Azure portal, search for **Route tables** and select `rt-demo`. In its left menu select **Tags**, type the name `changedBy` and the value `portal`, and select **Apply**.
 
@@ -1498,7 +1510,7 @@ This is REFERENCE.md section 4.1. It takes the rule of section 4.8 out again.
    git switch --create revert-nsg-rule
    git revert --no-edit BAD_COMMIT
    git push -u origin revert-nsg-rule
-   gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head revert-nsg-rule --title "Roll back the remote desktop rule on nsg-demo" --body "Change: DEMO-0011"
+   gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head revert-nsg-rule --title "Roll back the remote desktop rule on nsg-demo" --body "Roll back the remote desktop rule on nsg-demo"
    ```
 
    Replace `BAD_COMMIT` with the ID of the commit "Deny remote desktop from the internet on nsg-demo" in the `git log` output. A squash merge is one ordinary commit, so `git revert` needs no `-m` option. The preview on the pull request shows a Modify on `nsg-demo` that removes the rule.
