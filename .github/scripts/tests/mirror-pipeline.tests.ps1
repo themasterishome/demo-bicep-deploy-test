@@ -1070,6 +1070,9 @@ Assert-True ($b1.body -like '*<!-- mirror-drift findings *') 'the issue text end
 Assert-True ($b2.body -like '*https://run/2*') 'the issue text names the run'
 $b3 = Format-DriftIssueBody @([pscustomobject]@{ unit = 'u2'; result = 'DRIFT'; findings = @('Modify /x: other') }) 'drift' 'https://run/3' 'failure'
 Assert-True ($b3.fingerprint -cne $b1.fingerprint) 'other findings give another fingerprint'
+$o1 = Format-DriftIssueBody @([pscustomobject]@{ unit = 'b'; result = 'DRIFT'; findings = @('NoRecord /g2', 'NoRecord /g1') }, [pscustomobject]@{ unit = 'a'; result = 'DRIFT'; findings = @('x') }) 'drift' 'r1' 'failure'
+$o2 = Format-DriftIssueBody @([pscustomobject]@{ unit = 'a'; result = 'DRIFT'; findings = @('x') }, [pscustomobject]@{ unit = 'b'; result = 'DRIFT'; findings = @('NoRecord /g1', 'NoRecord /g2') }) 'drift' 'r2' 'failure'
+Assert-Equal $o1.fingerprint $o2.fingerprint 'the same findings in another order give the same fingerprint'
 Assert-True ((Format-DriftIssueBody $null 'error' 'https://run/4' 'failure').body -like '*ended before it wrote its summary*') 'with no summary the issue says the job ended early'
 
 # The mode, in a child PowerShell with a gh that answers from files and records every write.

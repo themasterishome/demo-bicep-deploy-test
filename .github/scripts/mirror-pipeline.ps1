@@ -1582,14 +1582,22 @@ function Get-DriftState($Rows, [string]$JobResult) {
 }
 
 # The findings of every unit that is neither clean nor skipped, as Markdown lines. Each finding is one line in a code
-# span, so text from Azure cannot make a link, a heading or HTML.
+# span, so text from Azure cannot make a link, a heading or HTML. The units and the findings of each unit are sorted
+# (ordinal), because Azure lists resources in no fixed order, and the same findings must give the same text.
 function Format-DriftFindings($Rows) {
   $lines = @()
-  foreach ($row in @(@($Rows) | Where-Object { $null -ne $_ })) {
+  $list = [object[]]@(@($Rows) | Where-Object { $null -ne $_ })
+  if ($list.Count -gt 1) {
+    $keys = [string[]]@($list | ForEach-Object { [string](Get-Prop $_ 'unit') })
+    [Array]::Sort($keys, $list, [Collections.IComparer][StringComparer]::Ordinal)
+  }
+  foreach ($row in $list) {
     $res = [string](Get-Prop $row 'result')
     if ($res -ceq 'clean' -or $res -ceq 'SKIP') { continue }
     $lines += "- $(ConvertTo-CodeSpan ([string](Get-Prop $row 'unit'))) $res"
-    foreach ($f in @(Get-Prop $row 'findings')) { if ($null -ne $f -and "$f") { $lines += "  - $(ConvertTo-CodeSpan ([string]$f))" } }
+    $found = [string[]]@(@(Get-Prop $row 'findings') | Where-Object { $null -ne $_ -and "$_" } | ForEach-Object { ConvertTo-CodeSpan ([string]$_) })
+    if ($found.Count -gt 1) { [Array]::Sort($found, [Collections.IComparer][StringComparer]::Ordinal) }
+    foreach ($f in $found) { $lines += "  - $f" }
   }
   return [string[]]$lines
 }
