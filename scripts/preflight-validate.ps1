@@ -58,7 +58,13 @@
        i. every path the code names (a unit's template and parameters file in deploy/units.json, a module, import
           or using line, the file of a load function such as loadJsonContent) matches the file on disk in case
           as well. Windows finds a file whose name differs only in case and Linux does not, so such a path would
-          pass on one runner image and fail on the other.
+          pass on one runner image and fail on the other. Each path is followed one folder at a time from the
+          file that names it, so a .. in the path is checked as well. In a .bicepparam file the using and
+          extends lines and the load functions count.
+       j. no two files or folders in one folder of infra/, deploy/, scripts/, pipelines/ or .github/ have names
+          that differ only in case, which Linux keeps apart and Windows cannot, and no path in those folders is
+          longer than 200 characters from the root of the folder, so it fits Windows' limit of about 260 with the
+          checkout folder in front of it.
     5. find-duplicate-declarations.ps1 on every subscription and resource group unit with its
        parameters file (ResourceDeployedMultipleTimes would fail that deployment), as deploy-unit.ps1
        does, and on the three subscriptions that keep a parameters.verify.bicepparam with that file, so
@@ -127,6 +133,9 @@ if ($CompileCache) {
   $CompileCache = $cacheTemp
 }
 New-Item -ItemType Directory -Force -Path $CompileCache | Out-Null
+# An index left by an earlier run in the same folder is removed first, so a run that stops early never leaves an
+# index that lists files of another run.
+Remove-Item -LiteralPath (Join-Path $CompileCache 'index.json') -Force -ErrorAction SilentlyContinue
 $failures = New-Object System.Collections.Generic.List[string]
 $ruleCounts = @{}
 # Windows (NTFS) lists the files of a folder sorted by name without case, and Linux lists them in the file
@@ -286,10 +295,28 @@ namespace PreflightValidate
 
         public string ErrorText { get { lock (errors) { return errors.ToString(); } } }
 
+        // The longest one request may take, in seconds. The largest template of the estate compiles in under a minute.
+        public int TimeoutSeconds = 900;
+        private volatile bool timedOut;
+
         // Sends one request and returns its result object. A JSON-RPC error or the end of the server ends in an exception.
         public Dictionary<string, object> Call(string method, string paramsJson)
         {
             int id = ++nextId;
+            timedOut = false;
+            using (System.Threading.Timer limit = new System.Threading.Timer(delegate(object state) { timedOut = true; try { proc.Kill(); } catch (Exception) { } }, null, TimeoutSeconds * 1000, System.Threading.Timeout.Infinite))
+            {
+                try { return Exchange(id, method, paramsJson); }
+                catch (IOException e)
+                {
+                    if (timedOut) { throw new TimeoutException("Bicep JSON-RPC " + method + " took longer than " + TimeoutSeconds + " seconds, so the server was stopped"); }
+                    throw new IOException(e.Message, e);
+                }
+            }
+        }
+
+        private Dictionary<string, object> Exchange(int id, string method, string paramsJson)
+        {
             byte[] body = Utf8.GetBytes("{\"jsonrpc\":\"2.0\",\"id\":" + id.ToString(CultureInfo.InvariantCulture) + ",\"method\":" + Quote(method) + ",\"params\":" + paramsJson + "}\r\n\r\n");
             byte[] head = Encoding.ASCII.GetBytes("Content-Length: " + body.Length.ToString(CultureInfo.InvariantCulture) + "\r\n\r\n");
             input.Write(head, 0, head.Length);
@@ -510,12 +537,14 @@ function Get-InnerMessage($err) {
   return $e.Message
 }
 
+# The tables below are keyed by full path, compared as the system compares file names: without case on Windows and
+# exactly on Linux, where two names that differ only in case are two files.
+$pathKeys = if ($sep -eq '\') { [StringComparer]::OrdinalIgnoreCase } else { [StringComparer]::Ordinal }
 # The SHA256 of a file, read once per run.
-$fileHashes = @{}
+$fileHashes = New-Object 'System.Collections.Generic.Dictionary[string,string]' $pathKeys
 function Get-FileSha([string]$full) {
-  $k = $full.ToLowerInvariant()
-  if (-not $script:fileHashes.ContainsKey($k)) { $script:fileHashes[$k] = (Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash }
-  return $script:fileHashes[$k]
+  if (-not $script:fileHashes.ContainsKey($full)) { $script:fileHashes[$full] = (Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash }
+  return $script:fileHashes[$full]
 }
 
 # The compile cache. Each compile that passed is kept in a file of its own, in the form the CLI prints with
@@ -523,39 +552,47 @@ function Get-FileSha([string]$full) {
 # index.json lists, for each, every file the compile read (Bicep's getFileReferences) with its SHA256, so a reader
 # uses an entry only while those files are unchanged. $cacheFiles maps a compiled file to its cache file for step 5.
 $cacheEntries = New-Object System.Collections.Generic.List[object]
-$cacheFiles = @{}
+$cacheFiles = New-Object 'System.Collections.Generic.Dictionary[string,string]' $pathKeys
+$cacheNotKept = 0
 function Save-CompiledOutput([string]$path, [bool]$isParams, $result) {
   try {
     $refs = $script:rpc.Call('bicep/getFileReferences', '{"path":' + [PreflightValidate.BicepRpc]::Quote($path) + '}')
     $inputs = @(foreach ($f in @($refs['filePaths'])) { [ordered]@{ path = (Get-RelPath ([string]$f)); sha256 = (Get-FileSha ([string]$f)) } })
     if ($isParams) { $text = '{"parametersJson":' + [PreflightValidate.BicepRpc]::Quote([string]$result['parameters']) + ',"templateJson":' + [PreflightValidate.BicepRpc]::Quote([string]$result['template']) + '}' }
     else { $text = [string]$result['contents'] }
-    $name = '{0:d3}-{1}.json' -f ($script:cacheEntries.Count + 1), ((Get-RelPath $path) -replace '[^A-Za-z0-9_.-]', '_')
+    # A number, not the file's path, so the name stays short in any folder. index.json says which file it holds.
+    $name = '{0:d3}.json' -f ($script:cacheEntries.Count + 1)
     $file = Join-Path $CompileCache $name
     [IO.File]::WriteAllText($file, $text, $script:utf8NoBom)
     $script:cacheEntries.Add([ordered]@{ path = (Get-RelPath $path); kind = $(if ($isParams) { 'parameters' } else { 'template' }); file = $name; inputs = $inputs })
-    $script:cacheFiles[$path.ToLowerInvariant()] = $file
+    $script:cacheFiles[$path] = $file
   } catch {
     # Without a cache entry the readers compile the file themselves, so this is a note and not a failure.
+    $script:cacheNotKept++
     Write-Host "  not kept in the compile cache: $(Get-RelPath $path) ($(Get-InnerMessage $_))" -ForegroundColor Yellow
   }
 }
 
 # Compiles one .bicep file (bicep/compile) or .bicepparam file (bicep/compileParams) in the Bicep server, counts
 # diagnostics per rule, keeps the log, records a failure, and keeps a compile that passed in the compile cache.
-# A server that stopped is started again for the next file.
+# A server that stopped, or that a request kept busy past its time limit, is replaced, and the same file is sent once
+# more to the new server, so a server that failed after the file before is not taken for a fault of this file.
 function Invoke-BicepCompile([string]$path, [string]$label) {
   $isParams = $path -like '*.bicepparam'
   $q = [PreflightValidate.BicepRpc]::Quote($path)
   $log = New-Object System.Collections.Generic.List[string]
   $r = $null
-  try {
-    if ($null -eq $script:rpc) { $script:rpc = New-Object PreflightValidate.BicepRpc $script:bicepExe }
-    if ($isParams) { $r = $script:rpc.Call('bicep/compileParams', '{"path":' + $q + ',"parameterOverrides":{}}') }
-    else { $r = $script:rpc.Call('bicep/compile', '{"path":' + $q + '}') }
-  } catch {
-    $log.Add("Error: $(Get-InnerMessage $_)")
-    if ($null -ne $script:rpc) { $script:rpc.Dispose(); $script:rpc = $null }
+  for ($attempt = 1; $attempt -le 2 -and $null -eq $r; $attempt++) {
+    try {
+      if ($null -eq $script:rpc) { $script:rpc = New-Object PreflightValidate.BicepRpc $script:bicepExe }
+      if ($isParams) { $r = $script:rpc.Call('bicep/compileParams', '{"path":' + $q + ',"parameterOverrides":{}}') }
+      else { $r = $script:rpc.Call('bicep/compile', '{"path":' + $q + '}') }
+    } catch {
+      $msg = Get-InnerMessage $_
+      if ($null -ne $script:rpc) { $script:rpc.Dispose(); $script:rpc = $null }
+      if ($attempt -eq 1) { Write-Host "  the Bicep server failed on $(Get-RelPath $path) ($msg), so a new one compiles it again" -ForegroundColor Yellow }
+      else { $log.Add("Error: $msg") }
+    }
   }
   if ($null -ne $r) {
     foreach ($d in @($r['diagnostics'])) {
@@ -730,7 +767,7 @@ foreach ($p in $params) {
 }
 $cacheIndex = [ordered]@{ format = 1; bicep = $bicepVersion; entries = $cacheEntries.ToArray() }
 [IO.File]::WriteAllText((Join-Path $CompileCache 'index.json'), (ConvertTo-Json -InputObject $cacheIndex -Depth 6), $utf8NoBom)
-Write-Host "  $($cacheEntries.Count) compiles kept in the compile cache"
+Write-Host "  $($cacheEntries.Count) compiles kept in the compile cache, $cacheNotKept not kept"
 Write-Host 'Diagnostics by rule (counted once per compiled file that includes the source):'
 # Rules with the same count are listed by name, because a hashtable has no fixed order in PowerShell 7.
 $ruleCounts.GetEnumerator() | Sort-Object @{ Expression = 'Value'; Descending = $true }, @{ Expression = 'Key'; Descending = $false } | ForEach-Object { Write-Host ("  {0,6}  {1}" -f $_.Value, $_.Key) }
@@ -926,22 +963,26 @@ foreach ($f in $eolFiles) {
   }
 }
 # i. Paths that match a file only when case is ignored
-$caseDirs = @{}
-# The path as it is on disk when $full names an existing file or folder of the repository with other case, else
-# $null (also when nothing matches, which the checks above report).
-function Get-CaseOnDisk([string]$full) {
-  $f = [IO.Path]::GetFullPath($full)
-  if (-not $f.StartsWith($repo + $sep, [StringComparison]::OrdinalIgnoreCase)) { return $null }
-  $dir = $repo
+$caseDirs = New-Object 'System.Collections.Generic.Dictionary[string,object]' $pathKeys
+function Get-DirNames([string]$dir) {
+  if (-not $script:caseDirs.ContainsKey($dir)) {
+    $names = @()
+    try { $names = @([IO.Directory]::GetFileSystemEntries($dir) | ForEach-Object { [IO.Path]::GetFileName($_) }) } catch { }
+    $script:caseDirs[$dir] = $names
+  }
+  return $script:caseDirs[$dir]
+}
+# The path as it is on disk when $written, read from the folder $baseDir one part at a time, names an existing file
+# with other case, else $null (also when a part is missing, which the checks above report). Only the parts of the
+# written path are compared, never the folders above $baseDir, so the check works under any root path.
+function Get-CaseOnDisk([string]$baseDir, [string]$written) {
+  $dir = $baseDir
   $parts = New-Object System.Collections.Generic.List[string]
   $differs = $false
-  foreach ($p in $f.Substring($repo.Length + 1).Split([char[]]@('\', '/'), [StringSplitOptions]::RemoveEmptyEntries)) {
-    if (-not $script:caseDirs.ContainsKey($dir)) {
-      $names = @()
-      try { $names = @([IO.Directory]::GetFileSystemEntries($dir) | ForEach-Object { [IO.Path]::GetFileName($_) }) } catch { }
-      $script:caseDirs[$dir] = $names
-    }
-    $names = $script:caseDirs[$dir]
+  foreach ($p in $written.Split([char[]]@('\', '/'), [StringSplitOptions]::RemoveEmptyEntries)) {
+    if ($p -eq '.') { continue }
+    if ($p -eq '..') { $dir = Split-Path -Parent $dir; $parts.Add('..'); continue }
+    $names = Get-DirNames $dir
     $hit = @($names | Where-Object { [string]::Equals($_, $p, [StringComparison]::Ordinal) })
     if ($hit.Count -eq 0) {
       $hit = @($names | Where-Object { [string]::Equals($_, $p, [StringComparison]::OrdinalIgnoreCase) })
@@ -954,31 +995,42 @@ function Get-CaseOnDisk([string]$full) {
   if ($differs) { return ($parts -join '/') }
   return $null
 }
-function Test-PathCase([string]$from, [string]$written, [string]$full) {
-  $onDisk = Get-CaseOnDisk $full
-  if ($null -ne $onDisk) { Add-LayoutFailure 'i' "$from names $written, but the file on disk is $onDisk. Linux file names are case-sensitive, so this compiles on Windows and fails on Linux" }
+function Test-PathCase([string]$from, [string]$baseDir, [string]$written) {
+  if ($written -match '^(br|ts)(:|/[^/:]+:)' -or $written -match '^[A-Za-z]:|^[\\/]') { return }
+  $onDisk = Get-CaseOnDisk $baseDir $written
+  if ($null -ne $onDisk) { Add-LayoutFailure 'i' "$from names $written, but on disk it is $onDisk. Linux file names are case-sensitive, so this compiles on Windows and fails on Linux" }
 }
+$loadPattern = "\bload(?:JsonContent|TextContent|YamlContent|FileAsBase64)\(\s*'([^'$]+)'"
 foreach ($unit in $units) {
   foreach ($rel in @($unit.template, $unit.parameters)) {
-    if ($rel) { Test-PathCase "deploy/units.json ($($unit.name))" $rel (Get-RepoPath $rel) }
+    if ($rel) { Test-PathCase "deploy/units.json ($($unit.name))" $repo ([string]$rel) }
   }
 }
 foreach ($f in $bicepFiles) {
-  $dir = Split-Path -Parent $f.FullName
   $code = Get-BicepCodeText $f.FullName
   $named = @([regex]::Matches($code, "(?m)^[ \t]*module[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]+'([^']+)'")) +
            @([regex]::Matches($code, "(?m)^[ \t]*import[ \t][^\r\n]*?'([^']+\.(bicep|json))'")) +
-           @([regex]::Matches($code, "\bload(?:JsonContent|TextContent|YamlContent|FileAsBase64)\(\s*'([^'$]+)'"))
-  foreach ($m in $named) {
-    $p = $m.Groups[1].Value
-    if ($p -match '^(br|ts)(:|/[^/:]+:)') { continue }
-    Test-PathCase (Get-RelPath $f.FullName) $p ([IO.Path]::GetFullPath((Join-Path $dir (Get-SysPath $p))))
-  }
+           @([regex]::Matches($code, $loadPattern))
+  foreach ($m in $named) { Test-PathCase (Get-RelPath $f.FullName) $f.DirectoryName $m.Groups[1].Value }
 }
 foreach ($pf in @($allInfraFiles | Where-Object { $_.Extension -ieq '.bicepparam' -and -not (Test-Retired $_.FullName) })) {
-  $usingRel = Get-UsingPath $pf.FullName
-  if ($null -eq $usingRel -or $usingRel -match '^(br|ts)(:|/[^/:]+:)') { continue }
-  Test-PathCase (Get-RelPath $pf.FullName) $usingRel ([IO.Path]::GetFullPath((Join-Path $pf.DirectoryName (Get-SysPath $usingRel))))
+  $code = Get-BicepCodeText $pf.FullName
+  $named = @([regex]::Matches($code, "(?m)^\s*(?:using|extends)\s+'([^']+)'")) + @([regex]::Matches($code, $loadPattern))
+  foreach ($m in $named) { Test-PathCase (Get-RelPath $pf.FullName) $pf.DirectoryName $m.Groups[1].Value }
+}
+
+# j. Names that only differ in case, and paths too long for Windows
+$portableRoots = @('infra', 'deploy', 'scripts', 'pipelines', '.github') | ForEach-Object { Join-Path $repo $_ } | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
+foreach ($root in $portableRoots) {
+  $dirs = @((Get-Item -LiteralPath $root)) + @(Get-ChildItem -LiteralPath $root -Recurse -Directory -Force)
+  foreach ($d in $dirs) {
+    $groups = @(@(Get-ChildItem -LiteralPath $d.FullName -Force) | Group-Object { $_.Name.ToLowerInvariant() } | Where-Object { $_.Count -gt 1 })
+    foreach ($g in $groups) { Add-LayoutFailure 'j' "$(Get-RelPath $d.FullName) holds $((@($g.Group | ForEach-Object { $_.Name }) | Sort-Object) -join ' and '), names that differ only in case. Windows cannot keep both. Rename one" }
+  }
+  foreach ($item in @(Get-ChildItem -LiteralPath $root -Recurse -Force)) {
+    $rel = Get-RelPath $item.FullName
+    if ($rel.Length -gt 200) { Add-LayoutFailure 'j' "$rel is $($rel.Length) characters long. Keep every path under 200 characters, so a Windows checkout stays under its limit of about 260" }
+  }
 }
 
 $layoutFailures = $failures.Count - $layoutStart
@@ -1005,7 +1057,8 @@ if (-not $SkipDuplicates) {
     $chkArgs = @{ Template = $template; DeclarationsCsv = $csv }
     if ($paramFile) { $chkArgs['Parameters'] = $paramFile } else { $chkArgs['NoParameters'] = $true }
     $compiledFor = if ($paramFile) { $paramFile } else { $template }
-    $compiled = $script:cacheFiles[$compiledFor.ToLowerInvariant()]
+    $compiled = $null
+    if ($script:cacheFiles.ContainsKey($compiledFor)) { $compiled = $script:cacheFiles[$compiledFor] }
     if ($compiled) { $chkArgs['CompiledJson'] = $compiled; $script:dupFromCache++ }
     Write-Host "Duplicate declarations: $label"
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'

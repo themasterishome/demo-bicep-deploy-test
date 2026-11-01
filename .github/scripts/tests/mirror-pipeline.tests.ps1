@@ -750,6 +750,17 @@ try {
   # Index problems never fail the check.
   Write-CcIndex (New-CcEntries) 2
   Assert-True ($null -eq (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})) 'another index format is a miss'
+  # The Bicep release of the index must be the pinned one when the workflow names it.
+  Write-CcIndex (New-CcEntries)
+  $keepPin = $env:BICEP_VERSION
+  try {
+    $env:BICEP_VERSION = 'v0.48.1'
+    Assert-True ($null -ne (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})) 'an index of the pinned Bicep release hits'
+    $env:BICEP_VERSION = 'v0.49.0'
+    Assert-True ($null -eq (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})) 'an index of another Bicep release is a miss'
+  } finally { $env:BICEP_VERSION = $keepPin }
+  $pt = New-PathTable; $pt['C:/a/B.bicep'] = 1
+  Assert-Equal ($script:PathCompare -eq [StringComparison]::OrdinalIgnoreCase) $pt.ContainsKey('C:/a/b.bicep') 'the hash table of paths ignores case on Windows only'
   [IO.File]::WriteAllText((Join-Path $ccDir 'index.json'), '{ not json')
   Assert-True ($null -eq (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})) 'a malformed index is a miss'
   [IO.File]::WriteAllText((Join-Path $ccDir 'index.json'), '{"format":1,"entries":"x"}')
@@ -784,10 +795,16 @@ try {
 }
 
 Write-Host '--- the paths that make the portability job run the full preflight'
-foreach ($p in @('scripts/preflight-validate.ps1', 'scripts/sub/x.sh', '.github/scripts/mirror-pipeline.ps1', '.github/scripts/tests/a.ps1', 'bicepconfig.json', '.github/workflows/mirror-validate.yml', 'scripts\x.ps1')) {
+$cc = @(Find-CaseCollisions @('deploy/UNITS.json', 'infra/new.bicep') @('deploy/units.json', 'infra/a.bicep', 'deploy/UNITS.json', 'infra/new.bicep'))
+Assert-Equal 1 $cc.Count 'an added name that differs only in case from another path is found'
+Assert-Equal 'deploy/UNITS.json (deploy/UNITS.json and deploy/units.json)' $cc[0] 'and it names both paths'
+Assert-Equal 0 @(Find-CaseCollisions @('infra/new.bicep') @('infra/a.bicep', 'infra/new.bicep')).Count 'an added name that is unique is not a collision'
+Assert-Equal 0 @(Find-CaseCollisions @() @('infra/a.bicep')).Count 'no added path is no collision'
+Assert-Equal 'Infra/b.bicep (Infra and infra)' (@(Find-CaseCollisions @('Infra/b.bicep') @('infra/a.bicep', 'Infra/b.bicep'))[0]) 'a folder that differs only in case is a collision too'
+foreach ($p in @('scripts/preflight-validate.ps1', 'scripts/sub/x.sh', '.github/scripts/mirror-pipeline.ps1', '.github/scripts/tests/a.ps1', 'bicepconfig.json', '.gitattributes', '.gitignore', '.github/workflows/mirror-validate.yml', 'scripts\x.ps1')) {
   Assert-True (Test-PortabilitySensitivePath $p) "sensitive: $p"
 }
-foreach ($p in @('infra/a.bicep', 'deploy/units.json', '.github/workflows/mirror-pr.yml', 'README.md', 'SCRIPTS/x.ps1', 'Scripts/x.ps1', 'infra/bicepconfig.json', 'pipelines/scripts/x.ps1', '.github/scriptsx/a.ps1', 'bicepconfig.json.bak')) {
+foreach ($p in @('infra/a.bicep', 'deploy/units.json', '.github/workflows/mirror-pr.yml', 'README.md', 'SCRIPTS/x.ps1', 'Scripts/x.ps1', 'infra/bicepconfig.json', 'pipelines/scripts/x.ps1', '.github/scriptsx/a.ps1', 'bicepconfig.json.bak', 'infra/.gitattributes', '.gitattributes.bak')) {
   Assert-True (-not (Test-PortabilitySensitivePath $p)) "not sensitive: $p"
 }
 

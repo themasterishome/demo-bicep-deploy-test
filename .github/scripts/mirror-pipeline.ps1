@@ -23,8 +23,9 @@
     PortabilityScope
                    mirror-validate, portability job. Decides whether the job runs the full preflight on its runner
                    image. It does when the event is Run workflow or any event but a push or a pull request, when the
-                   change touches scripts/, .github/scripts/, bicepconfig.json or the validate workflow, or when the
-                   changed files cannot be read. Writes the step output full
+                   change touches scripts/, .github/scripts/, bicepconfig.json, .gitattributes, .gitignore or the
+                   validate workflow, when it adds a path whose name differs only in case from another path of the
+                   tree, or when the changed files cannot be read. Writes the step output full
     InputCheck     mirror-pr, mirror-deploy-unit and mirror-drift, before the sign-in to Azure. Reads every Bicep
                    file of the checkout and refuses one that reads an environment variable, a registry module or a
                    file outside the repository, or uses a form this check does not read
@@ -1358,8 +1359,9 @@ function Get-BicepparamUsing([string]$FullPath) {
 # name of the entry's file in the folder and the inputs of the compile, each with its path and SHA256. A parameters
 # entry's file holds the JSON object {parametersJson, templateJson} of bicep build-params, a template entry's file
 # holds the compiled template. The cache is used only when every input of the entry still exists and hashes the same,
-# so a changed file is compiled again. A cache that is missing, unreadable or malformed means "compile", and never
-# fails the check.
+# so a changed file is compiled again, and only when the index names the Bicep release the workflow pins
+# (BICEP_VERSION, when it is set). A cache that is missing, unreadable or malformed means "compile", and never fails
+# the check.
 function Get-CompileCacheIndex([string]$Folder) {
   if (-not $Folder) { return $null }
   try {
@@ -1371,6 +1373,8 @@ function Get-CompileCacheIndex([string]$Folder) {
     if (-not ($fmt -is [int] -or $fmt -is [long]) -or $fmt -ne 1) { return $null }
     $entries = Get-Prop $idx 'entries'
     if ($null -eq $entries -or $entries -is [string]) { return $null }
+    $pinned = Get-EnvValue 'BICEP_VERSION'
+    if ($pinned -and -not (Test-Same ([string](Get-Prop $idx 'bicep')) $pinned.TrimStart('v'))) { return $null }
     return $idx
   } catch { return $null }
 }
@@ -1386,8 +1390,14 @@ function Resolve-CompileCachePath([string]$Path, [string]$Root) {
 # The text of the cached compile of one file, or $null when the cache has no usable entry for it. $Kind is
 # 'parameters' for a .bicepparam file and 'template' for a .bicep file. Paths match as the system compares file names
 # (ignoring case on Windows, exactly on Linux). $HashMemo holds the hashes already taken in this run, keyed by full
-# path, so a file shared by many units is hashed once. Pass a fresh table for a fresh run.
-function Get-CompileCacheText([string]$Folder, [string]$FullPath, [string]$Kind, [string]$Root, [hashtable]$HashMemo = @{}) {
+# path, so a file shared by many units is hashed once. Pass a fresh table from New-PathTable for a fresh run, whose
+# keys compare as the system compares file names.
+function New-PathTable {
+  $cmp = if ($script:PathCompare -eq [StringComparison]::OrdinalIgnoreCase) { [StringComparer]::OrdinalIgnoreCase } else { [StringComparer]::Ordinal }
+  return (New-Object System.Collections.Hashtable -ArgumentList @($cmp))
+}
+
+function Get-CompileCacheText([string]$Folder, [string]$FullPath, [string]$Kind, [string]$Root, [hashtable]$HashMemo = (New-PathTable)) {
   try {
     $idx = Get-CompileCacheIndex $Folder
     if ($null -eq $idx) { return $null }
@@ -1435,7 +1445,7 @@ function Invoke-PipelineScopeMode {
   $units = Read-JsonFile (Join-RepoPath $root 'deploy/units.json')
   $bicep = $null
   $cacheFolder = Get-EnvValue 'MIRROR_COMPILE_CACHE'
-  $memo = @{}
+  $memo = New-PathTable
   $errors = @(); $checked = 0; $grants = 0; $production = 0; $privileged = 0; $cached = 0
   foreach ($u in @(Get-Prop $units 'units')) {
     $name = [string](Get-Prop $u 'name')
@@ -1500,17 +1510,46 @@ function Invoke-PipelineScopeMode {
 }
 
 # The paths whose change makes the portability job run the full preflight on its image: the scripts the preflight and
-# the pipeline run, the Bicep settings and the validate workflow itself. Paths are repository paths with /, and they
+# the pipeline run, the Bicep settings, the git settings that decide line endings and which files a checkout holds,
+# and the validate workflow itself. Paths are repository paths with /, and they
 # match exactly as written, so the case counts on every system (the repository has these folders in lower case).
 function Test-PortabilitySensitivePath([string]$Path) {
   $p = $Path.Replace('\', '/')
   if ($p.StartsWith('scripts/', [StringComparison]::Ordinal) -or $p.StartsWith('.github/scripts/', [StringComparison]::Ordinal)) { return $true }
-  return (Test-InList @('bicepconfig.json', '.github/workflows/mirror-validate.yml') $p)
+  return (Test-InList @('bicepconfig.json', '.gitattributes', '.gitignore', '.github/workflows/mirror-validate.yml') $p)
+}
+
+# The added paths whose name differs only in case from another path of the tree, each as "added (other)". A Windows
+# checkout keeps only one of two such files, so only a Linux runner sees the second, and the preflight's layout
+# check fails it there.
+function Find-CaseCollisions([string[]]$Added, [string[]]$All) {
+  # Every folder and file path of the tree, keyed by its lower-case form, with each spelling seen.
+  $byLower = @{}
+  foreach ($p in @($All) + @($Added)) {
+    if (-not $p) { continue }
+    $parts = $p.Replace('\', '/').Split('/')
+    for ($i = 1; $i -le $parts.Count; $i++) {
+      $pre = ($parts[0..($i - 1)] -join '/')
+      $k = $pre.ToLowerInvariant()
+      if (-not $byLower.ContainsKey($k)) { $byLower[$k] = New-Object System.Collections.Generic.List[string] }
+      if (-not $byLower[$k].Contains($pre)) { $byLower[$k].Add($pre) }
+    }
+  }
+  foreach ($a in @($Added)) {
+    if (-not $a) { continue }
+    $parts = $a.Replace('\', '/').Split('/')
+    for ($i = 1; $i -le $parts.Count; $i++) {
+      $pre = ($parts[0..($i - 1)] -join '/')
+      $others = @($byLower[$pre.ToLowerInvariant()] | Where-Object { $_ -cne $pre })
+      if ($others.Count -gt 0) { "$($a.Replace('\', '/')) ($pre and $($others -join ', '))"; break }
+    }
+  }
 }
 
 # mirror-validate, portability job. Writes the step output full (true or false) and one summary line with the reason.
 # The full preflight runs on a manual run, on any event but a push or a pull request, when the change touches a
-# sensitive path, and when the changed files cannot be read. A pull request's checkout is GitHub's merge commit, so
+# sensitive path, when it adds a path whose name differs only in case from another path of the tree, and when the
+# changed files cannot be read. A pull request's checkout is GitHub's merge commit, so
 # its change is HEAD compared with its first parent. A push's change is the commit before the push (BEFORE)
 # compared with HEAD.
 function Invoke-PortabilityScopeMode {
@@ -1524,17 +1563,25 @@ function Invoke-PortabilityScopeMode {
     if (-not $from -or $from -match '^0+$') { $reason = 'the commit before the change is not known, so the changed files are not known' }
     elseif (-not (Test-GitCommit $from)) { $reason = "the commit $from is not in the checkout, so the changed files are not known" }
     else {
-      try { $paths = @(Get-GitChanges $from 'HEAD' | ForEach-Object { $_.Path }) }
-      catch { $reason = 'the changed files could not be read' }
+      try {
+        $changes = @(Get-GitChanges $from 'HEAD')
+        $paths = @($changes | ForEach-Object { $_.Path })
+        $added = @($changes | Where-Object { $_.Status -ceq 'A' } | ForEach-Object { $_.Path })
+        $collisions = @()
+        if ($added.Count -gt 0) { $collisions = @(Find-CaseCollisions $added @((Invoke-Git @('ls-files')).Out)) }
+      }
+      catch { $paths = $null; $reason = 'the changed files could not be read' }
     }
     if ($null -ne $paths) {
       $hits = @($paths | Where-Object { Test-PortabilitySensitivePath $_ })
-      if ($hits.Count -gt 0) {
+      if ($collisions.Count -gt 0) {
+        $reason = "the change adds $(@($collisions | Select-Object -First 3) -join ', '), a name that differs only in case from another path, which a Windows checkout cannot hold"
+      } elseif ($hits.Count -gt 0) {
         $shown = (@($hits | Select-Object -First 3) -join ', ')
         $reason = "the change touches $shown" + $(if ($hits.Count -gt 3) { " and $($hits.Count - 3) more" } else { '' })
       } else {
         $full = $false
-        $reason = "the $($paths.Count) changed file(s) touch no script, no bicepconfig.json and no validate workflow"
+        $reason = "the $($paths.Count) changed file(s) touch no script, no bicepconfig.json, no .gitattributes or .gitignore and no validate workflow"
       }
     }
   }
