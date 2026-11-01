@@ -4,7 +4,8 @@
 
 .DESCRIPTION
   Read-only, no Azure calls. Compiles the template (and its .bicepparam) with the local Bicep CLI
-  (`az bicep build-params --stdout`, or `az bicep build --stdout` when there is no parameter file),
+  (`az bicep build-params --stdout`, or `az bicep build --stdout` when there is no parameter file), or reads
+  that compile from -CompiledJson,
   then walks the ARM JSON recursively through every nested Microsoft.Resources/deployments template.
 
   For every non-existing resource it computes the key
@@ -41,6 +42,11 @@
 .PARAMETER OutJson
   Optional path for a machine-readable report.
 
+.PARAMETER CompiledJson
+  Optional path of a file that already holds the compile of these files, in the form the Bicep CLI prints with
+  --stdout: the output of bicep build-params for the parameters file, or of bicep build for the template when there
+  is no parameters file. The checker then reads it instead of compiling. preflight-validate.ps1 passes the compile it
+  has just made of the same files.
 .PARAMETER DeclarationsCsv
   Optional path for a CSV of every declaration walked, one row each: scope, extension scope, type, name,
   whether the name and scope resolved, status, where a false condition was found, deployment path, first
@@ -63,6 +69,7 @@ param(
     [string]$Parameters,
     [switch]$NoParameters,
     [string]$OutJson,
+    [string]$CompiledJson,
     [string]$DeclarationsCsv
 )
 
@@ -78,6 +85,7 @@ if ([IO.Path]::DirectorySeparatorChar -ne '\') {
     if ($Parameters) { $Parameters = $Parameters.Replace('\', '/') }
     if ($OutJson) { $OutJson = $OutJson.Replace('\', '/') }
     if ($DeclarationsCsv) { $DeclarationsCsv = $DeclarationsCsv.Replace('\', '/') }
+    if ($CompiledJson) { $CompiledJson = $CompiledJson.Replace('\', '/') }
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -1748,7 +1756,11 @@ try {
         }
     }
 
-    if ($paramPath) {
+    if ($CompiledJson) {
+        Write-Host "Reading the compile of $(if ($paramPath) { $paramPath } else { $templatePath }) from $CompiledJson ..."
+        $raw = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $CompiledJson).ProviderPath, [Text.Encoding]::UTF8)
+    }
+    elseif ($paramPath) {
         Write-Host "Compiling $paramPath (az bicep build-params --stdout) ..."
         $raw = Invoke-BicepCli -Arguments @('bicep', 'build-params', '--file', $paramPath, '--stdout')
     }

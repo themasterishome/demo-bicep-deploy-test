@@ -18,8 +18,11 @@
        VPN gateway, budget, pilot and tenant templates). The group files of the other ten subscriptions
        are compiled through their main.bicep, because a module behind a false condition is still compiled.
        Linter rules at error level in bicepconfig.json fail the build, so this is also the lint gate.
+       Every compile of steps 2 and 3 runs in one Bicep process, the Bicep CLI's JSON-RPC server (bicep jsonrpc
+       --stdio), so the Bicep CLI starts once and not once per file. The templates and diagnostics are the
+       ones az bicep build and az bicep build-params give.
     3. Builds every unit's parameters file and every parameters.verify.bicepparam (the subscription
-       sweep previews with those) with az bicep build-params. A parameters file that reads a secure
+       sweep previews with those), as az bicep build-params does. A parameters file that reads a secure
        input through readEnvironmentVariable() with no default is reported and skipped when that
        variable is not set, because it cannot build without the secret.
     4. Layout (text checks, no compile). The group files are edited by hand, so this step keeps the
@@ -52,6 +55,10 @@
           returns. Bicep counts each carriage return as a line break, so in such a file every warning
           names the wrong line and every '#disable-next-line' comment points at an empty line and is
           ignored. git also treats such a file as non-text and keeps the extra carriage returns.
+       i. every path the code names (a unit's template and parameters file in deploy/units.json, a module, import
+          or using line, the file of a load function such as loadJsonContent) matches the file on disk in case
+          as well. Windows finds a file whose name differs only in case and Linux does not, so such a path would
+          pass on one runner image and fail on the other.
     5. find-duplicate-declarations.ps1 on every subscription and resource group unit with its
        parameters file (ResourceDeployedMultipleTimes would fail that deployment), as deploy-unit.ps1
        does, and on the three subscriptions that keep a parameters.verify.bicepparam with that file, so
@@ -60,23 +67,35 @@
        scope, type and name) declared by two units fails the run, for example a lock declared both in
        governance/locks/<group>.bicep (demo-subscription unit) and in the group's own resource group
        file, or a resource in both a routine group file and its deploy-excluded file. Names the checker
-       cannot resolve take no part in the merge.
+       cannot resolve take no part in the merge. The checker runs in this script's own PowerShell and reads the
+       compile of step 3 (of step 2 for a unit with no parameters file), so no file is compiled twice.
 
   Warnings are counted and printed per rule but do not fail the run.
 
 .PARAMETER OutDir
   Optional folder for build logs (one per compiled file) and the duplicate check output.
 
+.PARAMETER CompileCache
+  Optional folder for the compile cache. It holds the output of every compile of steps 2 and 3 that passed, and
+  index.json, which lists each file a compile read with its SHA256. The validate workflow passes it, so its check of
+  the pipeline units (.github/scripts/mirror-pipeline.ps1 -Mode PipelineScope, with MIRROR_COMPILE_CACHE set to the
+  folder) reads these compiles instead of compiling every unit again. An entry is used only while every file it
+  lists is unchanged. Without this parameter the cache lives in a temporary folder for step 5 and is removed at the end.
+
 .PARAMETER SkipDuplicates
-  Skip step 5 (one compile per unit, it takes several minutes).
+  Skip step 5 (the duplicate check of every unit).
 
 .NOTES
   Exit code 0 when every check passes, 1 otherwise. Runs unchanged under Windows PowerShell 5.1 and
   PowerShell 7 (Windows and Linux).
+  Needs the Bicep CLI. It takes the first bicep on PATH when AZURE_BICEP_USE_BINARY_FROM_PATH is true (the
+  workflows set it after they pin the binary), else the copy that az bicep install puts in the bin folder of the
+  Azure CLI's configuration folder, else the first bicep on PATH. That is the binary az bicep itself runs.
 #>
 [CmdletBinding()]
 param(
   [string]$OutDir,
+  [string]$CompileCache,
   [switch]$SkipDuplicates
 )
 Set-StrictMode -Version 2
@@ -98,6 +117,16 @@ if ($OutDir) {
   $OutDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutDir)
   New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 }
+# The compile cache is made a full path in the same way, or is a temporary folder that the end of the script removes.
+$cacheTemp = $null
+if ($CompileCache) {
+  if ($sep -ne '\') { $CompileCache = $CompileCache.Replace('\', '/') }
+  $CompileCache = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($CompileCache)
+} else {
+  $cacheTemp = Join-Path ([IO.Path]::GetTempPath()) ('preflight-compiled-' + [guid]::NewGuid().ToString('N'))
+  $CompileCache = $cacheTemp
+}
+New-Item -ItemType Directory -Force -Path $CompileCache | Out-Null
 $failures = New-Object System.Collections.Generic.List[string]
 $ruleCounts = @{}
 # Windows (NTFS) lists the files of a folder sorted by name without case, and Linux lists them in the file
@@ -117,19 +146,6 @@ function Get-SortedFilesRecurse([string]$dir) {
   $items = Get-SortedByPath @(Get-ChildItem -LiteralPath $dir)
   $items | Where-Object { -not $_.PSIsContainer }
   foreach ($d in @($items | Where-Object { $_.PSIsContainer -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })) { Get-SortedFilesRecurse $d.FullName }
-}
-# az on Windows (az.cmd starts Python with -I, which ignores PYTHONUTF8 and PYTHONIOENCODING) writes text in
-# the ANSI code page of the system, and az on Linux writes UTF-8. So that a message with a character such as a
-# dash reads the same on every host, az output is taken byte for byte (Latin-1) on Windows and decoded by
-# ConvertFrom-AzLine, as UTF-8 when the bytes are valid UTF-8 and otherwise in the ANSI code page. On Linux it is
-# read as UTF-8. Plain ASCII output is the same either way.
-$azCapture = if ($sep -eq '\') { [Text.Encoding]::GetEncoding(28591) } else { New-Object System.Text.UTF8Encoding $false }
-$azUtf8Strict = New-Object System.Text.UTF8Encoding($false, $true)
-$azHighByte = New-Object regex ("[$([char]0x80)-$([char]0xFF)]")
-function ConvertFrom-AzLine([string]$s, [bool]$captured) {
-  if (-not ($sep -eq '\' -and $captured) -or -not $azHighByte.IsMatch($s)) { return $s }
-  $b = $azCapture.GetBytes($s)
-  try { return $azUtf8Strict.GetString($b) } catch { return [Text.Encoding]::GetEncoding(0).GetString($b) }
 }
 # Windows PowerShell 5.1 writes UTF8 with a byte order mark. PowerShell 7 writes the same bytes only with utf8BOM.
 $utf8Bom = if ($PSVersionTable.PSVersion.Major -ge 6) { 'utf8BOM' } else { 'UTF8' }
@@ -229,18 +245,325 @@ function Get-UnsetSecureInputs([string]$paramFile) {
            Where-Object { -not [Environment]::GetEnvironmentVariable($_) } | Select-Object -Unique)
 }
 
-# Runs one az bicep command, counts diagnostics per rule, keeps the log, records a failure.
-function Invoke-BicepStep([string[]]$azArgs, [string]$path, [string]$label) {
-  $tmp = [IO.Path]::GetTempFileName()
-  $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-  $prevEnc = [Console]::OutputEncoding
-  $captured = $false
-  try { [Console]::OutputEncoding = $azCapture; $captured = $true } catch { }
-  try { $log = @(& az @azArgs --outfile $tmp 2>&1 | ForEach-Object { ConvertFrom-AzLine "$_" $captured }) }
-  finally { if ($captured) { try { [Console]::OutputEncoding = $prevEnc } catch { } } }
-  $code = $LASTEXITCODE
-  $ErrorActionPreference = $prev
-  Remove-Item $tmp -ErrorAction SilentlyContinue
+# The client of Bicep's JSON-RPC server and a JSON reader with no size limit, in C# 5, which both PowerShell
+# editions compile.
+$rpcSource = @'
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Text;
+
+namespace PreflightValidate
+{
+    // A client of the Bicep CLI's JSON-RPC server (bicep jsonrpc --stdio). Each message is a Content-Length header,
+    // a blank line and the JSON text. One server compiles every file, so the start of the Bicep process is paid once.
+    public sealed class BicepRpc : IDisposable
+    {
+        private static readonly UTF8Encoding Utf8 = new UTF8Encoding(false);
+        private readonly Process proc;
+        private readonly Stream input;
+        private readonly Stream output;
+        private readonly StringBuilder errors = new StringBuilder();
+        private int nextId;
+
+        public BicepRpc(string exe)
+        {
+            ProcessStartInfo psi = new ProcessStartInfo(exe, "jsonrpc --stdio");
+            psi.UseShellExecute = false;
+            psi.CreateNoWindow = true;
+            psi.RedirectStandardInput = true;
+            psi.RedirectStandardOutput = true;
+            psi.RedirectStandardError = true;
+            proc = Process.Start(psi);
+            // Standard error is read as it comes, so a full pipe can never stop the server.
+            proc.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e) { if (e.Data != null) { lock (errors) { errors.AppendLine(e.Data); } } };
+            proc.BeginErrorReadLine();
+            input = proc.StandardInput.BaseStream;
+            output = proc.StandardOutput.BaseStream;
+        }
+
+        public string ErrorText { get { lock (errors) { return errors.ToString(); } } }
+
+        // Sends one request and returns its result object. A JSON-RPC error or the end of the server ends in an exception.
+        public Dictionary<string, object> Call(string method, string paramsJson)
+        {
+            int id = ++nextId;
+            byte[] body = Utf8.GetBytes("{\"jsonrpc\":\"2.0\",\"id\":" + id.ToString(CultureInfo.InvariantCulture) + ",\"method\":" + Quote(method) + ",\"params\":" + paramsJson + "}\r\n\r\n");
+            byte[] head = Encoding.ASCII.GetBytes("Content-Length: " + body.Length.ToString(CultureInfo.InvariantCulture) + "\r\n\r\n");
+            input.Write(head, 0, head.Length);
+            input.Write(body, 0, body.Length);
+            input.Flush();
+            while (true)
+            {
+                int length = ReadHeader();
+                Dictionary<string, object> msg = Json.Parse(Utf8.GetString(ReadExact(length))) as Dictionary<string, object>;
+                if (msg == null) { throw new InvalidDataException("the Bicep JSON-RPC server sent a message that is not a JSON object"); }
+                object rid;
+                if (!msg.TryGetValue("id", out rid) || rid == null) { continue; }
+                if (Convert.ToInt32(rid, CultureInfo.InvariantCulture) != id) { throw new InvalidDataException("the Bicep JSON-RPC server answered request " + rid + " while request " + id + " was waiting"); }
+                object err;
+                if (msg.TryGetValue("error", out err) && err != null)
+                {
+                    Dictionary<string, object> e = err as Dictionary<string, object>;
+                    object m = null;
+                    if (e != null) { e.TryGetValue("message", out m); }
+                    throw new InvalidOperationException("Bicep JSON-RPC " + method + " failed: " + (m == null ? "no message" : m.ToString()));
+                }
+                object result;
+                msg.TryGetValue("result", out result);
+                Dictionary<string, object> r = result as Dictionary<string, object>;
+                if (r == null) { throw new InvalidDataException("Bicep JSON-RPC " + method + " returned no result object"); }
+                return r;
+            }
+        }
+
+        private int ReadHeader()
+        {
+            List<byte> line = new List<byte>();
+            int length = -1;
+            while (true)
+            {
+                int b = output.ReadByte();
+                if (b < 0) { throw new EndOfStreamException("the Bicep JSON-RPC server stopped. " + ErrorText.Trim()); }
+                if (b == '\n')
+                {
+                    string text = Encoding.ASCII.GetString(line.ToArray()).TrimEnd('\r');
+                    line.Clear();
+                    if (text.Length == 0) { if (length >= 0) { return length; } continue; }
+                    int colon = text.IndexOf(':');
+                    if (colon > 0 && string.Equals(text.Substring(0, colon).Trim(), "Content-Length", StringComparison.OrdinalIgnoreCase))
+                    {
+                        length = int.Parse(text.Substring(colon + 1).Trim(), NumberStyles.None, CultureInfo.InvariantCulture);
+                    }
+                    continue;
+                }
+                line.Add((byte)b);
+            }
+        }
+
+        private byte[] ReadExact(int n)
+        {
+            byte[] buf = new byte[n];
+            int done = 0;
+            while (done < n)
+            {
+                int r = output.Read(buf, done, n - done);
+                if (r <= 0) { throw new EndOfStreamException("the Bicep JSON-RPC server stopped in the middle of a message. " + ErrorText.Trim()); }
+                done += r;
+            }
+            return buf;
+        }
+
+        public static string Quote(string s)
+        {
+            StringBuilder sb = new StringBuilder(s.Length + 2);
+            sb.Append('"');
+            foreach (char c in s)
+            {
+                switch (c)
+                {
+                    case '"': sb.Append("\\\""); break;
+                    case '\\': sb.Append("\\\\"); break;
+                    case '\b': sb.Append("\\b"); break;
+                    case '\f': sb.Append("\\f"); break;
+                    case '\n': sb.Append("\\n"); break;
+                    case '\r': sb.Append("\\r"); break;
+                    case '\t': sb.Append("\\t"); break;
+                    default:
+                        if (c < ' ') { sb.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture)); }
+                        else { sb.Append(c); }
+                        break;
+                }
+            }
+            sb.Append('"');
+            return sb.ToString();
+        }
+
+        public void Dispose()
+        {
+            try { input.Close(); } catch (IOException) { }
+            try { if (!proc.WaitForExit(10000)) { proc.Kill(); } } catch (InvalidOperationException) { }
+            proc.Dispose();
+        }
+    }
+
+    // A small JSON reader. Objects become Dictionary<string, object>, arrays List<object>, numbers double, and
+    // strings, true, false and null their .NET values. It has no size limit, unlike ConvertFrom-Json in Windows
+    // PowerShell 5.1, which a large compiled template can exceed.
+    public static class Json
+    {
+        public static object Parse(string text)
+        {
+            int i = 0;
+            object v = Value(text, ref i);
+            Skip(text, ref i);
+            if (i != text.Length) { throw new FormatException("text after the JSON value at offset " + i); }
+            return v;
+        }
+
+        private static void Skip(string t, ref int i) { while (i < t.Length && (t[i] == ' ' || t[i] == '\t' || t[i] == '\r' || t[i] == '\n')) { i++; } }
+
+        private static object Value(string t, ref int i)
+        {
+            Skip(t, ref i);
+            if (i >= t.Length) { throw new FormatException("unexpected end of JSON"); }
+            char c = t[i];
+            if (c == '{')
+            {
+                Dictionary<string, object> d = new Dictionary<string, object>(StringComparer.Ordinal);
+                i++; Skip(t, ref i);
+                if (i < t.Length && t[i] == '}') { i++; return d; }
+                while (true)
+                {
+                    Skip(t, ref i);
+                    string k = Str(t, ref i);
+                    Skip(t, ref i);
+                    if (i >= t.Length || t[i] != ':') { throw new FormatException("':' expected at offset " + i); }
+                    i++;
+                    d[k] = Value(t, ref i);
+                    Skip(t, ref i);
+                    if (i < t.Length && t[i] == ',') { i++; continue; }
+                    if (i < t.Length && t[i] == '}') { i++; return d; }
+                    throw new FormatException("',' or '}' expected at offset " + i);
+                }
+            }
+            if (c == '[')
+            {
+                List<object> a = new List<object>();
+                i++; Skip(t, ref i);
+                if (i < t.Length && t[i] == ']') { i++; return a; }
+                while (true)
+                {
+                    a.Add(Value(t, ref i));
+                    Skip(t, ref i);
+                    if (i < t.Length && t[i] == ',') { i++; continue; }
+                    if (i < t.Length && t[i] == ']') { i++; return a; }
+                    throw new FormatException("',' or ']' expected at offset " + i);
+                }
+            }
+            if (c == '"') { return Str(t, ref i); }
+            if (string.CompareOrdinal(t, i, "true", 0, 4) == 0) { i += 4; return true; }
+            if (string.CompareOrdinal(t, i, "false", 0, 5) == 0) { i += 5; return false; }
+            if (string.CompareOrdinal(t, i, "null", 0, 4) == 0) { i += 4; return null; }
+            int s = i;
+            while (i < t.Length && "+-0123456789.eE".IndexOf(t[i]) >= 0) { i++; }
+            if (i == s) { throw new FormatException("unexpected character at offset " + i); }
+            return double.Parse(t.Substring(s, i - s), NumberStyles.Float, CultureInfo.InvariantCulture);
+        }
+
+        private static string Str(string t, ref int i)
+        {
+            if (i >= t.Length || t[i] != '"') { throw new FormatException("string expected at offset " + i); }
+            i++;
+            StringBuilder sb = new StringBuilder();
+            while (true)
+            {
+                if (i >= t.Length) { throw new FormatException("unterminated string"); }
+                char c = t[i++];
+                if (c == '"') { return sb.ToString(); }
+                if (c != '\\') { sb.Append(c); continue; }
+                if (i >= t.Length) { throw new FormatException("unterminated escape"); }
+                char e = t[i++];
+                switch (e)
+                {
+                    case '"': sb.Append('"'); break;
+                    case '\\': sb.Append('\\'); break;
+                    case '/': sb.Append('/'); break;
+                    case 'b': sb.Append('\b'); break;
+                    case 'f': sb.Append('\f'); break;
+                    case 'n': sb.Append('\n'); break;
+                    case 'r': sb.Append('\r'); break;
+                    case 't': sb.Append('\t'); break;
+                    case 'u':
+                        if (i + 4 > t.Length) { throw new FormatException("short \\u escape"); }
+                        sb.Append((char)int.Parse(t.Substring(i, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture));
+                        i += 4;
+                        break;
+                    default: throw new FormatException("unknown escape at offset " + (i - 1));
+                }
+            }
+        }
+    }
+}
+'@
+if (-not ('PreflightValidate.BicepRpc' -as [type])) { Add-Type -TypeDefinition $rpcSource -Language CSharp }
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+
+# The Bicep CLI that az bicep runs. The first bicep on PATH when AZURE_BICEP_USE_BINARY_FROM_PATH is true, else the
+# copy az bicep install keeps in the bin folder of the Azure CLI's configuration folder, else the first bicep on PATH.
+function Get-PreflightBicep {
+  $onPath = Get-Command bicep -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (([string]$env:AZURE_BICEP_USE_BINARY_FROM_PATH) -match '^(?i:true|yes|1)$' -and $onPath) { return $onPath.Source }
+  $cfg = if ($env:AZURE_CONFIG_DIR) { $env:AZURE_CONFIG_DIR } else { Join-Path $HOME '.azure' }
+  $inAz = [IO.Path]::Combine($cfg, 'bin', $(if ($sep -eq '\') { 'bicep.exe' } else { 'bicep' }))
+  if (Test-Path -LiteralPath $inAz -PathType Leaf) { return $inAz }
+  if ($onPath) { return $onPath.Source }
+  return $null
+}
+
+# The message of an exception from a .NET method, without PowerShell's wrapper text.
+function Get-InnerMessage($err) {
+  $e = $err.Exception
+  while ($e -is [System.Management.Automation.MethodInvocationException] -and $null -ne $e.InnerException) { $e = $e.InnerException }
+  return $e.Message
+}
+
+# The SHA256 of a file, read once per run.
+$fileHashes = @{}
+function Get-FileSha([string]$full) {
+  $k = $full.ToLowerInvariant()
+  if (-not $script:fileHashes.ContainsKey($k)) { $script:fileHashes[$k] = (Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash }
+  return $script:fileHashes[$k]
+}
+
+# The compile cache. Each compile that passed is kept in a file of its own, in the form the CLI prints with
+# --stdout: the template for a .bicep file, {"parametersJson": ..., "templateJson": ...} for a .bicepparam file.
+# index.json lists, for each, every file the compile read (Bicep's getFileReferences) with its SHA256, so a reader
+# uses an entry only while those files are unchanged. $cacheFiles maps a compiled file to its cache file for step 5.
+$cacheEntries = New-Object System.Collections.Generic.List[object]
+$cacheFiles = @{}
+function Save-CompiledOutput([string]$path, [bool]$isParams, $result) {
+  try {
+    $refs = $script:rpc.Call('bicep/getFileReferences', '{"path":' + [PreflightValidate.BicepRpc]::Quote($path) + '}')
+    $inputs = @(foreach ($f in @($refs['filePaths'])) { [ordered]@{ path = (Get-RelPath ([string]$f)); sha256 = (Get-FileSha ([string]$f)) } })
+    if ($isParams) { $text = '{"parametersJson":' + [PreflightValidate.BicepRpc]::Quote([string]$result['parameters']) + ',"templateJson":' + [PreflightValidate.BicepRpc]::Quote([string]$result['template']) + '}' }
+    else { $text = [string]$result['contents'] }
+    $name = '{0:d3}-{1}.json' -f ($script:cacheEntries.Count + 1), ((Get-RelPath $path) -replace '[^A-Za-z0-9_.-]', '_')
+    $file = Join-Path $CompileCache $name
+    [IO.File]::WriteAllText($file, $text, $script:utf8NoBom)
+    $script:cacheEntries.Add([ordered]@{ path = (Get-RelPath $path); kind = $(if ($isParams) { 'parameters' } else { 'template' }); file = $name; inputs = $inputs })
+    $script:cacheFiles[$path.ToLowerInvariant()] = $file
+  } catch {
+    # Without a cache entry the readers compile the file themselves, so this is a note and not a failure.
+    Write-Host "  not kept in the compile cache: $(Get-RelPath $path) ($(Get-InnerMessage $_))" -ForegroundColor Yellow
+  }
+}
+
+# Compiles one .bicep file (bicep/compile) or .bicepparam file (bicep/compileParams) in the Bicep server, counts
+# diagnostics per rule, keeps the log, records a failure, and keeps a compile that passed in the compile cache.
+# A server that stopped is started again for the next file.
+function Invoke-BicepCompile([string]$path, [string]$label) {
+  $isParams = $path -like '*.bicepparam'
+  $q = [PreflightValidate.BicepRpc]::Quote($path)
+  $log = New-Object System.Collections.Generic.List[string]
+  $r = $null
+  try {
+    if ($null -eq $script:rpc) { $script:rpc = New-Object PreflightValidate.BicepRpc $script:bicepExe }
+    if ($isParams) { $r = $script:rpc.Call('bicep/compileParams', '{"path":' + $q + ',"parameterOverrides":{}}') }
+    else { $r = $script:rpc.Call('bicep/compile', '{"path":' + $q + '}') }
+  } catch {
+    $log.Add("Error: $(Get-InnerMessage $_)")
+    if ($null -ne $script:rpc) { $script:rpc.Dispose(); $script:rpc = $null }
+  }
+  if ($null -ne $r) {
+    foreach ($d in @($r['diagnostics'])) {
+      if ($null -eq $d) { continue }
+      $st = $d['range']['start']
+      $log.Add(('{0}({1},{2}) : {3} {4}: {5}' -f $d['source'], ([int]$st['line'] + 1), ([int]$st['char'] + 1), $d['level'], $d['code'], $d['message']))
+    }
+  }
   foreach ($l in $log) {
     if ($l -match ': (Warning|Error) ([A-Za-z0-9-]+):') {
       $k = "$($Matches[1]) $($Matches[2])"
@@ -248,13 +571,15 @@ function Invoke-BicepStep([string[]]$azArgs, [string]$path, [string]$label) {
     }
   }
   $item = Get-Item -LiteralPath $path
-  if ($OutDir) { Set-Content -LiteralPath (Join-Path $OutDir ($item.Directory.Name + '__' + $item.Name + '.log')) -Value $log -Encoding $utf8Bom }
-  if ($code -ne 0) {
+  if ($OutDir) { Set-Content -LiteralPath (Join-Path $OutDir ($item.Directory.Name + '__' + $item.Name + '.log')) -Value @($log) -Encoding $utf8Bom }
+  if ($null -eq $r -or $r['success'] -ne $true) {
     $script:failures.Add("${label}: $path")
-    $shown = @($log | Where-Object { $_ -match ': Error ' } | Select-Object -First 20)
+    $shown = @($log | Where-Object { $_ -match ': Error |^Error: ' } | Select-Object -First 20)
     if ($shown.Count -eq 0) { $shown = @($log | Select-Object -Last 10) }
     $shown | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+    return
   }
+  Save-CompiledOutput $path $isParams $r
 }
 
 # The entries of deploy/boundaries.json without a field the deploy gate reads, or with a value it cannot use, one
@@ -358,8 +683,29 @@ foreach ($c in $candidates) {
   $k = $c.ToLowerInvariant()
   if (-not $seen.ContainsKey($k)) { $seen[$k] = $true; $entries.Add($c) }
 }
+$rpc = $null
+$bicepExe = Get-PreflightBicep
+$bicepVersion = ''
+if (-not $bicepExe) {
+  $failures.Add('compile: no Bicep CLI found. Install it with az bicep install --version v0.48.1, or put bicep on PATH')
+  Write-Host '  no Bicep CLI found, so nothing is compiled' -ForegroundColor Red
+  $entries.Clear()
+} else {
+  try {
+    $rpc = New-Object PreflightValidate.BicepRpc $bicepExe
+    $bicepVersion = [string]$rpc.Call('bicep/version', '{}')['version']
+    Write-Host "Bicep $bicepVersion ($bicepExe), one process for every compile"
+  } catch {
+    $failures.Add("compile: the Bicep CLI $bicepExe did not start its JSON-RPC server. $(Get-InnerMessage $_)")
+    Write-Host "  $(Get-InnerMessage $_)" -ForegroundColor Red
+    if ($null -ne $rpc) { $rpc.Dispose(); $rpc = $null }
+    $bicepExe = $null
+    $entries.Clear()
+  }
+}
+try {
 Write-Host "Compiling $($entries.Count) entry points"
-foreach ($f in $entries) { Invoke-BicepStep @('bicep', 'build', '--file', $f) $f 'compile' }
+foreach ($f in $entries) { Invoke-BicepCompile $f 'compile' }
 
 # 3. Build parameters files
 $seenP = @{}
@@ -376,8 +722,15 @@ $paramsSkipped = 0
 foreach ($p in $params) {
   $unset = @(Get-UnsetSecureInputs $p)
   if ($unset.Count -gt 0) { $paramsSkipped++; Write-Host "  skipped $p (secure input $($unset -join ', ') not set)" -ForegroundColor Yellow; continue }
-  Invoke-BicepStep @('bicep', 'build-params', '--file', $p) $p 'build-params'
+  if (-not $bicepExe) { continue }
+  Invoke-BicepCompile $p 'build-params'
 }
+} finally {
+  if ($null -ne $rpc) { $rpc.Dispose(); $rpc = $null }
+}
+$cacheIndex = [ordered]@{ format = 1; bicep = $bicepVersion; entries = $cacheEntries.ToArray() }
+[IO.File]::WriteAllText((Join-Path $CompileCache 'index.json'), (ConvertTo-Json -InputObject $cacheIndex -Depth 6), $utf8NoBom)
+Write-Host "  $($cacheEntries.Count) compiles kept in the compile cache"
 Write-Host 'Diagnostics by rule (counted once per compiled file that includes the source):'
 # Rules with the same count are listed by name, because a hashtable has no fixed order in PowerShell 7.
 $ruleCounts.GetEnumerator() | Sort-Object @{ Expression = 'Value'; Descending = $true }, @{ Expression = 'Key'; Descending = $false } | ForEach-Object { Write-Host ("  {0,6}  {1}" -f $_.Value, $_.Key) }
@@ -572,6 +925,62 @@ foreach ($f in $eolFiles) {
     Add-LayoutFailure 'h' "$(Get-RelPath $f.FullName):$line ends in two carriage returns. Save the file with one line ending per line"
   }
 }
+# i. Paths that match a file only when case is ignored
+$caseDirs = @{}
+# The path as it is on disk when $full names an existing file or folder of the repository with other case, else
+# $null (also when nothing matches, which the checks above report).
+function Get-CaseOnDisk([string]$full) {
+  $f = [IO.Path]::GetFullPath($full)
+  if (-not $f.StartsWith($repo + $sep, [StringComparison]::OrdinalIgnoreCase)) { return $null }
+  $dir = $repo
+  $parts = New-Object System.Collections.Generic.List[string]
+  $differs = $false
+  foreach ($p in $f.Substring($repo.Length + 1).Split([char[]]@('\', '/'), [StringSplitOptions]::RemoveEmptyEntries)) {
+    if (-not $script:caseDirs.ContainsKey($dir)) {
+      $names = @()
+      try { $names = @([IO.Directory]::GetFileSystemEntries($dir) | ForEach-Object { [IO.Path]::GetFileName($_) }) } catch { }
+      $script:caseDirs[$dir] = $names
+    }
+    $names = $script:caseDirs[$dir]
+    $hit = @($names | Where-Object { [string]::Equals($_, $p, [StringComparison]::Ordinal) })
+    if ($hit.Count -eq 0) {
+      $hit = @($names | Where-Object { [string]::Equals($_, $p, [StringComparison]::OrdinalIgnoreCase) })
+      if ($hit.Count -eq 0) { return $null }
+      $differs = $true
+    }
+    $parts.Add($hit[0])
+    $dir = Join-Path $dir $hit[0]
+  }
+  if ($differs) { return ($parts -join '/') }
+  return $null
+}
+function Test-PathCase([string]$from, [string]$written, [string]$full) {
+  $onDisk = Get-CaseOnDisk $full
+  if ($null -ne $onDisk) { Add-LayoutFailure 'i' "$from names $written, but the file on disk is $onDisk. Linux file names are case-sensitive, so this compiles on Windows and fails on Linux" }
+}
+foreach ($unit in $units) {
+  foreach ($rel in @($unit.template, $unit.parameters)) {
+    if ($rel) { Test-PathCase "deploy/units.json ($($unit.name))" $rel (Get-RepoPath $rel) }
+  }
+}
+foreach ($f in $bicepFiles) {
+  $dir = Split-Path -Parent $f.FullName
+  $code = Get-BicepCodeText $f.FullName
+  $named = @([regex]::Matches($code, "(?m)^[ \t]*module[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]+'([^']+)'")) +
+           @([regex]::Matches($code, "(?m)^[ \t]*import[ \t][^\r\n]*?'([^']+\.(bicep|json))'")) +
+           @([regex]::Matches($code, "\bload(?:JsonContent|TextContent|YamlContent|FileAsBase64)\(\s*'([^'$]+)'"))
+  foreach ($m in $named) {
+    $p = $m.Groups[1].Value
+    if ($p -match '^(br|ts)(:|/[^/:]+:)') { continue }
+    Test-PathCase (Get-RelPath $f.FullName) $p ([IO.Path]::GetFullPath((Join-Path $dir (Get-SysPath $p))))
+  }
+}
+foreach ($pf in @($allInfraFiles | Where-Object { $_.Extension -ieq '.bicepparam' -and -not (Test-Retired $_.FullName) })) {
+  $usingRel = Get-UsingPath $pf.FullName
+  if ($null -eq $usingRel -or $usingRel -match '^(br|ts)(:|/[^/:]+:)') { continue }
+  Test-PathCase (Get-RelPath $pf.FullName) $usingRel ([IO.Path]::GetFullPath((Join-Path $pf.DirectoryName (Get-SysPath $usingRel))))
+}
+
 $layoutFailures = $failures.Count - $layoutStart
 Write-Host "  $($bicepFiles.Count) Bicep files read, $($subFiles.Count) under infra/subscriptions ($rgFileCount group files), $($reached.Count) reached, $layoutFailures layout failure(s)"
 
@@ -583,23 +992,31 @@ if (-not $SkipDuplicates) {
   if (-not $csvDir) { $csvTemp = Join-Path ([IO.Path]::GetTempPath()) ('preflight-dups-' + [guid]::NewGuid().ToString('N')); $csvDir = $csvTemp }
   New-Item -ItemType Directory -Force -Path $csvDir | Out-Null
   $checker = Join-Path $PSScriptRoot 'find-duplicate-declarations.ps1'
-  # The checker runs in a child process of the PowerShell that runs this script: powershell.exe for
-  # Windows PowerShell 5.1, pwsh for PowerShell 7 (pwsh.exe on Windows). Where $PSHOME holds no such program
-  # (PowerShell installed as a dotnet tool), the program running this script is used.
-  $psExe = if ($PSVersionTable.PSEdition -ne 'Core') { Join-Path $PSHOME 'powershell.exe' } elseif ($sep -eq '\') { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $PSHOME 'pwsh' }
-  if (-not (Test-Path -LiteralPath $psExe -PathType Leaf)) { $psExe = (Get-Process -Id $PID).Path }
+  # The checker runs in this PowerShell, as a script with its own scope, so its embedded evaluator is compiled
+  # once and not once per unit. It reads the compile of steps 2 and 3 through -CompiledJson. A unit whose file has
+  # no cache entry (its compile failed) is compiled by the checker itself.
+  $dupFromCache = 0
 
   # Runs the checker once and returns the declarations CSV path, or $null when the run did not finish.
   function Invoke-DuplicateCheck([string]$label, [string]$template, [string]$paramFile) {
     $safe = $label -replace '[^A-Za-z0-9_.-]', '_'
     $csv = Join-Path $csvDir "duplicates__$safe.csv"
     if (Test-Path -LiteralPath $csv) { Remove-Item -LiteralPath $csv -Force }
-    $chkArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $checker, '-Template', $template, '-DeclarationsCsv', $csv)
-    if ($paramFile) { $chkArgs += @('-Parameters', $paramFile) } else { $chkArgs += '-NoParameters' }
+    $chkArgs = @{ Template = $template; DeclarationsCsv = $csv }
+    if ($paramFile) { $chkArgs['Parameters'] = $paramFile } else { $chkArgs['NoParameters'] = $true }
+    $compiledFor = if ($paramFile) { $paramFile } else { $template }
+    $compiled = $script:cacheFiles[$compiledFor.ToLowerInvariant()]
+    if ($compiled) { $chkArgs['CompiledJson'] = $compiled; $script:dupFromCache++ }
     Write-Host "Duplicate declarations: $label"
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    $out = @(& $psExe @chkArgs 2>&1 | ForEach-Object { "$_" })
-    $code = $LASTEXITCODE
+    $global:LASTEXITCODE = 0
+    try {
+      $out = @(& $checker @chkArgs *>&1 | ForEach-Object { "$_" })
+      $code = $LASTEXITCODE
+    } catch {
+      $out = @("$(Get-InnerMessage $_)")
+      $code = 2
+    }
     $ErrorActionPreference = $prev
     $script:dupRuns++
     if ($OutDir) { Set-Content -LiteralPath (Join-Path $OutDir "duplicates__$safe.log") -Value $out -Encoding $utf8Bom }
@@ -681,10 +1098,11 @@ if (-not $SkipDuplicates) {
 
 Write-Host ''
 Write-Host 'Summary:'
-Write-Host "  $($units.Count) units, $($entries.Count) entry points compiled, $($params.Count) parameters files built ($paramsSkipped skipped for a secure input)"
+Write-Host "  $($units.Count) units, $($entries.Count) entry points compiled, $($params.Count) parameters files built ($paramsSkipped skipped for a secure input), in one Bicep process"
 Write-Host "  layout: $layoutFailures failure(s)"
 if ($SkipDuplicates) { Write-Host '  duplicates: skipped' }
-else { Write-Host "  duplicates: $dupRuns checker runs ($dupSkipped skipped for a secure input), $crossCount declarations merged ($crossUnresolved unresolved left out), $crossKeys declared by more than one unit" }
+else { Write-Host "  duplicates: $dupRuns checker runs ($dupSkipped skipped for a secure input, $dupFromCache read the compile of steps 2 and 3), $crossCount declarations merged ($crossUnresolved unresolved left out), $crossKeys declared by more than one unit" }
+if ($cacheTemp) { Remove-Item -LiteralPath $cacheTemp -Recurse -Force -ErrorAction SilentlyContinue }
 
 if ($failures.Count -gt 0) {
   Write-Host 'FAILED:' -ForegroundColor Red

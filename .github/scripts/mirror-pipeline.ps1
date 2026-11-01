@@ -13,12 +13,18 @@
     Hygiene        mirror-validate. Catches workflow files that could hand a deploy token to code nobody reviewed
                    (a check for mistakes, the controls are GitHub settings), and a job without the pipeline switch
                    (the repository variable MIRROR_PIPELINE_ENABLED)
-    PipelineScope  mirror-validate. Compiles every unit as Azure receives it (through its parameters file). Fails
+    PipelineScope  mirror-validate. Reads every unit as Azure receives it (through its parameters file), from the
+                   compile cache of the preflight when its files are unchanged, else by compiling it. Fails
                    when a production unit declares a role definition, a role assignment of Owner, User Access
                    Administrator or Role Based Access Control Administrator, or a role assignment whose role the
                    compiled template does not show, because a production deploy identity cannot write those and
                    they belong in a privileged unit. Also fails when any unit declares a data-access grant not in
                    the list of known grants
+    PortabilityScope
+                   mirror-validate, portability job. Decides whether the job runs the full preflight on its runner
+                   image. It does when the event is Run workflow or any event but a push or a pull request, when the
+                   change touches scripts/, .github/scripts/, bicepconfig.json or the validate workflow, or when the
+                   changed files cannot be read. Writes the step output full
     InputCheck     mirror-pr, mirror-deploy-unit and mirror-drift, before the sign-in to Azure. Reads every Bicep
                    file of the checkout and refuses one that reads an environment variable, a registry module or a
                    file outside the repository, or uses a form this check does not read
@@ -58,7 +64,7 @@
 #>
 [CmdletBinding()]
 param(
-  [ValidateSet('', 'Hygiene', 'PipelineScope', 'InputCheck', 'Plan', 'Preview', 'Report', 'Select', 'DeployPlan',
+  [ValidateSet('', 'Hygiene', 'PipelineScope', 'PortabilityScope', 'InputCheck', 'Plan', 'Preview', 'Report', 'Select', 'DeployPlan',
                'Collect', 'CheckApply', 'ComparePlan', 'DeploySummary')]
   [string]$Mode = '',
   [string]$Dir,
@@ -1346,21 +1352,91 @@ function Get-BicepparamUsing([string]$FullPath) {
   try { return [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $FullPath) (ConvertTo-NativePath $m.Groups[1].Value))) } catch { return '' }
 }
 
-# Every unit (enabled or not) is compiled as Azure receives it, through its parameters file when it has one (bicep
+# The compile cache. The preflight writes index.json and one file per compiled Bicep file into a folder, and the
+# folder reaches this script as MIRROR_COMPILE_CACHE. The index has format 1 and lists entries with a path (relative
+# to the repository root with /, or a full path for a file outside it), a kind ('parameters' or 'template'), the
+# name of the entry's file in the folder and the inputs of the compile, each with its path and SHA256. A parameters
+# entry's file holds the JSON object {parametersJson, templateJson} of bicep build-params, a template entry's file
+# holds the compiled template. The cache is used only when every input of the entry still exists and hashes the same,
+# so a changed file is compiled again. A cache that is missing, unreadable or malformed means "compile", and never
+# fails the check.
+function Get-CompileCacheIndex([string]$Folder) {
+  if (-not $Folder) { return $null }
+  try {
+    $file = Join-Path $Folder 'index.json'
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $null }
+    $idx = ConvertFrom-Json @MirrorJsonArgs -InputObject ([IO.File]::ReadAllText($file))
+    if ($null -eq $idx -or $idx -isnot [pscustomobject]) { return $null }
+    $fmt = Get-Prop $idx 'format'
+    if (-not ($fmt -is [int] -or $fmt -is [long]) -or $fmt -ne 1) { return $null }
+    $entries = Get-Prop $idx 'entries'
+    if ($null -eq $entries -or $entries -is [string]) { return $null }
+    return $idx
+  } catch { return $null }
+}
+
+# The full path of a path in the cache index: relative to $Root, or already a full path.
+function Resolve-CompileCachePath([string]$Path, [string]$Root) {
+  if (-not $Path) { return $null }
+  $native = ConvertTo-NativePath $Path
+  if ([IO.Path]::IsPathRooted($native)) { return [IO.Path]::GetFullPath($native) }
+  return [IO.Path]::GetFullPath((Join-Path $Root $native))
+}
+
+# The text of the cached compile of one file, or $null when the cache has no usable entry for it. $Kind is
+# 'parameters' for a .bicepparam file and 'template' for a .bicep file. Paths match as the system compares file names
+# (ignoring case on Windows, exactly on Linux). $HashMemo holds the hashes already taken in this run, keyed by full
+# path, so a file shared by many units is hashed once. Pass a fresh table for a fresh run.
+function Get-CompileCacheText([string]$Folder, [string]$FullPath, [string]$Kind, [string]$Root, [hashtable]$HashMemo = @{}) {
+  try {
+    $idx = Get-CompileCacheIndex $Folder
+    if ($null -eq $idx) { return $null }
+    $want = [IO.Path]::GetFullPath($FullPath)
+    foreach ($e in @(Get-Prop $idx 'entries')) {
+      if ($null -eq $e) { continue }
+      $ep = Resolve-CompileCachePath ([string](Get-Prop $e 'path')) $Root
+      if (-not $ep -or -not [string]::Equals($ep, $want, $script:PathCompare)) { continue }
+      if (-not (Test-Same ([string](Get-Prop $e 'kind')) $Kind)) { continue }
+      $name = [string](Get-Prop $e 'file')
+      if (-not $name -or -not (Test-Same $name ([IO.Path]::GetFileName($name)))) { continue }
+      $inputs = @(Get-Prop $e 'inputs')
+      if ($inputs.Count -eq 0 -or $null -eq $inputs[0]) { continue }
+      $same = $true
+      foreach ($in in $inputs) {
+        $ip = Resolve-CompileCachePath ([string](Get-Prop $in 'path')) $Root
+        $sha = [string](Get-Prop $in 'sha256')
+        if (-not $ip -or -not $sha -or -not (Test-Path -LiteralPath $ip -PathType Leaf)) { $same = $false; break }
+        if (-not $HashMemo.ContainsKey($ip)) { $HashMemo[$ip] = (Get-FileHash -LiteralPath $ip -Algorithm SHA256).Hash }
+        if (-not [string]::Equals($HashMemo[$ip], $sha, [StringComparison]::OrdinalIgnoreCase)) { $same = $false; break }
+      }
+      if (-not $same) { continue }
+      $cached = Join-Path $Folder $name
+      if (-not (Test-Path -LiteralPath $cached -PathType Leaf)) { continue }
+      return [IO.File]::ReadAllText($cached)
+    }
+  } catch { }
+  return $null
+}
+
+# Every unit (enabled or not) is read as Azure receives it, through its parameters file when it has one (bicep
 # build-params, whose template is the one the using line names, and that must be the unit's template in
-# deploy/units.json), else through its template. A production unit may declare no role definition and no role
-# assignment of Owner, User Access Administrator or Role Based Access Control Administrator, and none whose role the
-# compiled template does not show. A production deploy identity holds a role-assignment right limited by a condition
-# that excludes those three roles, so such a record would fail in the middle of a deployment, and an identity that
-# could write them could raise its own rights. Those records sit in the privileged unit of the subscription.
+# deploy/units.json), else through its template. The compiled output comes from the compile cache of the preflight
+# when the cache holds it for unchanged files, and from the Bicep CLI otherwise. A production unit may declare no
+# role definition and no role assignment of Owner, User Access Administrator or Role Based Access Control
+# Administrator, and none whose role the compiled template does not show. A production deploy identity holds a
+# role-assignment right limited by a condition that excludes those three roles, so such a record would fail in the
+# middle of a deployment, and an identity that could write them could raise its own rights. Those records sit in the
+# privileged unit of the subscription.
 # Policy, exemptions, locks and the other role assignments are allowed in both tiers.
 # Contributor can grant access to data through a resource's own settings, so a data-access grant of the types in
 # $script:DataGrantTypes must be one of $script:KnownDataGrants.
 function Invoke-PipelineScopeMode {
   $root = $script:RepoRoot
   $units = Read-JsonFile (Join-RepoPath $root 'deploy/units.json')
-  $bicep = Get-BicepExe
-  $errors = @(); $checked = 0; $grants = 0; $production = 0; $privileged = 0
+  $bicep = $null
+  $cacheFolder = Get-EnvValue 'MIRROR_COMPILE_CACHE'
+  $memo = @{}
+  $errors = @(); $checked = 0; $grants = 0; $production = 0; $privileged = 0; $cached = 0
   foreach ($u in @(Get-Prop $units 'units')) {
     $name = [string](Get-Prop $u 'name')
     $tier = Get-UnitTier $u
@@ -1369,7 +1445,7 @@ function Invoke-PipelineScopeMode {
     $tpl = [string](Get-Prop $u 'template'); $prm = [string](Get-Prop $u 'parameters')
     $full = Join-RepoPath $root $tpl
     if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { $errors += "${name}: the template $tpl is not in the repository"; continue }
-    $doc = $null
+    $doc = $null; $fromCache = $false
     if ($prm -match '\.bicepparam$') {
       $pfull = Join-RepoPath $root $prm
       if (-not (Test-Path -LiteralPath $pfull -PathType Leaf)) { $errors += "${name}: the parameters file $prm is not in the repository"; continue }
@@ -1378,15 +1454,33 @@ function Invoke-PipelineScopeMode {
         $named = if ($usingPath) { ConvertTo-RepoPath $usingPath $root } else { 'no template' }
         $errors += "${name}: $prm names $named in its using line, but the unit's template in deploy/units.json is $tpl"; continue
       }
-      $r = Invoke-Native $bicep @('build-params', $pfull, '--stdout') -AllowFailure
-      if ($r.Code -ne 0) { $errors += "${name}: bicep build-params of $prm failed (exit $($r.Code)). $(ConvertTo-OneLine $r.Err)"; continue }
-      try { $doc = ConvertFrom-Json @MirrorJsonArgs -InputObject ([string](Get-Prop (ConvertFrom-Json @MirrorJsonArgs -InputObject ($r.Out -join "`n")) 'templateJson')) }
+      $text = $null
+      $hit = Get-CompileCacheText $cacheFolder $pfull 'parameters' $root $memo
+      if ($null -ne $hit) {
+        try { $text = [string](Get-Prop (ConvertFrom-Json @MirrorJsonArgs -InputObject $hit) 'templateJson'); $fromCache = [bool]$text } catch { $text = $null }
+      }
+      if (-not $fromCache) {
+        if (-not $bicep) { $bicep = Get-BicepExe }
+        $r = Invoke-Native $bicep @('build-params', $pfull, '--stdout') -AllowFailure
+        if ($r.Code -ne 0) { $errors += "${name}: bicep build-params of $prm failed (exit $($r.Code)). $(ConvertTo-OneLine $r.Err)"; continue }
+        $text = $null
+        try { $text = [string](Get-Prop (ConvertFrom-Json @MirrorJsonArgs -InputObject ($r.Out -join "`n")) 'templateJson') }
+        catch { $errors += "${name}: the template compiled through $prm is not valid JSON. $($_.Exception.Message)"; continue }
+      }
+      try { $doc = ConvertFrom-Json @MirrorJsonArgs -InputObject $text }
       catch { $errors += "${name}: the template compiled through $prm is not valid JSON. $($_.Exception.Message)"; continue }
     } else {
-      $r = Invoke-Native $bicep @('build', $full, '--stdout') -AllowFailure
-      if ($r.Code -ne 0) { $errors += "${name}: bicep build of $tpl failed (exit $($r.Code)). $(ConvertTo-OneLine $r.Err)"; continue }
-      try { $doc = ConvertFrom-Json @MirrorJsonArgs -InputObject ($r.Out -join "`n") } catch { $errors += "${name}: the compiled $tpl is not valid JSON. $($_.Exception.Message)"; continue }
+      $text = Get-CompileCacheText $cacheFolder $full 'template' $root $memo
+      if ($null -ne $text) { $fromCache = $true }
+      else {
+        if (-not $bicep) { $bicep = Get-BicepExe }
+        $r = Invoke-Native $bicep @('build', $full, '--stdout') -AllowFailure
+        if ($r.Code -ne 0) { $errors += "${name}: bicep build of $tpl failed (exit $($r.Code)). $(ConvertTo-OneLine $r.Err)"; continue }
+        $text = $r.Out -join "`n"
+      }
+      try { $doc = ConvertFrom-Json @MirrorJsonArgs -InputObject $text } catch { $errors += "${name}: the compiled $tpl is not valid JSON. $($_.Exception.Message)"; continue }
     }
+    if ($fromCache) { $cached++ }
     if ($tier -ceq 'production') {
       foreach ($h in @(Find-PrivilegedAuthorization $doc)) {
         $errors += "$name is a production unit but declares $h. A production deploy identity cannot write it. Move the resource to the privileged unit of the subscription (a unit with ""tier"": ""privileged"" in deploy/units.json)"
@@ -1399,10 +1493,55 @@ function Invoke-PipelineScopeMode {
       }
     }
     $checked++
-    Write-Host "$name ($(if ($prm -match '\.bicepparam$') { $prm } else { $tpl })) compiled"
+    Write-Host "$name ($(if ($prm -match '\.bicepparam$') { $prm } else { $tpl })) $(if ($fromCache) { 'read from the compile cache' } else { 'compiled' })"
   }
   if ($errors.Count -gt 0) { Stop-WithErrors 'A unit declares privileged authorization in the production tier, or a new data-access grant' $errors }
-  Write-Summary @("Units: $checked compiled. $production production units declare no role definition and no Owner, User Access Administrator or Role Based Access Control Administrator assignment, $privileged privileged units. $grants data-access grant(s), each in the list of known grants.")
+  Write-Summary @("Units: $checked checked, $cached of them from the compile cache of the preflight and $($checked - $cached) compiled here. $production production units declare no role definition and no Owner, User Access Administrator or Role Based Access Control Administrator assignment, $privileged privileged units. $grants data-access grant(s), each in the list of known grants.")
+}
+
+# The paths whose change makes the portability job run the full preflight on its image: the scripts the preflight and
+# the pipeline run, the Bicep settings and the validate workflow itself. Paths are repository paths with /, and they
+# match exactly as written, so the case counts on every system (the repository has these folders in lower case).
+function Test-PortabilitySensitivePath([string]$Path) {
+  $p = $Path.Replace('\', '/')
+  if ($p.StartsWith('scripts/', [StringComparison]::Ordinal) -or $p.StartsWith('.github/scripts/', [StringComparison]::Ordinal)) { return $true }
+  return (Test-InList @('bicepconfig.json', '.github/workflows/mirror-validate.yml') $p)
+}
+
+# mirror-validate, portability job. Writes the step output full (true or false) and one summary line with the reason.
+# The full preflight runs on a manual run, on any event but a push or a pull request, when the change touches a
+# sensitive path, and when the changed files cannot be read. A pull request's checkout is GitHub's merge commit, so
+# its change is HEAD compared with its first parent. A push's change is the commit before the push (BEFORE)
+# compared with HEAD.
+function Invoke-PortabilityScopeMode {
+  $evt = Get-EnvValue 'EVENT_NAME'
+  $full = $true; $reason = ''
+  if ($evt -cne 'pull_request' -and $evt -cne 'push') {
+    $reason = "the event is $(if ($evt) { $evt } else { 'not known' }), and only a pull request or a push is judged by its changed files"
+  } else {
+    $from = if ($evt -ceq 'pull_request') { 'HEAD^1' } else { Get-EnvValue 'BEFORE' }
+    $paths = $null
+    if (-not $from -or $from -match '^0+$') { $reason = 'the commit before the change is not known, so the changed files are not known' }
+    elseif (-not (Test-GitCommit $from)) { $reason = "the commit $from is not in the checkout, so the changed files are not known" }
+    else {
+      try { $paths = @(Get-GitChanges $from 'HEAD' | ForEach-Object { $_.Path }) }
+      catch { $reason = 'the changed files could not be read' }
+    }
+    if ($null -ne $paths) {
+      $hits = @($paths | Where-Object { Test-PortabilitySensitivePath $_ })
+      if ($hits.Count -gt 0) {
+        $shown = (@($hits | Select-Object -First 3) -join ', ')
+        $reason = "the change touches $shown" + $(if ($hits.Count -gt 3) { " and $($hits.Count - 3) more" } else { '' })
+      } else {
+        $full = $false
+        $reason = "the $($paths.Count) changed file(s) touch no script, no bicepconfig.json and no validate workflow"
+      }
+    }
+  }
+  Set-StepOutput 'full' $(if ($full) { 'true' } else { 'false' })
+  $line = if ($full) { "Portability scope: full preflight, because $reason." } else { "Portability scope: no full preflight, because $reason." }
+  Write-Host $line
+  Write-Summary @($line)
 }
 
 # True when the code in the working folder is the trusted commit itself. The workflow sets both values in the step
@@ -1954,6 +2093,7 @@ try {
   switch ($Mode) {
     'Hygiene' { Invoke-HygieneMode }
     'PipelineScope' { Invoke-PipelineScopeMode }
+    'PortabilityScope' { Invoke-PortabilityScopeMode }
     'InputCheck' { Invoke-InputCheckMode }
     'Plan' { Invoke-PlanMode }
     'Preview' { Invoke-PreviewMode }

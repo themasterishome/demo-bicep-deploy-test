@@ -687,6 +687,110 @@ Assert-Contains $e 'mirror-drift.yml: the step "Check the Bicep inputs" must run
 $e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace("jobs:`n", "jobs:`n  select:`n    steps:`n      - run: x`n") })
 Assert-Contains $e '*the step "Check the Bicep inputs" must come before the Azure sign-in*' 'the deploy workflow checks the Bicep inputs before it signs in'
 
+Write-Host '--- the compile cache of the preflight, on a temporary folder'
+$cc = Join-Path ([IO.Path]::GetTempPath()) ('mirror-cache-' + [guid]::NewGuid().ToString('N'))
+try {
+  $ccRoot = Join-Path $cc 'repo'; $ccDir = Join-Path $cc 'compiled'
+  New-Item -ItemType Directory -Path (Join-Path $ccRoot 'infra/u1'), (Join-Path $ccRoot 'infra/u2'), (Join-Path $ccRoot 'deploy'), $ccDir -Force | Out-Null
+  function Write-CcFile([string]$Rel, [string]$Text) { [IO.File]::WriteAllText((Join-Path $ccRoot (ConvertTo-NativePath $Rel)), $Text) }
+  function Get-CcHash([string]$Rel) { return (Get-FileHash -LiteralPath (Join-Path $ccRoot (ConvertTo-NativePath $Rel)) -Algorithm SHA256).Hash }
+  Write-CcFile 'bicepconfig.json' '{}'
+  Write-CcFile 'infra/u1/main.bicep' "targetScope = 'resourceGroup'"
+  Write-CcFile 'infra/u1/parameters.bicepparam' "using 'main.bicep'"
+  Write-CcFile 'infra/u2/main.bicep' "targetScope = 'resourceGroup'"
+  $tplText = '{"resources":[]}'
+  [IO.File]::WriteAllText((Join-Path $ccDir '001-u1.json'), (ConvertTo-Json -InputObject ([ordered]@{ parametersJson = '{}'; templateJson = $tplText }) -Compress))
+  [IO.File]::WriteAllText((Join-Path $ccDir '002-u2.json'), $tplText)
+  function Write-CcIndex($Entries, [int]$Format = 1) {
+    [IO.File]::WriteAllText((Join-Path $ccDir 'index.json'), (ConvertTo-Json -InputObject ([ordered]@{ format = $Format; bicep = '0.48.1'; entries = @($Entries) }) -Depth 8))
+  }
+  function New-CcEntries {
+    $in1 = @(@('bicepconfig.json', 'infra/u1/main.bicep', 'infra/u1/parameters.bicepparam') | ForEach-Object { [ordered]@{ path = $_; sha256 = (Get-CcHash $_) } })
+    $in2 = @(@('bicepconfig.json', 'infra/u2/main.bicep') | ForEach-Object { [ordered]@{ path = $_; sha256 = (Get-CcHash $_) } })
+    return @([ordered]@{ path = 'infra/u1/parameters.bicepparam'; kind = 'parameters'; file = '001-u1.json'; inputs = $in1 },
+            [ordered]@{ path = 'infra/u2/main.bicep'; kind = 'template'; file = '002-u2.json'; inputs = $in2 })
+  }
+  $p1 = Join-Path $ccRoot (ConvertTo-NativePath 'infra/u1/parameters.bicepparam'); $t2 = Join-Path $ccRoot (ConvertTo-NativePath 'infra/u2/main.bicep')
+  Write-CcIndex (New-CcEntries)
+  $got = Get-CompileCacheText $ccDir $p1 'parameters' $ccRoot @{}
+  Assert-True ($null -ne $got -and $got -like '*templateJson*') 'a cache hit returns the cached text of a parameters file'
+  Assert-Equal $tplText (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{}) 'a cache hit returns the compiled template of a template'
+  Assert-True ($null -eq (Get-CompileCacheText $ccDir $p1 'template' $ccRoot @{})) 'an entry of another kind is a miss'
+  Assert-True ($null -eq (Get-CompileCacheText $ccDir (Join-Path $ccRoot 'infra/u2/other.bicep') 'template' $ccRoot @{})) 'a file the cache does not list is a miss'
+  $upper = New-CcEntries; foreach ($i in $upper[1].inputs) { $i.sha256 = $i.sha256.ToLowerInvariant() }; Write-CcIndex $upper
+  Assert-True ($null -ne (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})) 'the hash compares without regard to case'
+  # A full path in the index, for a file outside the repository.
+  $abs = New-CcEntries; $abs[1].path = $t2; Write-CcIndex $abs
+  Assert-True ($null -ne (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})) 'an entry with a full path hits'
+  # The path compares as the system compares file names.
+  $other = New-CcEntries; $other[1].path = 'INFRA/U2/MAIN.BICEP'; Write-CcIndex $other
+  $caseHit = $null -ne (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})
+  Assert-Equal ($script:PathCompare -eq [StringComparison]::OrdinalIgnoreCase) $caseHit 'the entry path ignores case on Windows and matches exactly on Linux'
+  # One input changed.
+  Write-CcIndex (New-CcEntries)
+  Write-CcFile 'infra/u2/main.bicep' "targetScope = 'subscription'"
+  Assert-True ($null -eq (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})) 'a changed input is a miss'
+  Assert-True ($null -ne (Get-CompileCacheText $ccDir $p1 'parameters' $ccRoot @{})) 'and the entry of an unchanged unit still hits'
+  $memo = @{}; $null = Get-CompileCacheText $ccDir $p1 'parameters' $ccRoot $memo
+  Assert-True ($memo.Count -eq 3) 'the hashes taken are kept for the next unit'
+  Write-CcFile 'infra/u2/main.bicep' "targetScope = 'resourceGroup'"
+  Assert-True ($null -ne (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})) 'the same text again is a hit'
+  # A missing input.
+  Remove-Item -LiteralPath (Join-Path $ccRoot 'bicepconfig.json') -Force
+  Assert-True ($null -eq (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})) 'an input that no longer exists is a miss'
+  Write-CcFile 'bicepconfig.json' '{}'
+  Assert-True ($null -ne (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})) 'the input back is a hit'
+  # An entry file that is missing, or named with a folder.
+  $bad = New-CcEntries; $bad[1].file = '..\002-u2.json'; Write-CcIndex $bad
+  Assert-True ($null -eq (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})) 'an entry file with a folder in its name is a miss'
+  $bad = New-CcEntries; $bad[1].file = '099-gone.json'; Write-CcIndex $bad
+  Assert-True ($null -eq (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})) 'an entry file that is not in the folder is a miss'
+  $bad = New-CcEntries; $bad[1].inputs = @(); Write-CcIndex $bad
+  Assert-True ($null -eq (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})) 'an entry with no inputs is a miss'
+  # Index problems never fail the check.
+  Write-CcIndex (New-CcEntries) 2
+  Assert-True ($null -eq (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})) 'another index format is a miss'
+  [IO.File]::WriteAllText((Join-Path $ccDir 'index.json'), '{ not json')
+  Assert-True ($null -eq (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})) 'a malformed index is a miss'
+  [IO.File]::WriteAllText((Join-Path $ccDir 'index.json'), '{"format":1,"entries":"x"}')
+  Assert-True ($null -eq (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})) 'an index whose entries are not a list is a miss'
+  [IO.File]::WriteAllText((Join-Path $ccDir 'index.json'), '[1,2]')
+  Assert-True ($null -eq (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})) 'an index that is a list is a miss'
+  Remove-Item -LiteralPath (Join-Path $ccDir 'index.json') -Force
+  Assert-True ($null -eq (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})) 'a folder with no index is a miss'
+  Assert-True ($null -eq (Get-CompileCacheText (Join-Path $cc 'nothing') $t2 'template' $ccRoot @{})) 'a folder that does not exist is a miss'
+  Assert-True ($null -eq (Get-CompileCacheText '' $t2 'template' $ccRoot @{})) 'no folder is a miss'
+
+  # The mode itself, with both units answered from the cache, so no Bicep CLI is needed.
+  Write-CcIndex (New-CcEntries)
+  Write-CcFile 'deploy/units.json' (ConvertTo-Json -InputObject ([ordered]@{ units = @(
+    [ordered]@{ name = 'u1'; subscription = 's'; template = 'infra/u1/main.bicep'; parameters = 'infra/u1/parameters.bicepparam' },
+    [ordered]@{ name = 'u2'; subscription = 's'; template = 'infra/u2/main.bicep'; parameters = '' }) }) -Depth 6)
+  $keepScopeRoot = $script:RepoRoot
+  $keepCache = $env:MIRROR_COMPILE_CACHE; $keepSummary = $env:GITHUB_STEP_SUMMARY
+  try {
+    $script:RepoRoot = $ccRoot
+    $env:MIRROR_COMPILE_CACHE = $ccDir
+    $env:GITHUB_STEP_SUMMARY = Join-Path $cc 'summary.md'
+    Invoke-PipelineScopeMode
+    $sum = [IO.File]::ReadAllText($env:GITHUB_STEP_SUMMARY)
+    Assert-True ($sum -like '*Units: 2 checked, 2 of them from the compile cache of the preflight and 0 compiled here*') 'PipelineScope takes both units from the cache and says so'
+  } finally {
+    $script:RepoRoot = $keepScopeRoot
+    $env:MIRROR_COMPILE_CACHE = $keepCache; $env:GITHUB_STEP_SUMMARY = $keepSummary
+  }
+} finally {
+  Remove-Item -LiteralPath $cc -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Write-Host '--- the paths that make the portability job run the full preflight'
+foreach ($p in @('scripts/preflight-validate.ps1', 'scripts/sub/x.sh', '.github/scripts/mirror-pipeline.ps1', '.github/scripts/tests/a.ps1', 'bicepconfig.json', '.github/workflows/mirror-validate.yml', 'scripts\x.ps1')) {
+  Assert-True (Test-PortabilitySensitivePath $p) "sensitive: $p"
+}
+foreach ($p in @('infra/a.bicep', 'deploy/units.json', '.github/workflows/mirror-pr.yml', 'README.md', 'SCRIPTS/x.ps1', 'Scripts/x.ps1', 'infra/bicepconfig.json', 'pipelines/scripts/x.ps1', '.github/scriptsx/a.ps1', 'bicepconfig.json.bak')) {
+  Assert-True (-not (Test-PortabilitySensitivePath $p)) "not sensitive: $p"
+}
+
 Write-Host '--- the deploy modes, on a temporary repository with recorded GitHub answers'
 $g = Join-Path ([IO.Path]::GetTempPath()) ('mirror-git-' + [guid]::NewGuid().ToString('N'))
 # The answers and the runner live beside the repository, not in it, so they are never part of a commit.
@@ -771,6 +875,31 @@ exit $LASTEXITCODE
   Invoke-TestMode 'Select' @{ EVENT_NAME = 'push'; BEFORE = $c3; AFTER = $c4 } 'a unit that is not enabled gets no row in the matrix' 0 'matrix=[]'
   Invoke-TestGit checkout -q --detach $c2 | Out-Null
   Invoke-TestMode 'Select' @{ EVENT_NAME = 'push'; BEFORE = $c1; AFTER = $c2; GITHUB_REF = 'refs/heads/dev' } 'a run on another branch is refused' 1 'The deployment runs only on master'
+  # PortabilityScope. Two more commits on top of c2 (detached, so the later tests are unaffected): one touches a script and one touches Bicep only.
+  Invoke-TestGit checkout -q --detach $c2 | Out-Null
+  Write-TestFile 'scripts/preflight-validate.ps1' '# changed'; Invoke-TestGit add -A | Out-Null; Invoke-TestGit commit -q -m c5 | Out-Null
+  $c5 = Invoke-TestGit rev-parse HEAD
+  Invoke-TestGit checkout -q --detach $c2 | Out-Null
+  Write-TestFile 'infra/a.bicep' '// bicep'; Invoke-TestGit add -A | Out-Null; Invoke-TestGit commit -q -m c6 | Out-Null
+  $c6 = Invoke-TestGit rev-parse HEAD
+  Invoke-TestGit checkout -q --detach $c5 | Out-Null
+  Invoke-TestMode 'PortabilityScope' @{ EVENT_NAME = 'push'; BEFORE = $c2 } 'a push that changes a script runs the full preflight' 0 'full=true'
+  Invoke-TestMode 'PortabilityScope' @{ EVENT_NAME = 'push'; BEFORE = $c2 } 'and names the path' 0 'the change touches scripts/preflight-validate.ps1'
+  Invoke-TestMode 'PortabilityScope' @{ EVENT_NAME = 'pull_request' } 'a pull request that changes a script runs the full preflight' 0 'full=true'
+  Invoke-TestGit checkout -q --detach $c6 | Out-Null
+  Invoke-TestMode 'PortabilityScope' @{ EVENT_NAME = 'push'; BEFORE = $c2 } 'a push that changes Bicep only skips the full preflight' 0 'full=false'
+  Invoke-TestMode 'PortabilityScope' @{ EVENT_NAME = 'push'; BEFORE = $c2 } 'and says why' 0 'no full preflight, because the 1 changed file(s) touch no script'
+  Invoke-TestMode 'PortabilityScope' @{ EVENT_NAME = 'pull_request' } 'a pull request that changes Bicep only skips the full preflight' 0 'full=false'
+  Invoke-TestMode 'PortabilityScope' @{ EVENT_NAME = 'workflow_dispatch'; BEFORE = '0000000000000000000000000000000000000000' } 'Run workflow always runs the full preflight' 0 'full=true'
+  Invoke-TestMode 'PortabilityScope' @{ EVENT_NAME = 'workflow_dispatch' } 'and names the event' 0 'the event is workflow_dispatch'
+  Invoke-TestMode 'PortabilityScope' @{ EVENT_NAME = 'schedule' } 'any other event runs the full preflight' 0 'full=true'
+  Invoke-TestMode 'PortabilityScope' @{ EVENT_NAME = 'push'; BEFORE = '0000000000000000000000000000000000000000' } 'a push with no earlier commit runs the full preflight' 0 'full=true'
+  Invoke-TestMode 'PortabilityScope' @{ EVENT_NAME = 'push'; BEFORE = '' } 'a push with no BEFORE runs the full preflight' 0 'full=true'
+  Invoke-TestMode 'PortabilityScope' @{ EVENT_NAME = 'push'; BEFORE = ('a' * 40) } 'a push whose earlier commit is not in the checkout runs the full preflight' 0 'full=true'
+  Invoke-TestMode 'PortabilityScope' @{ EVENT_NAME = 'push'; BEFORE = ('a' * 40) } 'and says the commit is missing' 0 'is not in the checkout'
+  Invoke-TestGit checkout -q --detach $c1 | Out-Null
+  Invoke-TestMode 'PortabilityScope' @{ EVENT_NAME = 'pull_request' } 'a pull request whose HEAD has no parent runs the full preflight' 0 'full=true'
+  Invoke-TestGit checkout -q --detach $c2 | Out-Null
   # Select, by Run workflow.
   $disp = @{ EVENT_NAME = 'workflow_dispatch'; UNIT = 'pilot-empty-rg'; CHANGE_REF = 'CHG0012345'; REASON = 'Pilot.'; APPLY = 'true'; ACK = 'false'; ALLOW_CREATE = ''; ALLOW_MODIFY = ''; ALLOW_HELD = '' }
   Invoke-TestMode 'Select' $disp 'Run workflow plans the unit it names' 0 '"trigger":"Run workflow","apply":"true"'
