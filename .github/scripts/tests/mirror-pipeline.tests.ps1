@@ -171,27 +171,6 @@ Assert-Equal 3 @($units.units | Where-Object { $null -ne $_.PSObject.Properties[
 $o = Get-DeployOptions (New-Request @{ acknowledgeReview = $true; allowModify = [string[]]@($inScope) })
 Assert-True ($o.acknowledgeReview -and $o.allowModify.Count -eq 1 -and $o.allowCreate.Count -eq 0) 'the options are read from a request'
 
-Write-Host '--- the change ticket of a merged pull request'
-Assert-Equal 'CHG0012345' (Get-ChangeTicketFromText 'Add a storage account' "Why.`nChange: CHG0012345`n") 'a Change line in the body is the ticket'
-Assert-Equal 'INC77/a' (Get-ChangeTicketFromText 'Ticket: INC77/a' '') 'a Ticket label in the title is the ticket'
-Assert-Equal '' (Get-ChangeTicketFromText 'Fix. Ticket: INC77/a' '') 'a label in the middle of a line is no ticket'
-Assert-Equal '' (Get-ChangeTicketFromText 'Tidy up' "Change: this removes the old account`nTicket: later") 'a sentence after the label is no ticket'
-Assert-Equal '' (Get-ChangeTicketFromText 'Tidy up' 'Change: removes') 'a word with no digit is no ticket'
-Assert-Equal 'CHG0012345' (Get-ChangeTicketFromText 'Tidy up' "Why.`r`nChange: CHG0012345`r`n") 'a Windows line ending after the ticket is fine'
-Assert-Equal 'CHG1' (Get-ChangeTicketFromText '' 'change ticket: CHG1') 'a short ticket of 4 characters passes'
-Assert-Equal '' (Get-ChangeTicketFromText 'Add a storage account' 'No ticket here, the change is small.') 'text without a label names no ticket'
-Assert-Equal '' (Get-ChangeTicketFromText 'Change: x' '') 'a ticket under 3 characters is no ticket'
-
-Write-Host '--- boundaries.json changes'
-$b0 = ConvertFrom-Json '{ "boundaries": [ { "type": "A/b", "path": "p" } ], "holds": [ { "type": "A/b", "namePattern": "x" }, { "idPattern": "(?i)^/subscriptions/AAAA/x", "reason": "r" } ], "expectedIgnore": [ { "pattern": "(?i)^/subscriptions/BBBB/y", "reason": "r" } ] }'
-$b1 = ConvertFrom-Json '{ "boundaries": [ { "type": "A/b", "path": "p2" } ], "holds": [ { "type": "A/b", "namePattern": "x" }, { "idPattern": "(?i)^/subscriptions/AAAA/x", "reason": "r" } ], "expectedIgnore": [ { "pattern": "(?i)^/subscriptions/bbbb/y", "reason": "r" }, { "pattern": "(?i)^/subscriptions/CCCC/z", "reason": "r" } ] }'
-$bc = Get-BoundaryChanges $b0 $b1
-Assert-Equal 2 @($bc.typeWide).Count 'a changed boundary entry is a whole-type change (old and new)'
-Assert-Equal 3 @($bc.scoped).Count 'changed expected Ignore patterns are scoped (two new, one old gone)'
-$uu = ConvertFrom-Json '{ "subscriptions": { "s1": "bbbb", "s2": "cccc", "s3": "dddd" }, "units": [ { "name": "u1", "subscription": "s1" }, { "name": "u2", "subscription": "s2" }, { "name": "u3", "subscription": "s3" } ] }'
-Assert-Equal 'u1,u2' (@(Get-BoundaryScopeUnits $bc $uu) -join ',') 'the units of the subscriptions a changed pattern names are picked, whatever the case'
-Assert-Equal 0 @((Get-BoundaryChanges $b0 $b0).typeWide).Count 'no change, no entry'
-
 Write-Host '--- the plan: age, records, options'
 $nowT = [DateTimeOffset]::new(2026, 11, 1, 12, 0, 0, [TimeSpan]::Zero)
 Assert-Equal 0 @(Test-PlanAge '2026-11-01T11:00:00.0000000+00:00' $nowT 24).Count 'a plan from an hour ago is recent'
@@ -314,7 +293,7 @@ try {
   Assert-True $v.technical 'no gate result is a technical failure'
   Assert-True ((Format-VerdictMarkdown (New-Verdict 'pilot-empty-rg' 'code' 1 $ev1)) -like '*for information*') 'a code verdict is marked as information'
   $planObj = [pscustomobject][ordered]@{ unit = 'pilot-empty-rg'; subscription = 'demo'; scope = 'demo'; tier = 'production'; environment = 'mirror-production-demo'; commit = ('a' * 40); trigger = 'push'; startedBy = 'it-user-one'
-    changeRef = 'CHG0012345'; reason = "Merged pull request #4: add`na thing"; options = [ordered]@{ acknowledgeReview = $true; allowCreate = @(); allowModify = @($inScope); allowHeld = @() } }
+    changeRef = 'CHG0012345'; reason = "Pilot, add`na thing"; options = [ordered]@{ acknowledgeReview = $true; allowCreate = @(); allowModify = @($inScope); allowHeld = @() } }
   $md = Format-PlanMarkdown $planObj (New-Verdict 'pilot-empty-rg' 'plan' 1 $ev2)
   Assert-True ($md -like '*## Plan for pilot-empty-rg*Scope: demo, tier production, environment mirror-production-demo*Change ticket: CHG0012345*Options in force: acknowledgeReview, allowModify (1)*allowModify: /subscriptions/*' -and $md -notlike '*add' + "`n" + 'a thing*') 'the plan markdown leads with the unit, the ticket and the options in force, on one line each'
   $tpl = Join-Path $tmp 'plan-dir'; New-Item -ItemType Directory -Path $tpl | Out-Null
@@ -423,7 +402,7 @@ Assert-Equal 0 $e.Count "the repository's workflows pass the rules ($($e -join '
 $sha = 'a' * 40
 $bad = @{
   'x.yml' = "on:`n  pull_request_target: {}`njobs:`n  a:`n    environment: mirror-production-demo`n    steps:`n      - uses: actions/checkout@v7`n      - uses: someone/tool@$sha`n"
-  'mirror-deploy-unit.yml' = "on:`n  workflow_dispatch: {}`n"
+  'mirror-deploy-unit.yml' = "on:`n  push:`n    branches: [ master ]`n"
   'y.yml' = "on:`n  pull_request:`n    types: [ closed ]`npermissions:`n  id-token: write`n"
 }
 $e = @(Test-WorkflowHygiene $bad)
@@ -431,7 +410,7 @@ Assert-Contains $e 'x.yml: names a mirror-production*' 'a production environment
 Assert-Contains $e 'x.yml: uses the pull_request_target*' 'pull_request_target is refused'
 Assert-Contains $e '*actions/checkout@v7 is not pinned*' 'a tag pin is refused'
 Assert-Contains $e '*someone/tool is not one of the allowed actions*' 'an action outside the allowed list is refused'
-Assert-Contains $e 'mirror-deploy-unit.yml: the deploy workflow must start on push*' 'a deploy workflow without a push trigger is refused'
+Assert-Contains $e 'mirror-deploy-unit.yml: the deploy workflow starts only with Run workflow*' 'a deploy workflow with a push trigger is refused'
 Assert-Contains $e 'y.yml: requests id-token*' 'id-token on a closed pull request is refused'
 $e = @(Test-WorkflowHygiene @{ 'z.yml' = "# environment: mirror-production-demo`n" })
 Assert-Equal 0 $e.Count 'a comment line is not a rule break'
@@ -647,16 +626,16 @@ Write-Host '--- hardening checks'
 Assert-Equal 'a | ::warning::b | c | d' (ConvertTo-OneLine ("a`r::warning::b" + [char]0x2028 + "c`r`nd")) 'a lone carriage return or a line separator cannot start a workflow command line'
 
 Write-Host '--- the deploy workflow rules'
-$goodDeploy = "on:`n  push:`n    branches: [ master ]`n  workflow_dispatch:`n    inputs: {}`njobs:`n  plan:`n    environment:`n      name: mirror-reader-dispatch`n    permissions:`n      id-token: write`n  apply:`n    needs: collect`n    environment: mirror-production-`${{ matrix.scope }}`n    permissions:`n      id-token: write`n  apply-privileged:`n    needs: collect`n    environment: mirror-privileged-`${{ matrix.scope }}`n    permissions:`n      id-token: write`n"
+$goodDeploy = "on:`n  workflow_dispatch:`n    inputs: {}`njobs:`n  plan:`n    environment:`n      name: mirror-reader-dispatch`n    permissions:`n      id-token: write`n  apply:`n    needs: collect`n    environment: mirror-production-`${{ matrix.scope }}`n    permissions:`n      id-token: write`n  apply-privileged:`n    needs: collect`n    environment: mirror-privileged-`${{ matrix.scope }}`n    permissions:`n      id-token: write`n"
 $e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy } | Where-Object { $_ -notlike '*runner check*' -and $_ -notlike '*pipeline switch*' -and $_ -notlike '*Check the Bicep inputs*' -and $_ -notlike '*run step*' })
-Assert-Equal 0 $e.Count "a deploy workflow that starts on a push to master and by Run workflow, with the apply and apply-privileged as the only production and privileged jobs, passes ($($e -join '; '))"
+Assert-Equal 0 $e.Count "a deploy workflow that starts only with Run workflow, with the apply and apply-privileged as the only production and privileged jobs, passes ($($e -join '; '))"
 $e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace('  workflow_dispatch:', '  schedule:') })
-Assert-Contains $e '*has no schedule or pull_request trigger*' 'a schedule on the deploy workflow is refused'
-Assert-Contains $e '*must start on push with branches `[ master `] and on workflow_dispatch*' 'a deploy workflow without Run workflow is refused'
-$e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace('branches: [ master ]', 'branches: [ master, dev ]') })
-Assert-Contains $e '*must start on push with branches `[ master `]*' 'a push trigger on another branch is refused'
+Assert-Contains $e '*has no push, schedule or pull_request trigger*' 'a schedule on the deploy workflow is refused'
+Assert-Contains $e '*must start on workflow_dispatch and on nothing else*' 'a deploy workflow without Run workflow is refused'
+$e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace("on:`n  workflow_dispatch:", "on:`n  push:`n    branches: [ master ]`n  workflow_dispatch:") })
+Assert-Contains $e '*has no push, schedule or pull_request trigger*' 'a push trigger on the deploy workflow is refused'
 $e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace('workflow_dispatch:', "pull_request:`n  workflow_dispatch:") })
-Assert-Contains $e '*has no schedule or pull_request trigger*' 'a pull request trigger on the deploy workflow is refused'
+Assert-Contains $e '*has no push, schedule or pull_request trigger*' 'a pull request trigger on the deploy workflow is refused'
 $e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace('mirror-production-${{ matrix.scope }}', 'mirror-production-demo') })
 Assert-Contains $e '*the apply job must have environment: mirror-production-*matrix.scope*' 'the apply job may not name a fixed production environment'
 $e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace('mirror-privileged-${{ matrix.scope }}', 'mirror-privileged-tenant') })
@@ -822,8 +801,8 @@ function Invoke-TestGit { $prev = $ErrorActionPreference; $ErrorActionPreference
 function Write-TestFile([string]$Rel, [string]$Text) { $p = Join-Path $g (ConvertTo-NativePath $Rel); New-Item -ItemType Directory -Force (Split-Path -Parent $p) | Out-Null; [IO.File]::WriteAllText($p, $Text) }
 try {
   Invoke-TestGit init -q -b master | Out-Null
-  # The checkout of the push has no service principal in allowedPrincipals, so a row for an enabled unit below proves a push plans without one.
-  Assert-Equal 0 @((ConvertFrom-Json @MirrorJsonArgs -InputObject (ConvertTo-Json $unitsOn -Depth 20)).allowedPrincipals | Where-Object { [string]$_.type -ceq 'servicePrincipal' }).Count 'the units.json of the push fixture has no service principal'
+  # The checkout has no service principal in allowedPrincipals, so a row for an enabled unit below proves a plan needs none.
+  Assert-Equal 0 @((ConvertFrom-Json @MirrorJsonArgs -InputObject (ConvertTo-Json $unitsOn -Depth 20)).allowedPrincipals | Where-Object { [string]$_.type -ceq 'servicePrincipal' }).Count 'the units.json of the fixture has no service principal'
   Write-TestFile '.github/scripts/mirror-pipeline.ps1' ([IO.File]::ReadAllText($helper))
   Write-TestFile 'deploy/units.json' (ConvertTo-Json $unitsOn -Depth 20)
   Write-TestFile 'deploy/boundaries.json' ([IO.File]::ReadAllText((Join-Path $repo 'deploy/boundaries.json')))
@@ -880,18 +859,10 @@ exit $LASTEXITCODE
     Assert-True ($code -eq $Expect -and $text -like ('*' + [WildcardPattern]::Escape($Pattern) + '*')) "$($Mode.ToLowerInvariant()): $Name (exit $code, expected $Expect)"
   }
 
-  # Select, on a push. The merged pull request answers with its title and body.
-  $pulls = "[{`"number`":7,`"title`":`"Add a thing`",`"body`":`"Change: CHG0012345`",`"merged_at`":`"2026-11-01T10:00:00Z`",`"merge_commit_sha`":`"$c2`",`"base`":{`"ref`":`"master`"}}]"
-  Invoke-TestMode 'Select' @{ EVENT_NAME = 'push'; BEFORE = $c1; AFTER = $c2 } 'a push that changes the template of an enabled unit plans it' 0 'matrix=[{"unit":"pilot-empty-rg"' -Answers @{ 'pulls.json' = $pulls }
-  Invoke-TestMode 'Select' @{ EVENT_NAME = 'push'; BEFORE = $c1; AFTER = $c2 } 'the ticket and the reason come from the merged pull request' 0 '"changeRef":"CHG0012345","reason":"Merged pull request #7: Add a thing"' -Answers @{ 'pulls.json' = $pulls }
-  Invoke-TestMode 'Select' @{ EVENT_NAME = 'push'; BEFORE = $c1; AFTER = $c2 } 'a push is started by the pusher and applies after review' 0 '"trigger":"push","apply":"true","startedBy":"it-user-one"' -Answers @{ 'pulls.json' = $pulls }
-  Invoke-TestMode 'Select' @{ EVENT_NAME = 'push'; BEFORE = $c1; AFTER = $c2 } 'without a readable pull request the ticket is none' 0 '"changeRef":"none"'
-  Invoke-TestMode 'Select' @{ EVENT_NAME = 'push'; BEFORE = $c2; AFTER = $c3 } 'a push that touches no unit plans nothing' 0 'matrix=[]'
-  Invoke-TestGit checkout -q --detach $c4 | Out-Null
-  Invoke-TestMode 'Select' @{ EVENT_NAME = 'push'; BEFORE = $c3; AFTER = $c4 } 'a unit that is not enabled is not planned' 0 '1 unit(s) this push touches are not enabled'
-  Invoke-TestMode 'Select' @{ EVENT_NAME = 'push'; BEFORE = $c3; AFTER = $c4 } 'a unit that is not enabled gets no row in the matrix' 0 'matrix=[]'
-  Invoke-TestGit checkout -q --detach $c2 | Out-Null
-  Invoke-TestMode 'Select' @{ EVENT_NAME = 'push'; BEFORE = $c1; AFTER = $c2; GITHUB_REF = 'refs/heads/dev' } 'a run on another branch is refused' 1 'The deployment runs only on master'
+  # Select refuses every event but Run workflow, and a run on another branch.
+  Invoke-TestMode 'Select' @{ EVENT_NAME = 'push'; BEFORE = $c1; AFTER = $c2 } 'a push is refused' 2 'starts only with Run workflow on master'
+  Invoke-TestMode 'Select' @{ EVENT_NAME = 'schedule' } 'a schedule is refused' 2 'starts only with Run workflow on master'
+  Invoke-TestMode 'Select' @{ EVENT_NAME = 'workflow_dispatch'; GITHUB_REF = 'refs/heads/dev' } 'a run on another branch is refused' 1 'The deployment runs only on master'
   # PortabilityScope. Two more commits on top of c2 (detached, so the later tests are unaffected): one touches a script and one touches Bicep only.
   Invoke-TestGit checkout -q --detach $c2 | Out-Null
   Write-TestFile 'scripts/preflight-validate.ps1' '# changed'; Invoke-TestGit add -A | Out-Null; Invoke-TestGit commit -q -m c5 | Out-Null
@@ -974,22 +945,18 @@ exit 0
   [IO.File]::WriteAllText($gateChange, '{ "overall": "pass", "problems": [], "counts": { "Create": 1 }, "failed": 0, "review": 0, "decisions": [ { "resourceId": "/subscriptions/s/resourceGroups/r/providers/Microsoft.Storage/storageAccounts/a", "type": "Microsoft.Storage/storageAccounts", "changeType": "Create", "verdict": "pass", "notes": [] } ] }')
   $tipNow = @{ 'branch.json' = "{`"commit`":{`"sha`":`"$c2`"}}" }
   $dp = @{ UNIT = 'pilot-empty-rg'; CHANGE_REF = 'CHG0012345'; REASON = 'Pilot, see [x](http://example.invalid) `code`'; GITHUB_SHA = $c2; APPLY = 'true'; STARTED_BY = 'it-user-one'; OPTIONS = '{}' }
-  $ev = Join-Path $gx 'dp-push'
-  $dpPush = $dp.Clone(); $dpPush['TRIGGER'] = 'push'; $dpPush['STUB_GATE'] = $gateNoChange; $dpPush['STUB_COUNTS'] = 'NoChange=3'
-  Invoke-TestMode 'DeployPlan' $dpPush 'a push whose plan holds no effective change deploys nothing and waits for nobody' 0 'A push publishes this plan and deploys nothing' -Answers $tipNow -Evidence $ev
-  Assert-True (-not ([bool]((ConvertFrom-Json ([IO.File]::ReadAllText((Join-Path $ev 'plan.json')))).offerApply))) 'the plan of a push without an effective change offers no apply'
-  Assert-True ([IO.File]::ReadAllText((Join-Path $ev 'verdict.md')).Contains('- Reason: `Pilot, see [x](http://example.invalid) code`'))
-  $span = Format-PlanMarkdown ([pscustomobject][ordered]@{ unit = 'u'; subscription = 's'; scope = 's'; tier = 'production'; environment = 'mirror-production-s'; commit = ('a' * 40); trigger = 'push'; startedBy = 'x'; changeRef = 'CHG1'; reason = 'a `b` [l](http://e.invalid) <img src=x onerror=y>'; options = [ordered]@{ acknowledgeReview = $false; allowCreate = @(); allowModify = @(); allowHeld = @() } }) (New-Verdict 'u' 'plan' 2 '')
-  $rl = @($span -split "`n" | Where-Object { $_ -like '- Reason: *' })
-  Assert-True ($rl.Count -eq 1 -and $rl[0] -ceq '- Reason: `a b [l](http://e.invalid) <img src=x onerror=y>`' -and ($rl[0].Substring(10).Trim('`')).IndexOf('`') -lt 0) 'a reason with a backtick, a link and an HTML tag is one code span with no backtick inside' 'the reason is written as a code span with its backticks removed'
-  $ev = Join-Path $gx 'dp-push-change'
-  $dpPush2 = $dpPush.Clone(); $dpPush2['STUB_GATE'] = $gateChange; $dpPush2['STUB_COUNTS'] = 'Create=1'
-  Invoke-TestMode 'DeployPlan' $dpPush2 'a push whose plan holds an effective change waits for a reviewer' 0 'The apply job waits for the reviewers' -Answers $tipNow -Evidence $ev
-  Assert-True ([bool]((ConvertFrom-Json ([IO.File]::ReadAllText((Join-Path $ev 'plan.json')))).offerApply)) 'the plan of a push with an effective change offers the apply'
   $ev = Join-Path $gx 'dp-run'
   $dpRun = $dp.Clone(); $dpRun['TRIGGER'] = 'Run workflow'; $dpRun['STUB_GATE'] = $gateNoChange; $dpRun['STUB_COUNTS'] = 'NoChange=3'
   Invoke-TestMode 'DeployPlan' $dpRun 'Run workflow with apply on and no effective change says so and still waits for a reviewer' 0 'No effective change' -Answers $tipNow -Evidence $ev
   Assert-True ([bool]((ConvertFrom-Json ([IO.File]::ReadAllText((Join-Path $ev 'plan.json')))).offerApply)) 'Run workflow with apply on offers the apply of a passing plan'
+  Assert-True ([IO.File]::ReadAllText((Join-Path $ev 'verdict.md')).Contains('- Reason: `Pilot, see [x](http://example.invalid) code`'))
+  $span = Format-PlanMarkdown ([pscustomobject][ordered]@{ unit = 'u'; subscription = 's'; scope = 's'; tier = 'production'; environment = 'mirror-production-s'; commit = ('a' * 40); trigger = 'Run workflow'; startedBy = 'x'; changeRef = 'CHG1'; reason = 'a `b` [l](http://e.invalid) <img src=x onerror=y>'; options = [ordered]@{ acknowledgeReview = $false; allowCreate = @(); allowModify = @(); allowHeld = @() } }) (New-Verdict 'u' 'plan' 2 '')
+  $rl = @($span -split "`n" | Where-Object { $_ -like '- Reason: *' })
+  Assert-True ($rl.Count -eq 1 -and $rl[0] -ceq '- Reason: `a b [l](http://e.invalid) <img src=x onerror=y>`' -and ($rl[0].Substring(10).Trim('`')).IndexOf('`') -lt 0) 'a reason with a backtick, a link and an HTML tag is one code span with no backtick inside' 'the reason is written as a code span with its backticks removed'
+  $ev = Join-Path $gx 'dp-run-change'
+  $dpRun2 = $dpRun.Clone(); $dpRun2['STUB_GATE'] = $gateChange; $dpRun2['STUB_COUNTS'] = 'Create=1'
+  Invoke-TestMode 'DeployPlan' $dpRun2 'Run workflow with an effective change waits for a reviewer' 0 'The apply job waits for the reviewers' -Answers $tipNow -Evidence $ev
+  Assert-True ([bool]((ConvertFrom-Json ([IO.File]::ReadAllText((Join-Path $ev 'plan.json')))).offerApply)) 'the plan of Run workflow with an effective change offers the apply'
   $ev = Join-Path $gx 'dp-run-off'
   $dpOff = $dpRun.Clone(); $dpOff['APPLY'] = 'false'
   Invoke-TestMode 'DeployPlan' $dpOff 'Run workflow with apply off is a plan only' 0 'started as a plan only' -Answers $tipNow -Evidence $ev
@@ -999,7 +966,7 @@ exit 0
   $pd = Join-Path $gx 'plan-ok'; New-Item -ItemType Directory -Force (Join-Path $pd 'gate/r1') | Out-Null
   $planned = [DateTimeOffset]::UtcNow.AddHours(-1).ToString('o')
   function New-PlanJson([string]$Sha, [string]$Time, [bool]$Offer = $true) {
-    return (ConvertTo-Json -Depth 6 ([ordered]@{ schema = 2; unit = 'pilot-empty-rg'; subscription = $pilotSub; scope = $pilotSub; tier = 'production'; environment = "mirror-production-$pilotSub"; commit = $Sha; planned = $Time; trigger = 'push'; startedBy = 'it-user-one'
+    return (ConvertTo-Json -Depth 6 ([ordered]@{ schema = 2; unit = 'pilot-empty-rg'; subscription = $pilotSub; scope = $pilotSub; tier = 'production'; environment = "mirror-production-$pilotSub"; commit = $Sha; planned = $Time; trigger = 'Run workflow'; startedBy = 'it-user-one'
       changeRef = 'CHG0012345'; reason = 'Pilot.'; applyRequested = $true
       options = [ordered]@{ acknowledgeReview = $false; allowCreate = @(); allowModify = @(); allowHeld = @() }
       gate = 'PASS'; counts = 'Create=1'; approvable = $true; hasChanges = $true; offerApply = $Offer }))
@@ -1079,6 +1046,89 @@ exit 0
 } finally {
   $script:RepoRoot = $keepRoot
   Remove-Item -LiteralPath $g, $gx -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Write-Host '--- the drift report, with recorded GitHub answers'
+# The pure parts first.
+$dRows = @([pscustomobject]@{ unit = 'u1'; result = 'clean'; findings = @() }, [pscustomobject]@{ unit = 'u2'; result = 'DRIFT'; findings = @('Modify /x: tag') }, [pscustomobject]@{ unit = 'u3'; result = 'SKIP'; findings = @('measured with u2') })
+Assert-Equal 'drift' (Get-DriftState $dRows 'failure') 'a unit with drift makes the run a drift run'
+Assert-Equal 'error' (Get-DriftState @([pscustomobject]@{ unit = 'u1'; result = 'ERROR'; findings = @('sign-in failed') }) 'failure') 'a unit that could not be checked makes the run an error run'
+Assert-Equal 'error' (Get-DriftState $null 'failure') 'no summary is an error run'
+Assert-Equal 'error' (Get-DriftState @([pscustomobject]@{ unit = 'u1'; result = 'clean'; findings = @() }) 'failure') 'a clean summary of a failed job is an error run'
+Assert-Equal 'clean' (Get-DriftState @([pscustomobject]@{ unit = 'u1'; result = 'clean'; findings = @() }, [pscustomobject]@{ unit = 'u3'; result = 'SKIP'; findings = @() }) 'success') 'clean and skipped units of a job that succeeded are a clean run'
+$dLines = @(Format-DriftFindings $dRows)
+Assert-Equal 2 $dLines.Count 'only the unit with drift is listed, with its finding'
+Assert-True ($dLines[1].Contains([char]96 + 'Modify /x: tag' + [char]96)) 'a finding is a code span'
+$bt = @(Format-DriftFindings @([pscustomobject]@{ unit = 'u'; result = 'DRIFT'; findings = @('a ' + [char]96 + 'b' + [char]96 + ' [c](http://x)') }))[1]
+Assert-Equal 2 ([regex]::Matches($bt, [string][char]96).Count) 'a backtick in a finding cannot end its code span'
+$b1 = Format-DriftIssueBody $dRows 'drift' 'https://run/1' 'failure'
+$b2 = Format-DriftIssueBody $dRows 'drift' 'https://run/2' 'failure'
+Assert-Equal $b1.fingerprint $b2.fingerprint 'the same findings in another run give the same fingerprint'
+Assert-True ($b1.body -like '*<!-- mirror-drift findings *') 'the issue text ends with the marker'
+Assert-True ($b2.body -like '*https://run/2*') 'the issue text names the run'
+$b3 = Format-DriftIssueBody @([pscustomobject]@{ unit = 'u2'; result = 'DRIFT'; findings = @('Modify /x: other') }) 'drift' 'https://run/3' 'failure'
+Assert-True ($b3.fingerprint -cne $b1.fingerprint) 'other findings give another fingerprint'
+Assert-True ((Format-DriftIssueBody $null 'error' 'https://run/4' 'failure').body -like '*ended before it wrote its summary*') 'with no summary the issue says the job ended early'
+
+# The mode, in a child PowerShell with a gh that answers from files and records every write.
+$dr = Join-Path ([IO.Path]::GetTempPath()) ('mirror-drift-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $dr | Out-Null
+try {
+  $drRunner = Join-Path $dr 'run-drift.ps1'
+  [IO.File]::WriteAllText($drRunner, @'
+param([string]$Dir)
+function global:gh {
+  $a = @($args)
+  $p = [string]$a[-1]
+  $x = [array]::IndexOf($a, '-X')
+  if ($x -ge 0) {
+    $in = [array]::IndexOf($a, '--input')
+    $body = if ($in -ge 0) { [IO.File]::ReadAllText([string]$a[$in + 1]) } else { '' }
+    Add-Content -LiteralPath (Join-Path $env:TEST_ANSWERS 'calls.txt') -Value "$($a[$x + 1]) $p $body"
+    $global:LASTEXITCODE = 0; return '{"number":42}'
+  }
+  $f = Join-Path $env:TEST_ANSWERS 'issues.json'
+  if ($p -notmatch '/issues\?' -or -not (Test-Path $f)) { $global:LASTEXITCODE = 1; return }
+  $global:LASTEXITCODE = 0; [IO.File]::ReadAllText($f)
+}
+& (Join-Path $env:TEST_HELPER_DIR 'mirror-pipeline.ps1') -Mode DriftReport -Dir $Dir
+exit $LASTEXITCODE
+'@)
+  function Invoke-DriftCase([string]$Name, $Rows, [string]$JobResult, [string]$Issues, [string[]]$Expect, [string[]]$Absent = @()) {
+    $case = Join-Path $dr ($Name -replace '[^a-z]', '-'); New-Item -ItemType Directory -Force $case | Out-Null
+    $sumDir = Join-Path $case 'drift'; New-Item -ItemType Directory -Force $sumDir | Out-Null
+    if ($null -ne $Rows) { [IO.File]::WriteAllText((Join-Path $sumDir 'drift-summary.json'), (ConvertTo-Json -InputObject @($Rows) -Depth 5)) }
+    [IO.File]::WriteAllText((Join-Path $case 'issues.json'), $Issues)
+    $keep = @{}
+    $set = @{ TEST_ANSWERS = $case; TEST_HELPER_DIR = (Split-Path -Parent $helper); GITHUB_REPOSITORY = 'org/repo'; DRIFT_RESULT = $JobResult; RUN_URL = 'https://run/9'; GITHUB_STEP_SUMMARY = (Join-Path $case 'summary.md'); GITHUB_OUTPUT = '' }
+    foreach ($k in $set.Keys) { $keep[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $set[$k]) }
+    $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try { $console = & $childExe @($childArgs + @('-File', $drRunner, '-Dir', $sumDir)) 2>&1 | ForEach-Object { "$_" }; $code = $LASTEXITCODE }
+    finally { $ErrorActionPreference = $prevEap; foreach ($k in $set.Keys) { [Environment]::SetEnvironmentVariable($k, $keep[$k]) } }
+    $calls = if (Test-Path (Join-Path $case 'calls.txt')) { [IO.File]::ReadAllText((Join-Path $case 'calls.txt')) } else { '' }
+    $text = ($console -join "`n") + "`n" + $calls
+    $ok = ($code -eq 0)
+    foreach ($e in $Expect) { if ($text -notlike ('*' + [WildcardPattern]::Escape($e) + '*')) { $ok = $false; Write-Host "      missing: $e" -ForegroundColor Yellow } }
+    foreach ($e in $Absent) { if ($text -like ('*' + [WildcardPattern]::Escape($e) + '*')) { $ok = $false; Write-Host "      present: $e" -ForegroundColor Yellow } }
+    if (-not $ok) { Write-Host "      exit $code`n      $($text -replace "`n", "`n      ")" -ForegroundColor Yellow }
+    Assert-True $ok "drift report: $Name"
+  }
+  $title = $script:DriftIssueTitle
+  $driftRows = @([pscustomobject]@{ unit = 'u2'; result = 'DRIFT'; exitCode = 1; minutes = 1; findings = @('Modify /x: tag'); notes = @() })
+  $cleanRows = @([pscustomobject]@{ unit = 'u2'; result = 'clean'; exitCode = 0; minutes = 1; findings = @(); notes = @() })
+  $fpNow = (Format-DriftIssueBody $driftRows 'drift' 'x' 'failure').fingerprint
+  $openSame = ConvertTo-Json -Compress -Depth 5 -InputObject @(,@([ordered]@{ number = 7; title = $title; body = "old text`n<!-- mirror-drift findings $fpNow -->" }))
+  $openOther = ConvertTo-Json -Compress -Depth 5 -InputObject @(,@([ordered]@{ number = 7; title = $title; body = "old text`n<!-- mirror-drift findings $('0' * 64) -->" }))
+  $openPr = ConvertTo-Json -Compress -Depth 5 -InputObject @(,@([ordered]@{ number = 8; title = $title; body = ''; pull_request = @{ url = 'x' } }, [ordered]@{ number = 9; title = 'another issue'; body = '' }))
+  Invoke-DriftCase 'drift with no open issue opens one' $driftRows 'failure' '[[]]' @('POST repos/org/repo/issues {', 'issue #42 is opened (drift)', 'Modify /x: tag')
+  Invoke-DriftCase 'the same findings update the issue and add no comment' $driftRows 'failure' $openSame @('PATCH repos/org/repo/issues/7 {', 'its findings are the same') @('issues/7/comments')
+  Invoke-DriftCase 'other findings update the issue and add a comment' $driftRows 'failure' $openOther @('PATCH repos/org/repo/issues/7 {', 'POST repos/org/repo/issues/7/comments', 'its findings changed')
+  Invoke-DriftCase 'a clean run closes the open issue with a comment' $cleanRows 'success' $openSame @('POST repos/org/repo/issues/7/comments', '"state":"closed"', 'issue #7 is closed')
+  Invoke-DriftCase 'a clean run with no open issue writes nothing' $cleanRows 'success' '[[]]' @('no drift issue is open') @('POST ', 'PATCH ')
+  Invoke-DriftCase 'no summary opens the issue as not checked' $null 'failure' '[[]]' @('POST repos/org/repo/issues {', 'ended before it wrote its summary', '(error)')
+  Invoke-DriftCase 'a pull request and an issue of another title are left alone' $driftRows 'failure' $openPr @('POST repos/org/repo/issues {') @('issues/8', 'issues/9')
+} finally {
+  Remove-Item -LiteralPath $dr -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 Restore-RunnerEnv

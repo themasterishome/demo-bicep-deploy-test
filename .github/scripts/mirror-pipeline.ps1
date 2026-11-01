@@ -5,7 +5,7 @@
 
 .DESCRIPTION
   A deployment from the pipeline is a plan followed by an apply, both jobs of one run of mirror-deploy-unit. The run
-  starts with a push to master (a merged pull request) or with Run workflow on master. The plan signs in with the
+  starts only with Run workflow on master. The plan signs in with the
   reader identity and runs the dry run and the gate. The apply waits for the required reviewers of the unit's
   mirror-production or mirror-privileged environment, who did not start the run, and then deploys exactly what the plan showed. The
   workflows call this script in one of these modes:
@@ -33,8 +33,8 @@
     Preview        mirror-pr. A plain what-if of one unit of the pull request's Bicep, judged offline by master's
                    deploy-unit.ps1 -WhatIfJson, because the job takes the scripts from master's tip
     Report         mirror-pr. One pull request comment with every verdict. Decides the required check
-    Select         mirror-deploy-unit. Picks the units to plan. A push plans every enabled unit whose files changed.
-                   Run workflow plans the one unit it names, after checking its inputs
+    Select         mirror-deploy-unit. Checks the inputs of Run workflow and names the one unit to plan. Any other
+                   event is refused
     DeployPlan     mirror-deploy-unit, plan job. The dry run and the gate of one unit with its options. Writes the
                    verdict, the job summary and the reviewed plan
     Collect        mirror-deploy-unit. Reads the reviewed plans and lists the units whose apply waits for a reviewer,
@@ -45,6 +45,8 @@
     ComparePlan    mirror-deploy-unit, apply and apply-privileged jobs. A fresh dry run shows the same records as the reviewed plan, apart
                    from the resources the options name
     DeploySummary  mirror-deploy-unit. Writes pipeline-deployment.json in the evidence and the job summary
+    DriftReport    mirror-drift, report job. Opens, updates or closes the one drift issue from the drift job's summary.
+                   No Azure
 
   The plan belongs to one commit of master, the commit the run started on. The apply refuses when master has moved
   since, so nothing deploys from a plan of other code. A reviewer approves the plan that the run shows, with the
@@ -66,7 +68,7 @@
 [CmdletBinding()]
 param(
   [ValidateSet('', 'Hygiene', 'PipelineScope', 'PortabilityScope', 'InputCheck', 'Plan', 'Preview', 'Report', 'Select', 'DeployPlan',
-               'Collect', 'CheckApply', 'ComparePlan', 'DeploySummary')]
+               'Collect', 'CheckApply', 'ComparePlan', 'DeploySummary', 'DriftReport')]
   [string]$Mode = '',
   [string]$Dir,
   [string]$EvidenceRoot
@@ -521,7 +523,7 @@ function Compare-ReviewItems($ApprovedGate, $NowGate) {
 }
 
 # ---------------------------------------------------------------------------------------------------------------
-# The deployment request: what a push or Run workflow asks for, and what the plan and the apply check again.
+# The deployment request: what Run workflow asks for, and what the plan and the apply check again.
 # ---------------------------------------------------------------------------------------------------------------
 
 # The option fields of a request, with the ID lists as string arrays.
@@ -590,47 +592,6 @@ function Test-DeployRequest($Request, $UnitsDoc, $BoundariesDoc) {
     }
   }
   return [pscustomobject]@{ unitDef = $unitDef; errors = [string[]]$errors }
-}
-
-# The change ticket a merged pull request names, or '' when it names none. A line of the title or the body starts
-# with the label, "Change: CHG0012345" or "Ticket: CHG0012345", followed by the ticket number alone. A ticket number
-# is 3 to 64 letters, digits, dots, dashes, underscores or slashes, with at least one digit and no space, so a
-# sentence that happens to begin with "Change:" names no ticket.
-function Get-ChangeTicketFromText([string]$Title, [string]$Body) {
-  foreach ($line in @(("$Title`n$Body") -split '\r?\n')) {
-    $m = [regex]::Match($line, '^[ \t]*(?:change(?:[ \t]+ticket)?|ticket)[ \t]*:[ \t]*(?<t>[A-Za-z0-9._/-]{3,64})[ \t]*$', 'IgnoreCase')
-    if ($m.Success -and $m.Groups['t'].Value -match '[0-9]') { return $m.Groups['t'].Value }
-  }
-  return ''
-}
-
-# Entries of deploy/boundaries.json that differ between two copies, as compact JSON texts. Holds and expected
-# Ignore patterns can name a subscription (scoped). The boundaries, by resource type, and the holds by name never do
-# (typeWide).
-function Get-BoundaryChanges($OldDoc, $NewDoc) {
-  $scoped = @(); $typeWide = @()
-  foreach ($list in @('boundaries', 'holds', 'expectedIgnore')) {
-    $old = @(@(Get-Prop $OldDoc $list) | Where-Object { $null -ne $_ } | ForEach-Object { ConvertTo-CompactJson $_ })
-    $new = @(@(Get-Prop $NewDoc $list) | Where-Object { $null -ne $_ } | ForEach-Object { ConvertTo-CompactJson $_ })
-    $diff = @(@($new | Where-Object { -not (Test-InList $old $_) }) + @($old | Where-Object { -not (Test-InList $new $_) }))
-    foreach ($d in $diff) {
-      if ($list -eq 'boundaries' -or ($list -eq 'holds' -and $d -notmatch '"idPattern"')) { $typeWide += $d } else { $scoped += $d }
-    }
-  }
-  return [pscustomobject]@{ scoped = [string[]]$scoped; typeWide = [string[]]$typeWide }
-}
-
-# The units whose subscription appears in a changed hold or expected Ignore pattern.
-function Get-BoundaryScopeUnits($Changes, $UnitsDoc) {
-  $names = @()
-  foreach ($u in @(Get-Prop $UnitsDoc 'units')) {
-    $subId = [string](Get-Prop (Get-Prop $UnitsDoc 'subscriptions') ([string](Get-Prop $u 'subscription')))
-    if (-not $subId) { continue }
-    foreach ($c in @($Changes.scoped)) {
-      if ($c.IndexOf($subId, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $names += [string](Get-Prop $u 'name'); break }
-    }
-  }
-  return [string[]]$names
 }
 
 # True when the gate holds an effective change: a Create, Delete or Deploy record, or a Modify with at least one
@@ -875,7 +836,7 @@ function Get-UnitFiles($UnitsDoc, [string]$Root) {
 # that judges every unit (bicepconfig.json in any folder, deploy/boundaries.json, scripts/deploy-unit.ps1)
 # previews nothing, because such a change needs a sweep. Bicep reads the bicepconfig.json nearest to each file, so
 # one in a subfolder judges every file below it.
-function Resolve-AffectedUnits([string[]]$ChangedPaths, $UnitsDoc, $UnitFiles, [string[]]$ChangedUnitEntries = @(), [switch]$AfterMerge) {
+function Resolve-AffectedUnits([string[]]$ChangedPaths, $UnitsDoc, $UnitFiles, [string[]]$ChangedUnitEntries = @()) {
   $preview = New-Object System.Collections.Generic.List[string]
   $notes = New-Object System.Collections.Generic.List[string]
   $sweep = $false
@@ -885,8 +846,7 @@ function Resolve-AffectedUnits([string[]]$ChangedPaths, $UnitsDoc, $UnitFiles, [
     $lp = $p.Replace('\', '/').ToLowerInvariant()
     if ($script:GlobalFiles -contains $lp -or $lp.EndsWith('/bicepconfig.json')) {
       $sweep = $true
-      if ($AfterMerge) { $notes.Add("$p changed. It judges every unit, so no unit was planned for it. Start Run workflow for each unit that must be checked.") }
-      else { $notes.Add("$p changed. It judges every unit, so no single preview covers it. Run a read-only sweep of the enabled units before this is merged.") }
+      $notes.Add("$p changed. It judges every unit, so no single preview covers it. Run a read-only sweep of the enabled units before this is merged.")
       continue
     }
     $found = $false
@@ -907,8 +867,7 @@ function Resolve-AffectedUnits([string[]]$ChangedPaths, $UnitsDoc, $UnitFiles, [
   }
   if ($sweep -and $preview.Count -gt 0) { $preview.Clear() }
   if ($preview.Count -gt $script:MaxPreviewUnits) {
-    if ($AfterMerge) { $notes.Add("$($preview.Count) units are affected, more than the $($script:MaxPreviewUnits) a push plans. Start Run workflow for each unit instead.") }
-    else { $notes.Add("$($preview.Count) units are affected, more than the $($script:MaxPreviewUnits) a pull request previews. Run a read-only sweep instead.") }
+    $notes.Add("$($preview.Count) units are affected, more than the $($script:MaxPreviewUnits) a pull request previews. Run a read-only sweep instead.")
     $preview.Clear()
   }
   return [pscustomobject]@{ preview = [string[]]$preview.ToArray(); notes = [string[]]$notes.ToArray(); sweep = $sweep }
@@ -1215,13 +1174,12 @@ function Test-WorkflowHygiene([hashtable]$Files) {
     $shellCount = [regex]::Matches($body, '(?m)^[ \t]*(?:-[ \t]+)?shell:').Count
     if ($runCount -gt $shellCount) { $errors += "${name}: $($runCount - $shellCount) run step(s) name no shell. Each names shell: pwsh, because the default shell differs between Windows and Linux" }
     if ($deployWorkflow) {
-      # The deploy workflow starts on a push to master and by hand (Run workflow). A pull request, a schedule or a
-      # push to another branch never starts it.
-      if ($body -match '(?<![A-Za-z0-9_-])(schedule|pull_request)(?![A-Za-z0-9_-])') {
-        $errors += "${name}: the deploy workflow runs only on a push to master and by Run workflow, so it has no schedule or pull_request trigger"
+      # The deploy workflow starts only by hand (Run workflow). A push, a pull request or a schedule never starts it.
+      if ($body -match '(?<![A-Za-z0-9_-])(push|schedule|pull_request)(?![A-Za-z0-9_-])') {
+        $errors += "${name}: the deploy workflow starts only with Run workflow, so it has no push, schedule or pull_request trigger"
       }
-      if ($body -notmatch '(?ms)^on:[ \t]*\n[ \t]+push:[ \t]*\n[ \t]+branches:[ \t]*\[[ \t]*master[ \t]*\]' -or $body -notmatch '(?m)^[ \t]+workflow_dispatch:') {
-        $errors += "${name}: the deploy workflow must start on push with branches [ master ] and on workflow_dispatch, and on nothing else"
+      if ($body -notmatch '(?ms)^on:[ \t]*\n[ \t]+workflow_dispatch:') {
+        $errors += "${name}: the deploy workflow must start on workflow_dispatch and on nothing else"
       }
       # The apply and the apply-privileged jobs are the only jobs in a production or a privileged environment. They
       # wait for the plan jobs through the collect job, and the environment is built from the matrix value the
@@ -1591,6 +1549,127 @@ function Invoke-PortabilityScopeMode {
   Write-Summary @($line)
 }
 
+# mirror-drift, report job. The drift job writes drift-summary.json, one row per unit with its result (clean, DRIFT,
+# ERROR or SKIP) and its findings. The report keeps one open issue with the title below, written with the workflow's
+# own token, so a finding reaches everyone who watches the repository. A run that finds drift, or cannot check a
+# unit, opens the issue, or updates it when it is open. When the findings differ from the ones the issue shows, the
+# update adds a comment, which notifies the watchers. The same findings a week later update the link to the run and
+# add no comment. A run that finds every unit clean closes the issue with a comment. The report never signs in to
+# Azure and changes nothing but the issue.
+$script:DriftIssueTitle = 'The drift check found a difference between live Azure and the code, or a unit it could not check'
+$script:DriftMarker = '<!-- mirror-drift findings '
+
+# The state of one drift run: drift when a unit shows drift, error when a unit could not be checked, when the drift
+# job wrote no summary or when the job did not succeed, and clean otherwise.
+function Get-DriftState($Rows, [string]$JobResult) {
+  $r = @(@($Rows) | Where-Object { $null -ne $_ })
+  if ($r.Count -eq 0) { return 'error' }
+  if (@($r | Where-Object { [string](Get-Prop $_ 'result') -ceq 'DRIFT' }).Count -gt 0) { return 'drift' }
+  if (@($r | Where-Object { [string](Get-Prop $_ 'result') -ceq 'ERROR' }).Count -gt 0) { return 'error' }
+  if ($JobResult -and $JobResult -cne 'success') { return 'error' }
+  return 'clean'
+}
+
+# The findings of every unit that is neither clean nor skipped, as Markdown lines. Each finding is one line in a code
+# span, so text from Azure cannot make a link, a heading or HTML.
+function Format-DriftFindings($Rows) {
+  $lines = @()
+  foreach ($row in @(@($Rows) | Where-Object { $null -ne $_ })) {
+    $res = [string](Get-Prop $row 'result')
+    if ($res -ceq 'clean' -or $res -ceq 'SKIP') { continue }
+    $lines += "- $(ConvertTo-CodeSpan ([string](Get-Prop $row 'unit'))) $res"
+    foreach ($f in @(Get-Prop $row 'findings')) { if ($null -ne $f -and "$f") { $lines += "  - $(ConvertTo-CodeSpan ([string]$f))" } }
+  }
+  return [string[]]$lines
+}
+
+# The text of the issue. It ends with a marker that holds the SHA256 of the findings, so the next run can tell
+# whether they changed.
+function Format-DriftIssueBody($Rows, [string]$State, [string]$RunUrl, [string]$JobResult) {
+  $r = @(@($Rows) | Where-Object { $null -ne $_ })
+  $count = { param($v) @($r | Where-Object { [string](Get-Prop $_ 'result') -ceq $v }).Count }
+  $findings = @(Format-DriftFindings $r)
+  if ($r.Count -eq 0) { $findings = @("- The drift job ended before it wrote its summary (job result $(ConvertTo-CodeSpan $JobResult)). Its log says why.") }
+  elseif ($findings.Count -eq 0) { $findings = @("- No unit shows drift, but the drift job did not succeed (job result $(ConvertTo-CodeSpan $JobResult)). Its log says why.") }
+  $what = if ($State -ceq 'drift') { 'Live Azure differs from the code in at least one unit.' } else { 'At least one unit could not be checked, so its drift is not known.' }
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  $fp = (($sha.ComputeHash($script:Utf8NoBom.GetBytes("$State`n" + ($findings -join "`n"))) | ForEach-Object { $_.ToString('x2') }) -join '')
+  $lines = @(
+    $what,
+    '',
+    "Units checked: $($r.Count - (& $count 'SKIP')). Clean: $(& $count 'clean'). Drift: $(& $count 'DRIFT'). Not checked: $(& $count 'ERROR'). Skipped, because another unit measures them: $(& $count 'SKIP').",
+    '',
+    'Findings:',
+    '') + $findings + @(
+    '',
+    "Last run: $RunUrl",
+    '',
+    'The drift artifact of the run holds the evidence of each unit. A difference is fixed in a code pull request when the code should follow live, or by a deployment with Run workflow when live should follow the code. The check never changes Azure. This issue closes itself when a run finds every unit clean.',
+    '',
+    "$($script:DriftMarker)$fp -->")
+  $text = $lines -join "`n"
+  if ($text.Length -gt 60000) { $text = $text.Substring(0, 59000) + "`n`nThe list is cut here. The run's summary holds all of it.`n`n$($script:DriftMarker)$fp -->" }
+  return [pscustomobject]@{ body = $text; fingerprint = $fp }
+}
+
+# A write to the GitHub REST API through the GitHub CLI, signed in with GH_TOKEN. The JSON body goes through a file.
+function Invoke-GhApiWrite([string]$Method, [string]$Path, $Body) {
+  $tmp = [IO.Path]::GetTempFileName()
+  try {
+    [IO.File]::WriteAllText($tmp, (ConvertTo-Json -InputObject $Body -Depth 5 -Compress), $script:Utf8NoBom)
+    $r = Invoke-Native 'gh' @('api', '-X', $Method, '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2022-11-28', '--input', $tmp, $Path) -AllowFailure
+    if ($r.Code -ne 0) { throw "gh api -X $Method $Path failed (exit $($r.Code)): $($r.Err)" }
+    $out = ($r.Out -join "`n")
+    if ($out.Trim()) { return (ConvertFrom-Json @MirrorJsonArgs -InputObject $out) }
+    return $null
+  } finally { Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue }
+}
+
+# The open issues the drift report wrote: its title, opened by the workflow's own token, and no pull request.
+function Find-DriftIssue([string]$Repo) {
+  $all = @(Invoke-GhApi "repos/$Repo/issues?state=open&creator=github-actions%5Bbot%5D&per_page=100" -Paginate)
+  return @($all | Where-Object { $null -ne $_ -and (Test-Same ([string](Get-Prop $_ 'title')) $script:DriftIssueTitle) -and $null -eq (Get-Prop $_ 'pull_request') })
+}
+
+function Invoke-DriftReportMode {
+  $repo = Get-EnvValue 'GITHUB_REPOSITORY'
+  if (-not $repo) { Stop-Check 'GITHUB_REPOSITORY is not set' 2 }
+  $runUrl = Get-EnvValue 'RUN_URL' 'the run'
+  $job = Get-EnvValue 'DRIFT_RESULT'
+  $rows = $null
+  if ($Dir) {
+    $f = Join-Path $Dir 'drift-summary.json'
+    if (Test-Path -LiteralPath $f -PathType Leaf) { try { $rows = @(Read-JsonFile $f) } catch { $rows = $null } }
+  }
+  $state = Get-DriftState $rows $job
+  $open = @(Find-DriftIssue $repo)
+  if ($state -ceq 'clean') {
+    $closed = @()
+    foreach ($i in $open) {
+      $n = [string](Get-Prop $i 'number')
+      $null = Invoke-GhApiWrite 'POST' "repos/$repo/issues/$n/comments" @{ body = "Every checked unit is clean in $runUrl, so this issue is closed." }
+      $null = Invoke-GhApiWrite 'PATCH' "repos/$repo/issues/$n" @{ state = 'closed'; state_reason = 'completed' }
+      $closed += "#$n"
+    }
+    $line = if ($closed.Count -gt 0) { "Drift report: every checked unit is clean, so issue $($closed -join ', ') is closed." } else { 'Drift report: every checked unit is clean, and no drift issue is open.' }
+    Write-Host $line; Write-Summary @($line); return
+  }
+  $b = Format-DriftIssueBody $rows $state $runUrl $job
+  if ($open.Count -eq 0) {
+    $new = Invoke-GhApiWrite 'POST' "repos/$repo/issues" @{ title = $script:DriftIssueTitle; body = $b.body }
+    $line = "Drift report: issue #$([string](Get-Prop $new 'number')) is opened ($state)."
+  } else {
+    $i = $open[0]; $n = [string](Get-Prop $i 'number')
+    $m = [regex]::Match([string](Get-Prop $i 'body'), [regex]::Escape($script:DriftMarker) + '(?<fp>[0-9a-f]{64}) -->')
+    $null = Invoke-GhApiWrite 'PATCH' "repos/$repo/issues/$n" @{ body = $b.body }
+    if (-not $m.Success -or $m.Groups['fp'].Value -cne $b.fingerprint) {
+      $null = Invoke-GhApiWrite 'POST' "repos/$repo/issues/$n/comments" @{ body = "The findings changed in $runUrl. The issue text above shows them." }
+      $line = "Drift report: issue #$n is updated, and its findings changed ($state)."
+    } else { $line = "Drift report: issue #$n is updated with this run, and its findings are the same ($state)." }
+  }
+  Write-Host $line; Write-Summary @($line)
+}
+
 # True when the code in the working folder is the trusted commit itself. The workflow sets both values in the step
 # that takes the scripts from master.
 function Test-CodeIsTrusted {
@@ -1792,8 +1871,8 @@ function Get-MasterTip {
   return ([string](Get-Prop (Get-Prop (Invoke-GhApi "repos/$repo/branches/master") 'commit') 'sha'))
 }
 
-# Which units a run of mirror-deploy-unit plans. A push plans every enabled unit the pipeline may deploy whose files
-# changed in the push. Run workflow plans the unit it names, after the checks of its inputs.
+# Which unit a run of mirror-deploy-unit plans. Only Run workflow starts it, and it plans the unit it names, after the
+# checks of its inputs.
 function Invoke-SelectMode {
   $evt = Get-EnvValue 'EVENT_NAME'
   $root = $script:RepoRoot
@@ -1802,74 +1881,22 @@ function Invoke-SelectMode {
   $actor = Get-EnvValue 'GITHUB_ACTOR' 'unknown'
   $rows = @(); $notes = @()
   if ((Get-EnvValue 'GITHUB_REF') -cne 'refs/heads/master') { Stop-Check "the run is on '$(Get-EnvValue 'GITHUB_REF')'. The deployment runs only on master" }
+  if ($evt -cne 'workflow_dispatch') { Stop-Check "the event '$evt' is not one this workflow starts on. The deploy workflow starts only with Run workflow on master" 2 }
 
-  if ($evt -eq 'workflow_dispatch') {
-    $req = [pscustomobject]@{
-      unit = Get-EnvValue 'UNIT'
-      changeRef = Get-EnvValue 'CHANGE_REF'
-      reason = Get-EnvValue 'REASON'
-      acknowledgeReview = ((Get-EnvValue 'ACK') -eq 'true')
-      allowCreate = [string[]]@(Split-IdList (Get-EnvValue 'ALLOW_CREATE'))
-      allowModify = [string[]]@(Split-IdList (Get-EnvValue 'ALLOW_MODIFY'))
-      allowHeld = [string[]]@(Split-IdList (Get-EnvValue 'ALLOW_HELD'))
-    }
-    $chk = Test-DeployRequest $req $units $bounds
-    if (@($chk.errors).Count -gt 0) { Stop-WithErrors 'The inputs of this run do not pass their checks' $chk.errors }
-    $rows += [ordered]@{ unit = $req.unit; subscription = [string]$chk.unitDef.subscription; scope = Get-UnitScope $chk.unitDef; tier = Get-UnitTier $chk.unitDef; trigger = 'Run workflow'
-                         apply = $(if ((Get-EnvValue 'APPLY') -eq 'true') { 'true' } else { 'false' }); startedBy = $actor
-                         changeRef = $req.changeRef; reason = $req.reason; options = (ConvertTo-OptionsJson (Get-DeployOptions $req)) }
-  } elseif ($evt -eq 'push') {
-    $before = Get-EnvValue 'BEFORE'; $after = Get-EnvValue 'AFTER'
-    $from = if (-not $before -or $before -match '^0+$') { "$after^" } else { $before }
-    if (-not (Test-GitCommit $from)) { Stop-Check "the commit $from is not in the checkout, so the changed files of this push are not known" 2 }
-    $entries = @(Get-GitChanges $from $after)
-    $paths = @($entries | ForEach-Object { $_.Path })
-    $oldUnitsText = Get-GitText $from 'deploy/units.json'
-    $changedEntries = @()
-    if ($oldUnitsText) { $changedEntries = @(Get-ChangedUnitEntries (Read-JsonText $oldUnitsText 'deploy/units.json before the push') $units) }
-    # deploy/boundaries.json is read entry by entry. A changed hold or expected Ignore pattern that names a
-    # subscription plans that subscription's units. A change by resource type plans nothing.
-    $scope = @()
-    if ($paths -contains 'deploy/boundaries.json') {
-      $oldBoundsText = Get-GitText $from 'deploy/boundaries.json'
-      if ($oldBoundsText) {
-        $bc = Get-BoundaryChanges (Read-JsonText $oldBoundsText 'deploy/boundaries.json before the push') $bounds
-        $scope = @(Get-BoundaryScopeUnits $bc $units)
-        if (@($bc.typeWide).Count -gt 0) { $notes += "deploy/boundaries.json changed for whole resource types ($(@($bc.typeWide).Count) entr$(if (@($bc.typeWide).Count -eq 1) { 'y' } else { 'ies' })), which judge every unit. No unit was planned for it. Start Run workflow for each unit that must be checked." }
-      } else { $notes += 'deploy/boundaries.json is new in this push, which judges every unit. No unit was planned for it. Start Run workflow for each unit that must be checked.' }
-    }
-    $res = Resolve-AffectedUnits @($paths | Where-Object { $_ -ne 'deploy/boundaries.json' }) $units (Get-UnitFiles $units $root) @($changedEntries + $scope) -AfterMerge
-    $notes += @($res.notes)
-    $off = 0
-    foreach ($n in @($res.preview)) {
-      $u = Find-UnitDef $units $n
-      if (Get-UnrunnableReason $u) { continue }
-      if (-not [bool](Get-Prop $u 'enabled')) { $off++; continue }
-      if ($null -eq (Get-UnitTier $u)) { $notes += "$n has a tier that is neither absent nor privileged, so it is not planned."; continue }
-      # The client ID of the deploy identity lives in the environment of the unit's scope, not in deploy/units.json.
-      # The apply job stops with a clear message when the environment has none, so the plan does not look for it.
-      $rows += [ordered]@{ unit = $n; subscription = [string]$u.subscription; scope = Get-UnitScope $u; tier = Get-UnitTier $u; trigger = 'push'; apply = 'true'; startedBy = $actor
-                           changeRef = ''; reason = ''; options = (ConvertTo-OptionsJson (Get-DeployOptions ([pscustomobject]@{}))) }
-    }
-    if ($off -gt 0) { $notes += "$off unit(s) this push touches are not enabled in deploy/units.json, so they are not planned." }
-    if ($rows.Count -gt 0) {
-      $ticket = ''; $why = "Push to master, commit $($after.Substring(0, [Math]::Min(12, $after.Length)))"
-      try {
-        $repo = Get-EnvValue 'GITHUB_REPOSITORY'
-        $prs = @(Invoke-GhApi "repos/$repo/commits/$after/pulls" | Where-Object {
-            (Get-Prop $_ 'merged_at') -and (Test-Same ([string](Get-Prop (Get-Prop $_ 'base') 'ref')) 'master') -and (Test-Same ([string](Get-Prop $_ 'merge_commit_sha')) $after) })
-        if ($prs.Count -eq 1) {
-          $title = [string](Get-Prop $prs[0] 'title')
-          $ticket = Get-ChangeTicketFromText $title ([string](Get-Prop $prs[0] 'body'))
-          $oneLine = (ConvertTo-OneLine $title).Trim()
-          if ($oneLine.Length -gt 200) { $oneLine = $oneLine.Substring(0, 200) }
-          $why = "Merged pull request #$($prs[0].number): $oneLine"
-        } else { $notes += "Found $($prs.Count) merged pull request(s) for this push, so the reason names the commit and the change ticket is none." }
-      } catch { $notes += "The merged pull request could not be read ($(ConvertTo-OneLine $_.Exception.Message)), so the reason names the commit and the change ticket is none." }
-      if (-not $ticket) { $ticket = 'none' }
-      foreach ($r in $rows) { $r.changeRef = $ticket; $r.reason = $why }
-    }
-  } else { Stop-Check "the event '$evt' is not one this workflow plans for" 2 }
+  $req = [pscustomobject]@{
+    unit = Get-EnvValue 'UNIT'
+    changeRef = Get-EnvValue 'CHANGE_REF'
+    reason = Get-EnvValue 'REASON'
+    acknowledgeReview = ((Get-EnvValue 'ACK') -eq 'true')
+    allowCreate = [string[]]@(Split-IdList (Get-EnvValue 'ALLOW_CREATE'))
+    allowModify = [string[]]@(Split-IdList (Get-EnvValue 'ALLOW_MODIFY'))
+    allowHeld = [string[]]@(Split-IdList (Get-EnvValue 'ALLOW_HELD'))
+  }
+  $chk = Test-DeployRequest $req $units $bounds
+  if (@($chk.errors).Count -gt 0) { Stop-WithErrors 'The inputs of this run do not pass their checks' $chk.errors }
+  $rows += [ordered]@{ unit = $req.unit; subscription = [string]$chk.unitDef.subscription; scope = Get-UnitScope $chk.unitDef; tier = Get-UnitTier $chk.unitDef; trigger = 'Run workflow'
+                       apply = $(if ((Get-EnvValue 'APPLY') -eq 'true') { 'true' } else { 'false' }); startedBy = $actor
+                       changeRef = $req.changeRef; reason = $req.reason; options = (ConvertTo-OptionsJson (Get-DeployOptions $req)) }
 
   Set-StepOutput 'matrix' $(if ($rows.Count -gt 0) { ConvertTo-CompactJson @($rows) } else { '[]' })
   $lines = @("Units to plan: $($rows.Count).")
@@ -1892,7 +1919,7 @@ function Invoke-DeployPlanMode {
   $sha = Get-EnvValue 'GITHUB_SHA'
   $tip = Get-MasterTip
   if ($tip -cne $sha) {
-    Stop-Check "master is now at $tip and this run started at $sha. A plan belongs to one commit, so nothing is deployed from this run. The newer commit starts its own run if it touches an enabled unit. Otherwise start Run workflow on master for $($req.unit)"
+    Stop-Check "master is now at $tip and this run started at $sha. A plan belongs to one commit, so nothing is deployed from this run. Start Run workflow on master again for $($req.unit)"
   }
   $opts = Get-DeployOptions $req
   $gateRoot = Join-Path $EvidenceRoot 'gate'
@@ -1905,7 +1932,7 @@ function Invoke-DeployPlanMode {
   $applyAsked = ((Get-EnvValue 'APPLY') -eq 'true')
   $hasChanges = ($null -ne $gate -and (Test-HasChanges $gate))
   $approvable = (-not $v.technical -and [bool]$v.approvable)
-  $offer = ($approvable -and $applyAsked -and ($trigger -ne 'push' -or $hasChanges))
+  $offer = ($approvable -and $applyAsked)
   $plan = [ordered]@{
     schema = 2; unit = $req.unit; subscription = [string]$chk.unitDef.subscription; scope = Get-UnitScope $chk.unitDef; tier = Get-UnitTier $chk.unitDef
     environment = Get-UnitEnvironment $chk.unitDef; commit = $sha
@@ -1931,7 +1958,6 @@ function Invoke-DeployPlanMode {
     exit 1
   }
   if (-not $applyAsked) { $tail += @('', 'This run was started as a plan only (apply is off). Nothing waits for a reviewer.') }
-  elseif (-not $offer) { $tail += @('', 'A push publishes this plan and deploys nothing. The plan holds no effective change, so nothing waits for a reviewer. A change is applied with Run workflow, which names the ticket, the reason and the options.') }
   elseif (-not $hasChanges) { $tail += @('', 'No effective change: the plan holds no record a deployment would change. The apply job still waits for the reviewers of this unit''s environment, and a reviewer who did not start the run reads this plan, then selects Review deployments and Approve and deploy.') }
   else { $tail += @('', 'The apply job waits for the reviewers of this unit''s environment. A reviewer who did not start the run reads this plan, then selects Review deployments and Approve and deploy.') }
   Write-Summary (@($md) + $tail)
@@ -2067,7 +2093,7 @@ function Invoke-ReportMode {
   }
   $lines = @($script:CommentMarker, '## Mirror preview', '')
   switch ($kind) {
-    'code' { $lines += 'Code pull request. The previews below are for information. A change made on purpose shows as FAIL until a deployment of the unit names it in allowModify, and nothing deploys from a pull request. After the merge, a push to master plans every enabled unit whose files changed, and its apply waits for a reviewer.' }
+    'code' { $lines += 'Code pull request. The previews below are for information. A change made on purpose shows as FAIL until a deployment of the unit names it in allowModify, and nothing deploys from a pull request. After the merge, a deployment starts only with Run workflow, and its apply waits for a reviewer.' }
     default { $lines += 'No unit to preview.' }
   }
   if ($fail.Count -gt 0) { $lines += @('', '**This check fails:**') + @($fail | ForEach-Object { "- $_" }) }
@@ -2141,6 +2167,7 @@ try {
     'Hygiene' { Invoke-HygieneMode }
     'PipelineScope' { Invoke-PipelineScopeMode }
     'PortabilityScope' { Invoke-PortabilityScopeMode }
+    'DriftReport' { Invoke-DriftReportMode }
     'InputCheck' { Invoke-InputCheckMode }
     'Plan' { Invoke-PlanMode }
     'Preview' { Invoke-PreviewMode }

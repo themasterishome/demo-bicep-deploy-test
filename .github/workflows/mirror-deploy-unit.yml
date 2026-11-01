@@ -7,17 +7,13 @@
 # person who started the run, because every mirror-production and mirror-privileged environment has "Prevent self-review"
 # on.
 #
-# Two ways to start it.
-#   A push to master (a merged pull request) plans every enabled unit whose files changed. A push carries no option,
-#   so its plan passes the gate only when it holds no effective change, and then it asks nobody to approve. A push
-#   whose plan the gate stops says so in its summary and waits for nobody. A push that changes no enabled unit starts
-#   no plan. The merge deploys nothing.
-#   Run workflow (workflow_dispatch) on master names one unit, the change ticket, the reason and, when the gate
-#   needs them, the options acknowledgeReview, allowCreate, allowModify and allowHeld. Leave apply off for a plan
-#   only. Every deployment is started this way. With apply on and a plan that passes the gate, the apply waits for
-#   the reviewers.
+# It starts only with Run workflow (workflow_dispatch) on master. A merge into master starts nothing, because the
+# pull request's preview already shows what the merge would change, and every deployment needs a change ticket, a
+# reason and a reviewer, which only Run workflow carries. Run workflow names one unit, the change ticket, the reason
+# and, when the gate needs them, the options acknowledgeReview, allowCreate, allowModify and allowHeld. Leave apply
+# off for a plan only. With apply on and a plan that passes the gate, the apply waits for the reviewers.
 #
-#   select   No Azure. Picks the units, or checks the inputs of Run workflow.
+#   select   No Azure. Checks the inputs of Run workflow and names the unit to plan.
 #   plan     The reader identity (environment mirror-reader-dispatch, master only). One job for each unit. It runs
 #            scripts/deploy-unit.ps1 as a dry run with the options, and writes the plan as the job summary and as
 #            an artifact.
@@ -52,13 +48,9 @@
 # pattern, because a repository created after July 2026 carries the owner and repository IDs in it. Optional
 # repository variable: MIRROR_MAX_PLAN_AGE_HOURS (24), the longest a plan may wait for its apply.
 name: mirror-deploy-unit
-run-name: ${{ github.event_name == 'workflow_dispatch' && format('Deploy {0} ({1})', inputs.unit, inputs.changeRef) || format('Plan the units changed by the push {0}', github.sha) }}
+run-name: ${{ format('Deploy {0} ({1})', inputs.unit, inputs.changeRef) }}
 
 on:
-  push:
-    branches: [ master ]
-    # Only a speed-up, because the select job works out for itself which units the push changed.
-    paths: [ 'infra/**', 'deploy/**', 'scripts/**', 'pipelines/**', 'bicepconfig.json' ]
   workflow_dispatch:
     inputs:
       unit:
@@ -119,7 +111,6 @@ jobs:
     runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
     permissions:
       contents: read
-      pull-requests: read
     timeout-minutes: 15
     outputs:
       matrix: ${{ steps.select.outputs.matrix }}
@@ -149,8 +140,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
-          BEFORE: ${{ github.event.before }}
-          AFTER: ${{ github.sha }}
           UNIT: ${{ inputs.unit }}
           CHANGE_REF: ${{ inputs.changeRef }}
           REASON: ${{ inputs.reason }}
