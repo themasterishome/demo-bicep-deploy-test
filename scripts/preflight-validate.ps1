@@ -607,7 +607,7 @@ function Invoke-BicepCompile([string]$path, [string]$label) {
       if ($script:ruleCounts.ContainsKey($k)) { $script:ruleCounts[$k]++ } else { $script:ruleCounts[$k] = 1 }
     }
   }
-  $item = Get-Item -LiteralPath $path
+  $item = Get-Item -LiteralPath $path -Force
   if ($OutDir) { Set-Content -LiteralPath (Join-Path $OutDir ($item.Directory.Name + '__' + $item.Name + '.log')) -Value @($log) -Encoding $utf8Bom }
   if ($null -eq $r -or $r['success'] -ne $true) {
     $script:failures.Add("${label}: $path")
@@ -1022,7 +1022,7 @@ foreach ($pf in @($allInfraFiles | Where-Object { $_.Extension -ieq '.bicepparam
 # j. Names that only differ in case, and paths too long for Windows
 $portableRoots = @('infra', 'deploy', 'scripts', 'pipelines', '.github') | ForEach-Object { Join-Path $repo $_ } | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
 foreach ($root in $portableRoots) {
-  $dirs = @((Get-Item -LiteralPath $root)) + @(Get-ChildItem -LiteralPath $root -Recurse -Directory -Force)
+  $dirs = @((Get-Item -LiteralPath $root -Force)) + @(Get-ChildItem -LiteralPath $root -Recurse -Directory -Force)
   foreach ($d in $dirs) {
     $groups = @(@(Get-ChildItem -LiteralPath $d.FullName -Force) | Group-Object { $_.Name.ToLowerInvariant() } | Where-Object { $_.Count -gt 1 })
     foreach ($g in $groups) { Add-LayoutFailure 'j' "$(Get-RelPath $d.FullName) holds $((@($g.Group | ForEach-Object { $_.Name }) | Sort-Object) -join ' and '), names that differ only in case. Windows cannot keep both. Rename one" }
