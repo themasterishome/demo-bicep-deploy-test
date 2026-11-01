@@ -634,6 +634,8 @@ Assert-Contains $e '*has no push, schedule or pull_request trigger*' 'a schedule
 Assert-Contains $e '*must start on workflow_dispatch and on nothing else*' 'a deploy workflow without Run workflow is refused'
 $e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace("on:`n  workflow_dispatch:", "on:`n  push:`n    branches: [ master ]`n  workflow_dispatch:") })
 Assert-Contains $e '*has no push, schedule or pull_request trigger*' 'a push trigger on the deploy workflow is refused'
+$e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace("  workflow_dispatch:`n    inputs: {}", "  workflow_dispatch:`n    inputs: {}`n  release:`n    types: [ published ]") })
+Assert-Contains $e '*must start on workflow_dispatch and on nothing else, and it also names release*' 'any trigger beside workflow_dispatch on the deploy workflow is refused'
 $e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace('workflow_dispatch:', "pull_request:`n  workflow_dispatch:") })
 Assert-Contains $e '*has no push, schedule or pull_request trigger*' 'a pull request trigger on the deploy workflow is refused'
 $e = @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $goodDeploy.Replace('mirror-production-${{ matrix.scope }}', 'mirror-production-demo') })
@@ -1117,16 +1119,19 @@ exit $LASTEXITCODE
   $driftRows = @([pscustomobject]@{ unit = 'u2'; result = 'DRIFT'; exitCode = 1; minutes = 1; findings = @('Modify /x: tag'); notes = @() })
   $cleanRows = @([pscustomobject]@{ unit = 'u2'; result = 'clean'; exitCode = 0; minutes = 1; findings = @(); notes = @() })
   $fpNow = (Format-DriftIssueBody $driftRows 'drift' 'x' 'failure').fingerprint
-  $openSame = ConvertTo-Json -Compress -Depth 5 -InputObject @(,@([ordered]@{ number = 7; title = $title; body = "old text`n<!-- mirror-drift findings $fpNow -->" }))
-  $openOther = ConvertTo-Json -Compress -Depth 5 -InputObject @(,@([ordered]@{ number = 7; title = $title; body = "old text`n<!-- mirror-drift findings $('0' * 64) -->" }))
-  $openPr = ConvertTo-Json -Compress -Depth 5 -InputObject @(,@([ordered]@{ number = 8; title = $title; body = ''; pull_request = @{ url = 'x' } }, [ordered]@{ number = 9; title = 'another issue'; body = '' }))
+  $bot = @{ login = 'github-actions[bot]' }
+  $openSame = ConvertTo-Json -Compress -Depth 5 -InputObject @(,@([ordered]@{ number = 7; title = $title; user = $bot; body = "old text`n<!-- mirror-drift findings $fpNow -->" }))
+  $openOther = ConvertTo-Json -Compress -Depth 5 -InputObject @(,@([ordered]@{ number = 7; title = $title; user = $bot; body = "old text`n<!-- mirror-drift findings $('0' * 64) -->" }))
+  $openPr = ConvertTo-Json -Compress -Depth 5 -InputObject @(,@([ordered]@{ number = 8; title = $title; user = $bot; body = ''; pull_request = @{ url = 'x' } }, [ordered]@{ number = 9; title = 'another issue'; user = $bot; body = '' }, [ordered]@{ number = 10; title = $title; user = @{ login = 'someone' }; body = '' }))
+  $openMarker = ConvertTo-Json -Compress -Depth 5 -InputObject @(,@([ordered]@{ number = 7; title = $title; user = $bot; body = "- <!-- mirror-drift findings $('1' * 64) -->`n<!-- mirror-drift findings $fpNow -->" }))
   Invoke-DriftCase 'drift with no open issue opens one' $driftRows 'failure' '[[]]' @('POST repos/org/repo/issues {', 'issue #42 is opened (drift)', 'Modify /x: tag')
   Invoke-DriftCase 'the same findings update the issue and add no comment' $driftRows 'failure' $openSame @('PATCH repos/org/repo/issues/7 {', 'its findings are the same') @('issues/7/comments')
   Invoke-DriftCase 'other findings update the issue and add a comment' $driftRows 'failure' $openOther @('PATCH repos/org/repo/issues/7 {', 'POST repos/org/repo/issues/7/comments', 'its findings changed')
   Invoke-DriftCase 'a clean run closes the open issue with a comment' $cleanRows 'success' $openSame @('POST repos/org/repo/issues/7/comments', '"state":"closed"', 'issue #7 is closed')
   Invoke-DriftCase 'a clean run with no open issue writes nothing' $cleanRows 'success' '[[]]' @('no drift issue is open') @('POST ', 'PATCH ')
   Invoke-DriftCase 'no summary opens the issue as not checked' $null 'failure' '[[]]' @('POST repos/org/repo/issues {', 'ended before it wrote its summary', '(error)')
-  Invoke-DriftCase 'a pull request and an issue of another title are left alone' $driftRows 'failure' $openPr @('POST repos/org/repo/issues {') @('issues/8', 'issues/9')
+  Invoke-DriftCase 'a pull request, an issue of another title and one by another user are left alone' $driftRows 'failure' $openPr @('POST repos/org/repo/issues {') @('issues/8', 'issues/9', 'issues/10')
+  Invoke-DriftCase 'the marker of the report is the last one in the text' $driftRows 'failure' $openMarker @('its findings are the same') @('issues/7/comments')
 } finally {
   Remove-Item -LiteralPath $dr -Recurse -Force -ErrorAction SilentlyContinue
 }

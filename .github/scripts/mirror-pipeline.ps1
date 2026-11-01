@@ -1181,6 +1181,17 @@ function Test-WorkflowHygiene([hashtable]$Files) {
       if ($body -notmatch '(?ms)^on:[ \t]*\n[ \t]+workflow_dispatch:') {
         $errors += "${name}: the deploy workflow must start on workflow_dispatch and on nothing else"
       }
+      # Every trigger under on: at the indent of its first entry. Only workflow_dispatch may be there.
+      $onBlock = [regex]::Match($body, '(?m)^on:[ \t]*\n(?<b>(?:[ \t]+[^\n]*\n|[ \t]*\n)*)')
+      if ($onBlock.Success) {
+        $first = [regex]::Match($onBlock.Groups['b'].Value, '(?m)^(?<i>[ \t]+)[A-Za-z_]')
+        if ($first.Success) {
+          $ind = [regex]::Escape($first.Groups['i'].Value)
+          foreach ($k in [regex]::Matches($onBlock.Groups['b'].Value, "(?m)^$ind(?<k>[A-Za-z_][A-Za-z0-9_-]*)[ \t]*:")) {
+            if ($k.Groups['k'].Value -cne 'workflow_dispatch') { $errors += "${name}: the deploy workflow must start on workflow_dispatch and on nothing else, and it also names $($k.Groups['k'].Value)" }
+          }
+        }
+      }
       # The apply and the apply-privileged jobs are the only jobs in a production or a privileged environment. They
       # wait for the plan jobs through the collect job, and the environment is built from the matrix value the
       # collect job wrote and nothing else.
@@ -1625,10 +1636,12 @@ function Invoke-GhApiWrite([string]$Method, [string]$Path, $Body) {
   } finally { Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue }
 }
 
-# The open issues the drift report wrote: its title, opened by the workflow's own token, and no pull request.
+# The open issues the drift report wrote: its title, opened by the workflow's own token, and no pull request. The
+# list holds every open issue and is filtered here, so the result never depends on a query parameter of the API.
 function Find-DriftIssue([string]$Repo) {
-  $all = @(Invoke-GhApi "repos/$Repo/issues?state=open&creator=github-actions%5Bbot%5D&per_page=100" -Paginate)
-  return @($all | Where-Object { $null -ne $_ -and (Test-Same ([string](Get-Prop $_ 'title')) $script:DriftIssueTitle) -and $null -eq (Get-Prop $_ 'pull_request') })
+  $all = @(Invoke-GhApi "repos/$Repo/issues?state=open&per_page=100" -Paginate)
+  return @($all | Where-Object { $null -ne $_ -and (Test-Same ([string](Get-Prop $_ 'title')) $script:DriftIssueTitle) -and
+                                 (Test-Same ([string](Get-Prop (Get-Prop $_ 'user') 'login')) $script:BotLogin) -and $null -eq (Get-Prop $_ 'pull_request') })
 }
 
 function Invoke-DriftReportMode {
@@ -1660,12 +1673,18 @@ function Invoke-DriftReportMode {
     $line = "Drift report: issue #$([string](Get-Prop $new 'number')) is opened ($state)."
   } else {
     $i = $open[0]; $n = [string](Get-Prop $i 'number')
-    $m = [regex]::Match([string](Get-Prop $i 'body'), [regex]::Escape($script:DriftMarker) + '(?<fp>[0-9a-f]{64}) -->')
-    $null = Invoke-GhApiWrite 'PATCH' "repos/$repo/issues/$n" @{ body = $b.body }
-    if (-not $m.Success -or $m.Groups['fp'].Value -cne $b.fingerprint) {
+    # The last marker is the report's own, because a finding could hold the marker text too.
+    $ms = [regex]::Matches([string](Get-Prop $i 'body'), [regex]::Escape($script:DriftMarker) + '(?<fp>[0-9a-f]{64}) -->')
+    $oldFp = if ($ms.Count -gt 0) { $ms[$ms.Count - 1].Groups['fp'].Value } else { '' }
+    if ($oldFp -cne $b.fingerprint) {
+      # The comment comes first. If it fails, the issue keeps the old fingerprint and the next run comments again.
       $null = Invoke-GhApiWrite 'POST' "repos/$repo/issues/$n/comments" @{ body = "The findings changed in $runUrl. The issue text above shows them." }
+      $null = Invoke-GhApiWrite 'PATCH' "repos/$repo/issues/$n" @{ body = $b.body }
       $line = "Drift report: issue #$n is updated, and its findings changed ($state)."
-    } else { $line = "Drift report: issue #$n is updated with this run, and its findings are the same ($state)." }
+    } else {
+      $null = Invoke-GhApiWrite 'PATCH' "repos/$repo/issues/$n" @{ body = $b.body }
+      $line = "Drift report: issue #$n is updated with this run, and its findings are the same ($state)."
+    }
   }
   Write-Host $line; Write-Summary @($line)
 }

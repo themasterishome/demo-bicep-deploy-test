@@ -6,9 +6,9 @@
 #
 # Every pull request gets, for information, a preview of each unit whose files it changes (at most 12), judged
 # offline by deploy-unit.ps1 -WhatIfJson. A change made on purpose shows as FAIL until a deployment of the unit names it
-# in allowModify. Nothing deploys from a pull request. After the merge, a push to master plans the units it changed
-# (mirror-deploy-unit) and deploys nothing. A deployment is started with Run workflow, and its apply waits for the
-# reviewers of the unit's environment.
+# in allowModify. Nothing deploys from a pull request, and the merge starts nothing either. A deployment is started
+# with Run workflow (mirror-deploy-unit), and its apply waits for the reviewers of the unit's environment. The IDs a
+# deployment needs in allowCreate and allowModify are in this preview's comment.
 #
 # The pr-gate job is the required status check. A pull request can edit this workflow and so make its own check
 # pass. That is why mirror-deploy-unit plans again on master and checks everything itself before anything is
