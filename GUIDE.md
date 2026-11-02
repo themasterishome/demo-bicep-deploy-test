@@ -85,7 +85,7 @@ Nobody can deploy alone in the normal flow. The person who starts a run cannot a
 | GitHub plan | Free. Every environment control works on Free for a public repository | Enterprise Cloud, which a private repository needs for required reviewers |
 | Reviewers | The second account `klaudiomarashi`, as a user, with Prevent self-review on. A personal repository has no teams | Two approvers teams, `technology-services-platforms` for the production environments and `mirror-privileged-approvers` for the 12 privileged ones, with Prevent self-review on |
 | Code owners | `@themasterishome`, plus the second account | The approvers team |
-| Units | 7 pipeline units, 4 production and 3 privileged. all seven enabled | 67 pipeline units, 53 production and 14 privileged |
+| Units | 7 pipeline units, 4 production and 3 privileged | 67 pipeline units, 53 production and 14 privileged |
 | Identities | 4, with 5 federated credentials | 24, with 25 federated credentials |
 | Environments | 5, `mirror-reader`, `mirror-reader-dispatch`, `mirror-production-demo`, `mirror-privileged-demo` and `mirror-privileged-tenant` | 25 |
 | Custom roles | 7, which are Mirror What-If Reader, Mirror What-If Reader Tenant, Mirror Lock Writer, Mirror Deployment Operator, Mirror Deployment Operator Tenant, Mirror Key Vault Deployment and Mirror Platform Deployment | 9 |
@@ -103,6 +103,8 @@ What stays identical:
 - the OpenID Connect subjects, in the form `repo:OWNER@OWNER_ID/REPOSITORY@REPOSITORY_ID:environment:ENVIRONMENT`, and the lock on the identity group
 - the flow, which is a code pull request with a preview, a merge that starts nothing, Run workflow with the options, the approval, the apply, the second check and the evidence
 - the drift check, which starts with Run workflow or every Monday at 05:00 UTC once `MIRROR_DRIFT_SCHEDULE_ENABLED` is `true`, and whose `report` job keeps one GitHub issue up to date
+
+Under `.github`, the four workflow files, `dependabot.yml`, the helper script and six of its eight test fixtures are byte for byte the project's files. Four files hold the demo's own names and differ for that reason only. `CODEOWNERS` names `@themasterishome` as owner. `whatif-mg.json` names the management group `mg-demo`, and `whatif-review.json` names an extension `SamplePatchExtension`. The helper's tests use the demo's units, and they add a hold, a review boundary and a unit ending in `-hash-excluded` to copies of `boundaries.json` and `units.json`, because the demo's own files have none. The tests check the same rules as the project's. A diff that shows every line of a workflow as changed compares the CRLF line endings of a Windows working folder with the LF that git stores, because `.gitattributes` sets `text=auto`.
 
 What the demo cannot show:
 - a team as reviewer and as code owner, and a second, smaller team for the privileged environments, because a personal account has no teams. Here the same second account approves both tiers
@@ -939,7 +941,7 @@ The command prints nothing. If a line says `False`, or the second command prints
    gh variable set MIRROR_PIPELINE_ENABLED --body true --repo themasterishome/demo-bicep-deploy-test
    ```
 
-   In the browser, select **Settings**. In the left sidebar, select **Secrets and variables**, then **Actions**. Select the **Variables** tab and **New repository variable**. Type the name `MIRROR_PIPELINE_ENABLED` and the value `true`, and select **Add variable**.
+   Or, in the browser, select **Settings**. In the left sidebar, select **Secrets and variables**, then **Actions**. Select the **Variables** tab and **New repository variable**. Type the name `MIRROR_PIPELINE_ENABLED` and the value `true`, and select **Add variable**. Use one route only.
 
 2. Check it.
 
@@ -984,7 +986,7 @@ Project step 3.21 also checks the push ruleset against a branch made at an older
 
 This run proves the reader's sign-in through `mirror-reader-dispatch`. With every unit disabled the drift check has nothing to check, so it fails on purpose. The `report` job then opens the drift issue, which proves that the workflow may write issues.
 
-The `report` job writes the issue with the workflow's own token, so Issues must be on in the repository. Check it before the run.
+The `report` job writes the issue with the workflow's own token, so Issues must be on in the repository. Check it before the run. Close any drift issue still open from an earlier run, because the `report` job keeps one issue, and it would add a comment to the open one instead of opening a new one.
 
 ```powershell
 gh api repos/themasterishome/demo-bicep-deploy-test --jq .has_issues
@@ -1257,10 +1259,10 @@ This is project sections 4.2 to 4.8 and 4.10, for a production unit that creates
 
 The unit is enabled already, so this wave needs no pull request.
 
-1. Start the deployment of `rg-demo-routing`.
+1. Start the deployment of `rg-demo-routing`. In an empty group the unit creates four resources, `rt-demo`, `asg-demo`, the Automation account `aa-demo-secrets` and its credential `demo-cred`. A plan only, as in 4.3 item 4 with `unit=rg-demo-routing`, names all four and gives the ready command. It has this shape.
 
    ```powershell
-   gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-routing -f changeRef=DEMO-0005 -f reason="Wave 2, create the routing" -f apply=true -f allowCreate="/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-routing/providers/Microsoft.Network/routeTables/rt-demo,/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-routing/providers/Microsoft.Network/applicationSecurityGroups/asg-demo" --repo themasterishome/demo-bicep-deploy-test
+   gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-routing -f changeRef=DEMO-0005 -f reason="Wave 2, create the routing" -f apply=true -f allowCreate="/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-routing/providers/Microsoft.Network/routeTables/rt-demo,/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-routing/providers/Microsoft.Network/applicationSecurityGroups/asg-demo,/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-routing/providers/Microsoft.Automation/automationAccounts/aa-demo-secrets,/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-routing/providers/Microsoft.Automation/automationAccounts/aa-demo-secrets/credentials/demo-cred" --repo themasterishome/demo-bicep-deploy-test
    ```
 
 2. Approve it as the second account, watch the apply and download `evidence-deploy-rg-demo-routing`, as in wave 1. The second check shows `rt-demo`, `asg-demo`, `aa-demo-secrets` and `demo-cred` NoChange.
@@ -1312,7 +1314,7 @@ This is project step 3.23 item 8 and sections 4.2 to 4.8, for a privileged unit.
 
    Replace `ID1` and `ID2` with the two IDs. The **Run workflow** form is the same as for `rg-demo-network`, with `demo-privileged` as the unit.
 
-6. Show the waiting apply. After `plan demo-privileged` and `collect`, the job `apply-privileged demo-privileged` shows **Waiting**, for the environment `mirror-privileged-demo`. It is not the job `apply` and not the environment `mirror-production-demo`. The tier decided that. In the project, a smaller team approves here.
+6. Show the waiting apply. After `plan demo-privileged` and `collect`, the job `apply privileged demo-privileged` shows **Waiting**, for the environment `mirror-privileged-demo`. It is not the job `apply demo-privileged` and not the environment `mirror-production-demo`. The tier decided that. In the project, a smaller team approves here.
 
 7. Approve it as the second account. Read the plan first, as project section 4.5 asks for a privileged unit. Every role assignment and role definition is named, the ticket says who gains Owner and why, and nothing grants Owner, User Access Administrator or Role Based Access Control Administrator to more than the ticket states. Then select **Review deployments**, tick `mirror-privileged-demo`, write a comment naming `DEMO-0006`, and select **Approve and deploy**.
 
@@ -1324,10 +1326,15 @@ This is project step 3.23 item 8 and sections 4.2 to 4.8, for a privileged unit.
 
 This is the first tenant unit. It deploys at management group scope against the Tenant Root Group, whose name is the tenant ID, and it declares the management group `mg-demo` with `scope: tenant()`. A preview cannot run for a management group that does not exist yet, so `mg-demo` was created once by hand in step 3.15 item 8, and this unit previews and deploys it as NoChange. The project's group `FDMGroupResources` exists in the same way. The reader previews it with Reader and Mirror What-If Reader Tenant on the Tenant Root Group (step 3.14). `id-mirror-govern-tenant` deploys it, with User Access Administrator, Management Group Contributor and Mirror Deployment Operator Tenant there (step 3.15), after the approval in `mirror-privileged-tenant`.
 
-1. Enable the unit in a pull request. Create a branch, set `"enabled": true` in the entry of `demo-tenant-management-group` in `deploy/units.json`, then commit, push and open the pull request.
+1. Enable the unit in a pull request. Create a branch.
 
    ```powershell
    git switch --create enable-tenant-mg
+   ```
+
+   Open `deploy/units.json`, set `"enabled": true` in the entry of `demo-tenant-management-group` and save the file. Then commit, push and open the pull request.
+
+   ```powershell
    git commit --all --message "Enable the management group unit"
    git push -u origin enable-tenant-mg
    gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head enable-tenant-mg --title "Enable the management group unit" --body "Enable the management group unit"
@@ -1351,7 +1358,7 @@ This is the first tenant unit. It deploys at management group scope against the 
    gh workflow run mirror-deploy-unit.yml --ref master -f unit=demo-tenant-management-group -f changeRef=DEMO-0007 -f reason="Wave 5, the management group" -f apply=true --repo themasterishome/demo-bicep-deploy-test
    ```
 
-6. Show the waiting apply, `apply-privileged demo-tenant-management-group`, for the environment `mirror-privileged-tenant`. Approve it as the second account with **Review deployments**, ticking `mirror-privileged-tenant`, and a comment naming `DEMO-0007`.
+6. Show the waiting apply, `apply privileged demo-tenant-management-group`, for the environment `mirror-privileged-tenant`. Approve it as the second account with **Review deployments**, ticking `mirror-privileged-tenant`, and a comment naming `DEMO-0007`.
 
 7. Watch the apply. It signs in as `id-mirror-govern-tenant` and the gate step runs `az deployment mg` against the Tenant Root Group. The second check ends with `NoChange=1`. In the Azure portal, search for **Management groups**. The Tenant Root Group holds the group `Demo` (`mg-demo`) from step 3.15 item 8, unchanged.
 
@@ -1361,10 +1368,15 @@ This is the first tenant unit. It deploys at management group scope against the 
 
 This unit runs against `mg-demo`, which step 3.15 item 8 created. Its preview and its plan need the group to exist. It has its own pull request, so each tenant unit shows its own preview and approval.
 
-1. Enable the unit in a pull request. Create a branch and set `"enabled": true` in the entry of `demo-tenant-governance` in `deploy/units.json`. `readerPrincipalId` in `infra/tenant/governance.mg-demo.bicepparam` already holds the reader's `principalId`. Then commit, push and open the pull request.
+1. Enable the unit in a pull request. Create a branch.
 
    ```powershell
    git switch --create enable-tenant-governance
+   ```
+
+   Open `deploy/units.json`, set `"enabled": true` in the entry of `demo-tenant-governance` and save the file. `readerPrincipalId` in `infra/tenant/governance.mg-demo.bicepparam` already holds the reader's `principalId`. Then commit, push and open the pull request.
+
+   ```powershell
    git commit --all --message "Enable the management group governance unit"
    git push -u origin enable-tenant-governance
    gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head enable-tenant-governance --title "Enable the management group governance unit" --body "Enable the management group governance unit"
