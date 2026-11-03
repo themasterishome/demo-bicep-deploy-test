@@ -134,6 +134,7 @@ gh issue close ISSUE_NUMBER --comment "Closed before a new run of the demo" --re
 ```powershell
 gh api repos/themasterishome/demo-bicep-deploy-test/rulesets --jq ".[].name"
 ```
+
 ```powershell
 gh api repos/themasterishome/demo-bicep-deploy-test/environments --jq ".environments[].name"
 ```
