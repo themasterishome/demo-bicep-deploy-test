@@ -342,7 +342,7 @@ $example = az identity create --name id-mirror-example --resource-group rg-demo-
 $example | Select-Object name, clientId, principalId
 ```
 
-> Great, we have the managed identity. By itself, it has no Azure permissions yet; a role assignment will grant access at a particular scope. And a workload still needs a trusted sign-in path. We'll set that up with a federated credential in a moment.
+> Great, we have the managed identity. By itself, it has no Azure permissions yet. A role assignment grants access at a particular scope. A workload still needs a trusted sign-in path. We'll set that up with a federated credential in a moment.
 
 > Let's give it one permission for this example: the built-in Reader role, scoped only to this resource group. The GUID here is Reader's role definition ID.
 
@@ -354,7 +354,7 @@ If it answers `PrincipalNotFound`, the new identity is not in the directory yet.
 
 > That GUID is the built-in Reader role, the permission to read a scope. It is separate from the reader identity we saw a moment ago. Each managed identity of the pipeline holds only the roles its job needs, and only on the scope it needs. The real reader identity holds Reader and a small custom role so it can preview. The deploy identity holds Contributor, plus a few narrow roles, and it may write ordinary role assignments. Only the govern identities may write the Owner-class ones.
 
-> Before we create the trust, we need the repository's numeric ID. I'll save it in `$repoId`; the federated credential's subject uses it to bind trust to this specific repository, not just its name.
+> Before we create the trust, we need the repository's numeric ID. I'll save it in `$repoId`. The federated credential's subject uses it to bind trust to this specific repository, not just its name.
 
 ```powershell
 $repoId = gh api repos/themasterishome/demo-bicep-deploy-test --jq .id
@@ -384,7 +384,7 @@ gh variable list --env mirror-example --repo themasterishome/demo-bicep-deploy-t
 
 > The client ID is public. On its own, it cannot sign anyone in. Sign-in also needs the federated credential. A job on `master`, in this environment, can now sign in as this managed identity and read this one resource group, and nothing more. The real setup is this, repeated for each GitHub environment and each managed identity.
 
-> Now let's clean up the example in reverse order. First, I'll delete the GitHub environment; its variable is removed with it.
+> Now let's clean up the example in reverse order. First, I'll delete the GitHub environment. Its variable is removed with it.
 
 ```powershell
 gh api --method DELETE repos/themasterishome/demo-bicep-deploy-test/environments/mirror-example
@@ -504,7 +504,7 @@ The push prints the new commit range. On GitHub, the **Actions** tab shows a run
 git push test HEAD:refs/heads/sync-demo
 ```
 
-> With the branch on GitHub, I'll open a pull request from `sync-demo` into `master`. The body is just a description; later, we'll put the change ticket in the **Run workflow** input named `changeRef`.
+> With the branch on GitHub, I'll open a pull request from `sync-demo` into `master`. The body is just a description. Later, we'll put the change ticket in the **Run workflow** input named `changeRef`.
 
 ```powershell
 gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head sync-demo --title "Bring the demo up to date" --body "Bring the demo up to date"
@@ -580,7 +580,7 @@ git switch --create first-checks
 Add-Content -Path README.md -Value ''
 ```
 
-> The harmless README change is ready; I'll commit it.
+> The harmless README change is ready. I'll commit it.
 
 ```powershell
 git commit --all --message "First run of the checks"
@@ -662,7 +662,7 @@ gh run list --workflow mirror-drift.yml --limit 3 --repo themasterishome/demo-bi
 
 The run fails before any step, with `Branch "first-checks" is not allowed to deploy to mirror-reader-dispatch due to environment protection rules`, and the `report` job is skipped.
 
-> GitHub rejected the run before any step started. A workflow copied to another branch cannot use this environment; only `master` can. That branch restriction is part of how we protect every deployment environment.
+> GitHub rejected the run before any step started. A workflow copied to another branch cannot use this environment. Only `master` can. That branch restriction is part of how we protect every deployment environment.
 >
 > Now let's remove `first-checks` from the remote.
 
@@ -778,7 +778,7 @@ A run that fails in `select` names the input it refused, such as a unit whose en
 
 > Now the deployment itself, with `apply` on. Apply means: after a reviewer approves the plan, deploy it.
 >
-> The plan is ready. Now I'll start the same unit again with `apply` set to `true`, keeping ticket `DEMO-0003`; this time the run can deploy after approval.
+> The plan is ready. Now I'll start the same unit again with `apply` set to `true`, keeping ticket `DEMO-0003`. This time the run can deploy after approval.
 
 ```powershell
 gh workflow run mirror-deploy-unit.yml --ref master -f unit=pilot-empty-rg -f changeRef=DEMO-0003 -f reason="Pilot" -f apply=true --repo themasterishome/demo-bicep-deploy-test
@@ -798,7 +798,7 @@ In the private window, open the run, select **Review deployments**, tick `mirror
 gh run list --workflow mirror-deploy-unit.yml --limit 1 --repo themasterishome/demo-bicep-deploy-test
 ```
 
-> Now let's watch the run until it finishes. Replace `RUN_ID` with the long number in the list's `ID` column. It's also the number after `/actions/runs/` in the run address; the `#N` in the title is a different number. Put the actual ID here before running the command.
+> Now let's watch the run until it finishes. Replace `RUN_ID` with the long number in the list's `ID` column. It's also the number after `/actions/runs/` in the run address. The `#N` in the title is a different number. Put the actual ID here before running the command.
 
 ```powershell
 gh run watch RUN_ID --repo themasterishome/demo-bicep-deploy-test
@@ -816,7 +816,7 @@ An apply that runs at once, with no pause, means the GitHub environment has no r
 
 > Every deployment leaves evidence. In production this goes on the change ticket.
 >
-> The deployment has finished, so let's find its evidence artifact. This list shows each artifact's ID and name; we need `evidence-deploy-pilot-empty-rg`. Use the same `RUN_ID` from step 9.
+> The deployment has finished, so let's find its evidence artifact. This list shows each artifact's ID and name. We need `evidence-deploy-pilot-empty-rg`. Use the same `RUN_ID` from step 9.
 
 ```powershell
 gh api "repos/themasterishome/demo-bicep-deploy-test/actions/runs/RUN_ID/artifacts" --jq ".artifacts[] | [.id, .name] | @tsv"
@@ -830,7 +830,7 @@ The next commands use that run's artifact ID and artifact name.
 New-Item -ItemType Directory -Force C:\demo-setup\evidence-pilot | Out-Null
 ```
 
-> On Windows, `gh run download` fails for these artifacts because the zip contains the same entry twice. So we'll fetch the zip through the API instead. `cmd /c` keeps Windows PowerShell 5.1 from changing its bytes; fill in `ARTIFACT_ID` and `ARTIFACT_NAME` from the list above.
+> On Windows, `gh run download` fails for these artifacts because the zip contains the same entry twice. So we'll fetch the zip through the API instead. `cmd /c` keeps Windows PowerShell 5.1 from changing its bytes. Fill in `ARTIFACT_ID` and `ARTIFACT_NAME` from the list above.
 
 ```powershell
 cmd /c "gh api repos/themasterishome/demo-bicep-deploy-test/actions/artifacts/ARTIFACT_ID/zip > C:\demo-setup\evidence-pilot\ARTIFACT_NAME.zip"
@@ -1032,7 +1032,7 @@ gh workflow run mirror-deploy-unit.yml --ref master -f unit=demo-privileged -f c
 
 The plan's ready command lists two IDs: the Owner role assignment on `rg-demo-network`, and the role definition `Demo Reader Plus`.
 
-> The plan summary has the exact IDs. Copy both into `allowCreate` here; this run uses ticket `DEMO-0006`, the reason `Wave 4, the privileged unit`, and `apply` is on.
+> The plan summary has the exact IDs. Copy both into `allowCreate` here. This run uses ticket `DEMO-0006` and the reason `Wave 4, the privileged unit`. `apply` is on.
 
 ```powershell
 gh workflow run mirror-deploy-unit.yml --ref master -f unit=demo-privileged -f changeRef=DEMO-0006 -f reason="Wave 4, the privileged unit" -f apply=true -f allowCreate="ID1,ID2" --repo themasterishome/demo-bicep-deploy-test
@@ -1234,7 +1234,7 @@ Approve the run as `klaudiomarashi` and wait for it to finish.
 
 > The repair is an ordinary deployment, with a ticket and an approval. If the portal change had been the right one, we would bring it into the code with a pull request instead of deploying over it.
 
-> The repair is complete. Let's run the check one last time; every unit should now be clean, and the drift issue should close.
+> The repair is complete. Let's run the check one last time. Every unit should now be clean, and the drift issue should close.
 
 ```powershell
 gh workflow run mirror-drift.yml --ref master --repo themasterishome/demo-bicep-deploy-test
@@ -1250,7 +1250,7 @@ A run that lists `demo-subscription` as `DRIFT`, with NoRecord lines, means that
 
 > The check can also start by itself, every Monday at 05:00 UTC. It has its own switch, `MIRROR_DRIFT_SCHEDULE_ENABLED`, so it starts only when the team is ready to act on what it finds.
 >
-> To enable the weekly schedule, I'll set `MIRROR_DRIFT_SCHEDULE_ENABLED` to `true`. We should do that only when at least one unit is enabled; as step 5 showed, a run with every unit disabled fails on purpose.
+> To enable the weekly schedule, I'll set `MIRROR_DRIFT_SCHEDULE_ENABLED` to `true`. We should do that only when at least one unit is enabled. Step 5 showed that a run with every unit disabled fails on purpose.
 
 ```powershell
 gh variable set MIRROR_DRIFT_SCHEDULE_ENABLED --body true --repo themasterishome/demo-bicep-deploy-test
@@ -1280,7 +1280,7 @@ Follow GUIDE.md section 4.8 and then 4.10. The merge of each pull request starts
 
 ## Turning the demo off
 
-> That's the end of the demo. I'll switch the pipeline off again by setting `MIRROR_PIPELINE_ENABLED` to `false`; from then on, every workflow job will skip.
+> That's the end of the demo. I'll switch the pipeline off again by setting `MIRROR_PIPELINE_ENABLED` to `false`. From then on, every workflow job will skip.
 
 ```powershell
 gh variable set MIRROR_PIPELINE_ENABLED --body false --repo themasterishome/demo-bicep-deploy-test
