@@ -248,6 +248,10 @@ git push test HEAD:master
 ```
 
 ```powershell
+git push origin HEAD:refs/heads/sync-demo
+```
+
+```powershell
 gh auth refresh -h github.com -s workflow
 ```
 
