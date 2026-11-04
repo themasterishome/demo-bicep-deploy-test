@@ -484,25 +484,23 @@ git add deploy/units.json
 git commit -m "Disable every unit for the next demo"
 ```
 
-> Now I'll push `master` to the test repository. The workflows will arrive with the code, but the pipeline switch, `MIRROR_PIPELINE_ENABLED`, is still off, so every job will skip while the files are landing.
+> Now I'll push the updated `master` to the test repository. The workflows will arrive with the code, but the pipeline switch, `MIRROR_PIPELINE_ENABLED`, is still off, so every job will skip. In production, a ruleset requires this change to arrive through a pull request.
 
 ```powershell
 git push test HEAD:master
 ```
 
-The push prints the new commit range. On GitHub, the **Actions** tab shows a run of `mirror-validate` with every job skipped. `mirror-deploy-unit` shows no run, because it starts only with **Run workflow**.
+When the push succeeds, it prints the new commit range. On GitHub, open the **Actions** tab and look for `mirror-validate`. Its jobs should all be skipped because the pipeline switch is off. There should be no `mirror-deploy-unit` run because that workflow starts only when someone selects **Run workflow**.
 
-> In production, IT pushes the folder into its own repository, and the ruleset on `master` requires a pull request for that too.
+**Only if** the push is refused with `Repository rule violations found`, the `protect-master` ruleset is requiring a pull request. In that case, use the pull-request steps below to get the same commit into `master` instead of repeating the direct push.
 
-**Only if** the push is refused with `Repository rule violations found`, the ruleset `protect-master` requires a pull request. Say the following and run the commands through the reset.
-
-> The direct push to `master` was refused, so I'll send the same commit to a temporary branch called `sync-demo` instead.
+> The ruleset blocked the direct push, so I'll use the pull-request route instead. First, I'll push the same commit to a branch called `sync-demo`.
 
 ```powershell
 git push test HEAD:refs/heads/sync-demo
 ```
 
-> With the branch on GitHub, I'll open a pull request from `sync-demo` into `master`. The body is just a description. Later, we'll put the change ticket in the **Run workflow** input named `changeRef`.
+> Now that the commit is on GitHub, I'll open a pull request from `sync-demo` into `master`. The body is a short description. We'll enter the actual change ticket later in the `changeRef` field when we start the deployment.
 
 ```powershell
 gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head sync-demo --title "Bring the demo up to date" --body "Bring the demo up to date"
@@ -510,13 +508,13 @@ gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head 
 
 Approve the pull request as `klaudiomarashi`, then continue.
 
-> Once the pull request is approved, I'll squash-merge it and delete the branch. Because a squash merge creates a new commit, we'll bring local `master` up to date next.
+> Once `klaudiomarashi` approves the pull request, I'll squash-merge it and delete the temporary branch. The squash creates a new commit, so next we'll update local `master` to match it.
 
 ```powershell
 gh pr merge sync-demo --squash --delete-branch --repo themasterishome/demo-bicep-deploy-test
 ```
 
-> First, I'll fetch from the test remote so our local copy can see the merged commit.
+> First, I'll fetch from the test remote so the merged commit is available in our local copy.
 
 ```powershell
 git fetch test
@@ -528,7 +526,7 @@ git fetch test
 git switch master
 ```
 
-> The local and remote branches have different histories after a squash merge, so I'll align local `master` with `test/master`. That avoids a divergence stopping our later pulls.
+> The squash merge created a new commit, so local and remote `master` no longer have the same history. I'll make local `master` match `test/master` now so our later pulls start from the merged commit.
 
 ```powershell
 git reset --hard test/master
