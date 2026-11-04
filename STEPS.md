@@ -484,59 +484,15 @@ git add deploy/units.json
 git commit -m "Disable every unit for the next demo"
 ```
 
-> Now I'll push the updated `master` to the test repository. The workflows will arrive with the code, but the pipeline switch, `MIRROR_PIPELINE_ENABLED`, is still off, so every job will skip. In production, a ruleset requires this change to arrive through a pull request.
+> Now I'll push the updated `master` to the test repository, where direct pushes are allowed and the pipeline switch is still off, so every job will skip.
 
 ```powershell
 git push test HEAD:master
 ```
 
-When the push succeeds, it prints the new commit range. On GitHub, open the **Actions** tab and look for `mirror-validate`. Its jobs should all be skipped because the pipeline switch is off. There should be no `mirror-deploy-unit` run because that workflow starts only when someone selects **Run workflow**.
+The push prints the new commit range. On GitHub, open the **Actions** tab and look for `mirror-validate`. Its jobs should all be skipped because the pipeline switch is off. There should be no `mirror-deploy-unit` run because that workflow starts only when someone selects **Run workflow**.
 
-**Only if** the push is refused with `Repository rule violations found`, the `protect-master` ruleset is requiring a pull request. In that case, use the pull-request steps below to get the same commit into `master` instead of repeating the direct push.
-
-> The ruleset blocked the direct push, so I'll use the pull-request route instead. First, I'll push the same commit to a branch called `sync-demo`.
-
-```powershell
-git push test HEAD:refs/heads/sync-demo
-```
-
-> Now that the commit is on GitHub, I'll open a pull request from `sync-demo` into `master`. The body is a short description. We'll enter the actual change ticket later in the `changeRef` field when we start the deployment.
-
-```powershell
-gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head sync-demo --title "Bring the demo up to date" --body "Bring the demo up to date"
-```
-
-Approve the pull request as `klaudiomarashi`, then continue.
-
-> Once `klaudiomarashi` approves the pull request, I'll squash-merge it and delete the temporary branch. The squash creates a new commit, so next we'll update local `master` to match it.
-
-```powershell
-gh pr merge sync-demo --squash --delete-branch --repo themasterishome/demo-bicep-deploy-test
-```
-
-> First, I'll fetch from the test remote so the merged commit is available in our local copy.
-
-```powershell
-git fetch test
-```
-
-> Now let's switch back to `master`.
-
-```powershell
-git switch master
-```
-
-> The squash merge created a new commit, so local and remote `master` no longer have the same history. I'll make local `master` match `test/master` now so our later pulls start from the merged commit.
-
-```powershell
-git reset --hard test/master
-```
-
-> Let's confirm the newest commit is the squash merge we just brought in.
-
-```powershell
-git log --oneline -1
-```
+> In the production Enterprise repository, a ruleset protects `master`, so we'd push this same commit to a branch with a command like `git push origin HEAD:refs/heads/sync-demo` and open a pull request into `master`. We won't run those steps here because this test repository allows direct pushes, and this commit is already on `master`.
 
 A refusal that names the token scope means `gh auth refresh -h github.com -s workflow`. A refusal that names the account means `gh auth switch --hostname github.com --user themasterishome`, then `gh auth setup-git`.
 

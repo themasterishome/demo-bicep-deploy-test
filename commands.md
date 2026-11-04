@@ -248,34 +248,6 @@ git push test HEAD:master
 ```
 
 ```powershell
-git push test HEAD:refs/heads/sync-demo
-```
-
-```powershell
-gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head sync-demo --title "Bring the demo up to date" --body "Bring the demo up to date"
-```
-
-```powershell
-gh pr merge sync-demo --squash --delete-branch --repo themasterishome/demo-bicep-deploy-test
-```
-
-```powershell
-git fetch test
-```
-
-```powershell
-git switch master
-```
-
-```powershell
-git reset --hard test/master
-```
-
-```powershell
-git log --oneline -1
-```
-
-```powershell
 gh auth refresh -h github.com -s workflow
 ```
 
