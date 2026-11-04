@@ -258,19 +258,19 @@ A ruleset that requires a pull request refuses a direct push to `master`. Step 2
 
 ## Part 1. The opening
 
-> What I'm about to show you is how we manage Azure with code. The resources we look after, the estate, are written in Bicep so the file matches what is live. The code is the production environment. A resource changes in Azure only after the same change has gone through a pull request that somebody reviewed.
+> Let me show you how we manage Azure through code. We describe the resources in Bicep and keep that code aligned with what's live, so it acts as the source of truth for the production environment. When we change a resource through the pipeline, the proposed code has to go through a reviewed pull request first. Someone can still make a direct change in Azure, and later we'll see how the drift check finds it.
 >
-> This demo runs in my own test tenant, on a small made-up estate of seven units. A unit is one piece of the estate that deploys on its own, such as one resource group, the settings of one subscription, or one management group. The workflows, the scripts and the checks are the same files production uses.
+> Today we're using my test tenant and a deliberately small estate of seven units. Each unit is an independently deployed part of that estate, such as a resource group, a subscription's settings, or a management group. Although the estate is small, it uses the same workflows, scripts, and checks as production.
 >
-> There are four workflows. `mirror-validate` checks the code on every push, and it never calls Azure. `mirror-pr` previews every pull request against live Azure, and it changes nothing. `mirror-deploy-unit` deploys, and only when a person starts it and a second person approves that exact plan. `mirror-drift` checks whether live Azure still matches the code. In production that check runs every week.
+> Four workflows carry out the process. `mirror-validate` checks the code on every push without calling Azure, while `mirror-pr` previews each pull request against live Azure without changing anything. When we're ready to deploy, `mirror-deploy-unit` runs only after one person starts it and a second person approves that exact plan. Finally, `mirror-drift` checks whether live Azure still matches the code. In production, that check runs every week.
 >
-> I use two accounts today. `themasterishome` writes the change and starts every run. `klaudiomarashi`, in a private browser window, reviews pull requests and approves deployments. GitHub will not let the person who started a deployment approve it. That setting is Prevent self-review. It is the four-eyes rule: two people have to agree, and they cannot be the same person.
+> I'll use two accounts today. `themasterishome` writes the changes and starts each run, while `klaudiomarashi` reviews pull requests and approves deployments in a private browser window. GitHub's Prevent self-review setting stops the person who started a deployment from approving it, so two different people have to agree. That's the four-eyes rule.
 
-> In production, this runs on GitHub Enterprise Cloud, in a private repository of IT's organization, with about seventy units across eleven subscriptions and the tenant. The reviewers there are teams, and a smaller team approves anything that changes who has access to what.
+> In production, the same process runs on GitHub Enterprise Cloud in IT's private repository. It covers about seventy units across eleven subscriptions and the tenant, with teams as reviewers and a smaller team approving changes that affect access.
 
 ## Part 2. What was set up before, and one example of each
 
-> Before any of this can run, three things have to exist: GitHub environments in the repository, managed identities in Azure for the jobs to sign in as, and a federated credential that links each environment to one identity. Creating all of it takes a while, so I set it up before today. I'll make one of each in front of you, so you can see the pieces, and then I'll remove the example. Everything else was made the same way.
+> Before the pipeline can run, we need three pieces in place: GitHub environments, managed identities in Azure, and federated credentials that connect each environment to an identity. Setting up the whole system takes time, so I did that before today. I'll build one example of each now, explain how the pieces fit together, and then remove the example. The rest of the setup follows the same pattern.
 
 ### Show what is already there
 
@@ -280,9 +280,9 @@ List the GitHub environments. You will point at these names while you explain th
 gh api repos/themasterishome/demo-bicep-deploy-test/environments --jq ".environments[].name"
 ```
 
-> These are the five GitHub environments. A GitHub environment is a named place in the repository settings where a job runs. It has its own variables, its own rule about which branch may use it and, if we want, its own reviewers. A job that deploys always runs in a GitHub environment, so that is where the approval happens.
+> Here are the five GitHub environments. Each one is a named place in the repository settings where a job runs, with its own variables and branch rules, and optionally its own reviewers. Deployment jobs use an environment to apply those rules and wait for approval.
 >
-> Two of them are for the reader identity, which only ever previews. `mirror-reader` serves pull request previews, from any branch. `mirror-reader-dispatch` serves the plans and the drift check, from `master` only. The other three are where deployments wait for approval. One is for ordinary resources. Two are for the privileged units, the ones that change who has access.
+> Two environments are for the reader identity, which only previews changes. `mirror-reader` handles pull request previews from any branch, while `mirror-reader-dispatch` is reserved for plans and drift checks from `master`. The other three are where deployments wait for approval. One handles ordinary resources, and the other two handle privileged units that change access.
 
 List the managed identities in the locked resource group.
 
@@ -290,15 +290,15 @@ List the managed identities in the locked resource group.
 az identity list --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[].name" -o tsv
 ```
 
-> These are the four managed identities the pipeline signs in as. A managed identity means Azure holds the credential. Nobody can add a password or a client secret to it. The reader identity, `id-mirror-reader`, can only read and preview. The deploy identity, `id-mirror-deploy-demo`, writes ordinary resources. The two govern identities write the Owner-class role assignments and the custom roles, and nothing else.
+> These are the four managed identities used by the pipeline. Azure manages their credentials, so we don't have to store or rotate a password or client secret. The reader identity, `id-mirror-reader`, can only read and preview. The deploy identity, `id-mirror-deploy-demo`, writes ordinary resources, while the two govern identities can manage Owner-class role assignments and custom roles.
 >
-> A job proves who it is with a federated credential. GitHub hands the job a short-lived token that says which repository and which GitHub environment it came from. Azure accepts that token only when the managed identity trusts exactly that repository and that environment. There is no secret stored anywhere that someone could copy.
+> When a job needs to sign in, GitHub gives it a short-lived token identifying the repository and environment it came from. The managed identity's federated credential tells Azure which tokens to trust, so the job can exchange a matching token for access without a stored secret.
 
-> In production, there are twenty-five GitHub environments and twenty-four managed identities. Each subscription has its own deploy identity and its own govern identity. The identities sit in their own locked resource group in the platform subscription.
+> In production, this pattern scales to twenty-five GitHub environments and twenty-four managed identities. Each subscription has its own deploy identity and govern identity, and those identities live in a locked resource group in the platform subscription.
 
 ### One example, made and removed
 
-> I'll show you an example from scratch. First I'll create a GitHub environment, then a managed identity with one small role, just for this demo, and then the federated credential that ties the two together. Then I'll remove all of it.
+> Let's build one example from scratch. I'll create a GitHub environment, a managed identity with a narrowly scoped role, and a federated credential that connects them. Once we've seen how they work together, I'll remove everything we created.
 
 If an earlier run of this part stopped midway, run the removal commands at the end of this part first, so the names are free. `az group delete` takes a few minutes.
 
@@ -320,9 +320,9 @@ $branchPolicy = @{ protected_branches = $false; custom_branch_policies = $true }
 gh api --method POST repos/themasterishome/demo-bicep-deploy-test/environments/mirror-example/deployment-branch-policies -f name=master -f type=branch
 ```
 
-> The environment exists now, and only a run on `master` may enter it. A copy of the workflow on some other branch cannot use it, so that copy cannot sign in as the managed identity behind it either.
+> The environment is ready, and only a run from `master` can use it. That means a copy of the workflow on another branch cannot enter the environment or use the managed identity attached to it.
 
-> In production, the deployment environments also get the approvers team as required reviewers, with Prevent self-review on. The reader environments have no reviewers, because a preview changes nothing.
+> In production, each deployment environment also requires approval from the approvers team, with Prevent self-review enabled. The reader environments don't need reviewers because their previews make no changes.
 
 > Next, the identity needs a home. I'll create a resource group just for this example, so the cleanup cannot affect anything else.
 
@@ -336,13 +336,13 @@ az group create --name rg-demo-example --location uksouth --subscription 7748871
 $example = az identity create --name id-mirror-example --resource-group rg-demo-example --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --location uksouth -o json | Out-String | ConvertFrom-Json
 ```
 
-> Okay, now let's pick out the name, client ID and principal ID. That gives us a quick check of what we created and which identifier we'll use for each connection.
+> Now let's pick out the name, client ID, and principal ID. That gives us a quick look at what we created and shows which identifier we'll use for sign-in and for the role assignment.
 
 ```powershell
 $example | Select-Object name, clientId, principalId
 ```
 
-> Great, we have the managed identity. By itself, it has no Azure permissions yet. A role assignment grants access at a particular scope. A workload still needs a trusted sign-in path. We'll set that up with a federated credential in a moment.
+> Great, now we have our managed identity. On its own, it has no permissions to access Azure resources, so we'll give it a role at the scope it needs. In this example, that scope is the `rg-demo-example` resource group we just created. The role assignment determines what the identity can access. The federated credential sets the trusted sign-in path, so Azure knows which GitHub workload can use the identity. We'll create that in a moment.
 
 > Let's give it one permission for this example: the built-in Reader role, scoped only to this resource group. The GUID here is Reader's role definition ID.
 
@@ -352,7 +352,7 @@ az role assignment create --assignee-object-id $example.principalId --assignee-p
 
 If it answers `PrincipalNotFound`, the new identity is not in the directory yet. Wait a minute and run the same command again.
 
-> That GUID is the built-in Reader role, the permission to read a scope. It is separate from the reader identity we saw a moment ago. Each managed identity of the pipeline holds only the roles its job needs, and only on the scope it needs. The real reader identity holds Reader and a small custom role so it can preview. The deploy identity holds Contributor, plus a few narrow roles, and it may write ordinary role assignments. Only the govern identities may write the Owner-class ones.
+> That GUID identifies the built-in Reader role, which grants read access at the scope we chose. Notice that the role is separate from the reader identity we saw earlier. Each pipeline identity gets only the roles its job needs, and only at the scopes where it needs them. The real reader identity has Reader and a small custom role for previews, while the deploy identity has Contributor and a few narrower roles that let it manage ordinary role assignments. Only the govern identities can create the Owner-class assignments.
 
 > Before we create the trust, we need the repository's numeric ID. I'll save it in `$repoId`. The federated credential's subject uses it to bind trust to this specific repository, not just its name.
 
@@ -366,7 +366,7 @@ $repoId = gh api repos/themasterishome/demo-bicep-deploy-test --jq .id
 az identity federated-credential create --name github-mirror-example --identity-name id-mirror-example --resource-group rg-demo-example --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --issuer https://token.actions.githubusercontent.com --subject "repo:themasterishome@49098959/demo-bicep-deploy-test@${repoId}:environment:mirror-example" --audiences api://AzureADTokenExchange -o table
 ```
 
-> Look at the subject. It names the owner and the repository, each with its number, and then the GitHub environment. The numbers matter. A repository that is deleted and created again under the same name gets a new number, so the new repository cannot take over this trust.
+> Take a look at the subject. It identifies the owner and repository by their numbers, then names the GitHub environment. Those numbers matter because deleting and recreating a repository gives it a new ID, even if it has the same name. The new repository therefore cannot inherit this trust.
 
 > In production, the subject names IT's organization and repository in the same form, and the issuer is the one the enterprise uses.
 
@@ -382,7 +382,7 @@ gh variable set AZURE_CLIENT_ID --env mirror-example --body $example.clientId --
 gh variable list --env mirror-example --repo themasterishome/demo-bicep-deploy-test
 ```
 
-> The client ID is public. On its own, it cannot sign anyone in. Sign-in also needs the federated credential. A job on `master`, in this environment, can now sign in as this managed identity and read this one resource group, and nothing more. The real setup is this, repeated for each GitHub environment and each managed identity.
+> The client ID isn't a secret, and it can't authenticate a job by itself. The job also needs a matching federated credential. With both pieces in place, a job from `master` running in this environment can sign in as the managed identity, then read only this resource group because that's the scope of its Reader role. The production setup repeats this pairing for each environment and identity.
 
 > Now let's clean up the example in reverse order. First, I'll delete the GitHub environment. Its variable is removed with it.
 
@@ -414,7 +414,7 @@ az group delete --name rg-demo-example --subscription 77488719-1168-4d53-af9a-f5
 az group exists --name rg-demo-example --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7
 ```
 
-> The federated credential went with the managed identity. The real identities sit in a resource group with a delete lock, `mirror-identities-no-delete`, so nobody can remove them by accident. Removing one of those takes the lock off first, deletes each item by its ID, and puts the lock back.
+> The federated credential was removed along with the managed identity. The production identities are protected by a delete lock named `mirror-identities-no-delete`. If one ever needs to be removed, we first take off the lock, delete each item by its ID, and then put the lock back.
 
 ## Part 3. The demo
 
@@ -456,9 +456,9 @@ git log --oneline -3
 
 ### 2. Turn every unit off and push the folder (GUIDE.md steps 3.5 and 3.20)
 
-> First I'll turn every unit off. Each unit has an enabled flag in `deploy/units.json`. A unit is included in a deployment only after someone sets that flag in a reviewed change. The first deployment of a unit is a decision.
+> Before we do anything else, let's make sure nothing deploys by accident. Each unit has an enabled flag in `deploy/units.json`, and a unit is included only after that flag is turned on in a reviewed change. Enabling a unit is a deliberate decision, so we'll start this demo with every unit turned off.
 >
-> To keep the demo controlled, I'll turn every unit off first. This changes each enabled flag in `deploy/units.json` to `false`.
+> I'll set every enabled flag in the file to `false`.
 
 ```powershell
 (Get-Content deploy\units.json -Raw) -replace '"enabled": true', '"enabled": false' | Set-Content deploy\units.json -NoNewline
@@ -484,9 +484,7 @@ git add deploy/units.json
 git commit -m "Disable every unit for the next demo"
 ```
 
-> Now I'll push the code to GitHub. The workflows arrive with it. The pipeline switch, `MIRROR_PIPELINE_ENABLED`, is still off, so every job skips. Nothing can run while the folder is landing.
->
-> Now I'll push `master` to the test repository. The workflows will arrive with the code, but the pipeline switch is still off.
+> Now I'll push `master` to the test repository. The workflows will arrive with the code, but the pipeline switch, `MIRROR_PIPELINE_ENABLED`, is still off, so every job will skip while the files are landing.
 
 ```powershell
 git push test HEAD:master
@@ -546,7 +544,7 @@ A refusal that names the token scope means `gh auth refresh -h github.com -s wor
 
 ### 3. Turn the pipeline switch on (GUIDE.md step 3.20)
 
-> Every job of every workflow starts with one condition, the repository variable `MIRROR_PIPELINE_ENABLED`. I call it the pipeline switch. While it is not `true`, every job skips. If something ever looks wrong, one change stops the whole pipeline.
+> Every workflow checks the repository variable `MIRROR_PIPELINE_ENABLED` before its jobs run. I call it the pipeline switch because setting it to anything other than `true` stops every job. That gives us one place to pause the whole pipeline if something looks wrong.
 >
 > Now that the setup is in place, I'll turn the pipeline switch on by setting `MIRROR_PIPELINE_ENABLED` to `true`.
 
@@ -566,7 +564,7 @@ The list shows `MIRROR_PIPELINE_ENABLED` with the value `true`. Setting it start
 
 ### 4. The first validate run (GUIDE.md step 3.21)
 
-> The first thing I'll prove is the offline checks. I'll open a pull request that touches no unit, so nothing signs in to Azure.
+> First, I'll show that our offline checks work without signing in to Azure. I'll open a pull request that touches no deployment unit, so the change has nothing to preview.
 >
 > We'll start the first check from a new branch. I'll create `first-checks` and switch to it now.
 
@@ -600,13 +598,13 @@ gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head 
 
 Open the pull request in the browser and show the checks at the bottom of the **Conversation** tab.
 
-> Five jobs run on every push and every pull request, and none of them calls Azure. `secret-scan` looks for passwords and keys in the code. `actionlint` checks that the workflow files are valid. `workflow-hygiene` checks the pipeline's own rules and runs its tests. `preflight` compiles every unit and checks the layout of the code. `portability` checks that the scripts behave the same on Windows and on Linux. A mistake caught here is caught before any job signs in to Azure.
+> These five jobs run on every push and pull request without calling Azure. `secret-scan` looks for passwords and keys, while `actionlint` checks that the workflow files are valid. `workflow-hygiene` checks the pipeline rules and runs their tests, `preflight` compiles every unit and checks the code layout, and `portability` makes sure the scripts behave consistently on Windows and Linux. Because these checks run before any Azure sign-in, they can catch a problem before it reaches the deployment stage.
 >
-> `mirror-pr` runs as well. It works out which units this change touches. This change touches none, so there is no what-if to run, and its check, `pr-gate`, passes.
+> `mirror-pr` runs alongside them and works out which units the change touches. Since this pull request touches no units, there is no what-if to run and `pr-gate` passes.
 
 After a few minutes the five jobs are green. `mirror-pr` shows the job `plan` and a green `pr-gate`, with no `whatif` job. The ruleset `protect-master` requires those five jobs plus `pr-gate`, six checks in all. If a job fails, open it and read its first error (GUIDE.md section 5). If `protect-master` does not list the six checks yet, add them as GUIDE.md step 3.21, item 3, shows.
 
-> I'll close this pull request without merging, then return to `master`. We'll keep the branch because the next step uses it to start a run.
+> I'll close this pull request without merging and return to `master`. We'll keep the branch because the next step uses it to test the environment rule.
 >
 > First, I'll close the pull request.
 
@@ -622,9 +620,9 @@ git switch master
 
 ### 5. The first drift run (GUIDE.md step 3.22)
 
-> Next I'll prove two things. The reader identity can sign in from GitHub, and the drift check can open an issue. Every unit is switched off, so the check has nothing to inspect. It stops on purpose, and that stop is itself reported.
+> Next, I'll show that the reader identity can sign in from GitHub and that the drift workflow can report a problem through a repository issue. Every unit is off, so there is nothing to inspect. The check will stop on purpose, and the workflow should report that result.
 >
-> Let's start `mirror-drift` from `master` and watch the reader identity sign in before the check reports that there are no enabled units.
+> Let's start `mirror-drift` from `master` and watch the sign-in succeed before the check reports that no units are enabled.
 
 ```powershell
 gh workflow run mirror-drift.yml --ref master --repo themasterishome/demo-bicep-deploy-test
@@ -632,9 +630,9 @@ gh workflow run mirror-drift.yml --ref master --repo themasterishome/demo-bicep-
 
 Open the run from **Actions** > **mirror-drift** when it ends. The `azure/login` step is green. "Drift sweep (read-only)" fails, and its last line starts with `STOP: no enabled unit to check in deploy/units.json`. The `report` job prints `Drift report: issue #N is opened (error).` The **Issues** tab holds the issue.
 
-> The sign-in worked with no password, through the federated credential. And the result is an issue in the repository. The people who watch the repository get notified. A red run on its own is easy to miss. An issue is not.
+> The sign-in worked without a password because GitHub's token matched the federated credential. The workflow also opened an issue in the repository, which notifies the people watching it. A failed run can be easy to miss, but the issue makes the result visible.
 
-> With every unit disabled, the check cannot report a clean result, so the issue will stay open until we close it. First, let's list the open issues and note its number.
+> Since every unit is disabled, the check cannot report a clean result, and the issue will stay open until we close it. Let's list the open issues and note its number.
 
 ```powershell
 gh issue list --state open --repo themasterishome/demo-bicep-deploy-test
@@ -646,15 +644,13 @@ gh issue list --state open --repo themasterishome/demo-bicep-deploy-test
 gh issue close ISSUE_NUMBER --repo themasterishome/demo-bicep-deploy-test
 ```
 
-> Next, let's test the branch rule by starting the same check from `first-checks`, the branch we used in step 4.
->
-> I'll start `mirror-drift` from that branch.
+> Now let's test the branch rule. I'll start the same drift check from `first-checks`, the branch we created in step 4, and GitHub should block it before any job can run.
 
 ```powershell
 gh workflow run mirror-drift.yml --ref first-checks --repo themasterishome/demo-bicep-deploy-test
 ```
 
-> Give GitHub about 30 seconds to reject the run. Then let's check the three newest drift runs. The latest one should show a `failure` conclusion because the environment blocks it before any step can start.
+> Give GitHub about 30 seconds to reject the run, then check the three newest drift runs. The latest one should show a `failure` conclusion because the environment blocks it before any step starts.
 
 ```powershell
 gh run list --workflow mirror-drift.yml --limit 3 --repo themasterishome/demo-bicep-deploy-test
@@ -662,7 +658,7 @@ gh run list --workflow mirror-drift.yml --limit 3 --repo themasterishome/demo-bi
 
 The run fails before any step, with `Branch "first-checks" is not allowed to deploy to mirror-reader-dispatch due to environment protection rules`, and the `report` job is skipped.
 
-> GitHub rejected the run before any step started. A workflow copied to another branch cannot use this environment. Only `master` can. That branch restriction is part of how we protect every deployment environment.
+> GitHub rejected the run before any step started, just as we expected. A workflow copied to another branch can't use this environment because only `master` is allowed. We apply the same branch protection to every deployment environment.
 >
 > Now let's remove `first-checks` from the remote.
 
@@ -680,9 +676,9 @@ A failed sign-in with `AADSTS70021` means the federated credential's subject doe
 
 ### 6. A pull request and its preview (GUIDE.md section 4.2, items 1 and 2)
 
-> Now a real change. Every change starts the same way: a branch, an edit, and a pull request. I'll turn on the pilot unit. It deploys an empty template into an empty resource group. It proves the sign-in, the roles, the approval and the evidence, and it creates no resource.
+> Now let's move on to a real change. Every change follows the same path through a branch, an edit, and a pull request. I'll enable the pilot unit, which deploys an empty template to an empty resource group. That lets us prove the sign-in, permissions, approval, and evidence work together without creating any resources.
 >
-> The demo's resource groups were created by hand earlier. Before a preview looks for them, I'll make sure `rg-demo-pilot`, `rg-demo-network` and `rg-demo-routing` are there. It's safe to run this setup again.
+> We created the demo resource groups by hand earlier. Before running a preview, I'll make sure `rg-demo-pilot`, `rg-demo-network`, and `rg-demo-routing` exist. This setup is safe to repeat.
 
 ```powershell
 foreach ($g in 'rg-demo-pilot', 'rg-demo-network', 'rg-demo-routing') { az group create --name $g --location uksouth --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --tags purpose=demo-bicep-deploy --query properties.provisioningState -o tsv }
@@ -690,7 +686,7 @@ foreach ($g in 'rg-demo-pilot', 'rg-demo-network', 'rg-demo-routing') { az group
 
 The output is `Succeeded` three times.
 
-> Let's create and switch to a branch for this change: `enable-pilot`. Then I'll edit just the `pilot-empty-rg` enabled flag by hand, so we can see exactly which unit we're turning on.
+> I'll create a branch called `enable-pilot` and switch to it. Then I'll edit the `pilot-empty-rg` flag by hand, so we can see exactly which unit we're enabling.
 
 ```powershell
 git switch --create enable-pilot
@@ -718,7 +714,7 @@ gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head 
 
 Show the pull request. `mirror-pr` has a job `whatif pilot-empty-rg`. Its comment shows the gate PASS and no records.
 
-> This is the part reviewers like most. Before anyone merges, the pipeline previews the change against live Azure. Azure calls that preview a what-if. It reports what a deployment would do, and it writes nothing. The preview runs as the reader identity, which cannot write anything. The gate then judges every record of the preview. A record that would create, change or delete something nobody has named fails the gate. The reviewer reads what will really happen.
+> This is the part reviewers often find most useful. Before the pull request can be merged, the pipeline runs a what-if against live Azure. It shows what the deployment would do without changing anything, and it runs as the reader identity, which has no write access. The gate checks every record and stops the run if the plan includes a create, change, or delete that hasn't been explicitly named. That gives the reviewer a clear picture of what would actually happen.
 
 A `whatif` job that fails with `ResourceGroupNotFound` means `rg-demo-pilot` is missing. Run the first command of this step again. A refused push means the token lacks the `workflow` scope, or the active account is wrong (step 1).
 
@@ -726,7 +722,7 @@ A `whatif` job that fails with `ResourceGroupNotFound` means `rg-demo-pilot` is 
 
 In the private window, as `klaudiomarashi`, open the pull request, select **Files changed**, then **Review changes**, **Approve** and **Submit review**.
 
-> The second person approves the code. Now I'll merge it.
+> The second person has approved the code, so now I'll merge the pull request.
 >
 > After the second person approves, I'll squash-merge the pull request and delete its branch.
 
@@ -746,7 +742,7 @@ git switch master
 git pull test master
 ```
 
-> Let's check the recent deploy runs on `master`. This lets us confirm that merging the pull request did not start a deployment.
+> Let's look at the recent deploy runs on `master` and confirm that the merge didn't start a deployment.
 
 ```powershell
 gh run list --workflow mirror-deploy-unit.yml --branch master --limit 3 --repo themasterishome/demo-bicep-deploy-test
@@ -754,13 +750,13 @@ gh run list --workflow mirror-deploy-unit.yml --branch master --limit 3 --repo t
 
 No run of `mirror-deploy-unit` began at the merge.
 
-> Merging deployed nothing. That is on purpose. A deployment needs a change ticket, a reason, and a reviewer for that exact moment. A merge has none of those. The merge puts the code on `master`. The deployment is a separate step, and someone has to start it.
+> The merge changed the code on `master`, but it deployed nothing, and that's intentional. A deployment needs its own change ticket, reason, and reviewer for that specific run. Merging doesn't provide those details, so someone has to start the deployment as a separate step.
 
 GitHub refuses the merge while a required check is still running, or while the branch is not up to date. Wait for the checks, or select **Update branch**. If you are running alone, follow GUIDE.md section 3.0 and merge your own pull request. With the two accounts, `klaudiomarashi` approves first. If a run did start, open it and read its trigger. `mirror-deploy-unit.yml` starts only from `workflow_dispatch`, which is **Run workflow**.
 
 ### 8. A plan only (GUIDE.md section 4.2, item 11)
 
-> Before I deploy, I'll ask the pipeline for a plan. It is the same what-if, taken from `master`, and it deploys nothing. It is the safe way to see exactly what a deployment would do.
+> Before deploying, I'll ask the pipeline for a plan from `master`. It's a what-if, so it won't change anything. This lets us see exactly what the deployment would do before we decide whether to apply it.
 >
 > First, let's ask for a plan without applying it. I'll start `mirror-deploy-unit` for `pilot-empty-rg` with `apply` left off, using ticket `DEMO-0003` and a reason that says this is a plan only.
 
@@ -770,13 +766,13 @@ gh workflow run mirror-deploy-unit.yml --ref master -f unit=pilot-empty-rg -f ch
 
 Open the run "Deploy pilot-empty-rg (DEMO-0003)". The jobs `select`, `plan pilot-empty-rg` and `collect` run. The summary shows "Gate PASS, approvable" and ends with "This run was started as a plan only (apply is off). Nothing waits for a reviewer."
 
-> The run carries the change ticket and the reason, so anyone can see later why it ran. `select` checks the inputs. `plan` takes the what-if as the reader identity. `collect` sorts the plan into the right tier. Nothing waits, and nothing deploys.
+> The run records the change ticket and reason, so we can see later why it was started. The `select` job checks the inputs, `plan` runs the what-if as the reader identity, and `collect` sorts the result into the right tier. Since this is plan-only, it doesn't wait for approval and nothing gets deployed.
 
 A run that fails in `select` names the input it refused, such as a unit whose enabled flag is still `false`. Enable the unit (step 6) and start again. The same run can be started in the browser with **Actions** > **mirror-deploy-unit** > **Run workflow**. Keep `master`, and leave `apply` unticked.
 
 ### 9. Deploy the pilot, with an approval (GUIDE.md section 4.2, items 5 to 9)
 
-> Now the deployment itself, with `apply` on. Apply means: after a reviewer approves the plan, deploy it.
+> Now we're ready to run the deployment with `apply` turned on. That means it can deploy only after a reviewer has approved the plan.
 >
 > The plan is ready. Now I'll start the same unit again with `apply` set to `true`, keeping ticket `DEMO-0003`. This time the run can deploy after approval.
 
@@ -786,7 +782,7 @@ gh workflow run mirror-deploy-unit.yml --ref master -f unit=pilot-empty-rg -f ch
 
 Open the run. After `plan pilot-empty-rg` and `collect`, the job `apply pilot-empty-rg` shows **Waiting** for the GitHub environment `mirror-production-demo`. Show that waiting job in your own window first.
 
-> The deployment has stopped, and it is waiting for a reviewer. I started this run, so GitHub does not let me approve it. That is Prevent self-review. The reviewer reads the plan, the same records we saw in the plan-only run, and approves with a comment that names the ticket.
+> The deployment is paused while it waits for a reviewer. Since I started the run, GitHub won't let me approve it. That's Prevent self-review at work. The reviewer inspects the plan attached to this run and compares it with the plan-only preview, then approves with a comment that includes the ticket number.
 
 Do not select **Start all waiting jobs**. That is the administrator bypass, and it would approve the run as the person who started it. **Review deployments** shows nothing to tick on an old or finished run, so stay on the newest one.
 
@@ -806,7 +802,7 @@ gh run watch RUN_ID --repo themasterishome/demo-bicep-deploy-test
 
 The summary ends with `Gate step exit: 0, deployed, and the second check passed.` The run keeps the artifacts `reviewed-plan-pilot-empty-rg` and `evidence-deploy-pilot-empty-rg`.
 
-> After the approval, the apply job checks that `master` has not moved and that the plan is less than a day old. It signs in as the deploy identity, takes a fresh what-if, and compares it with the plan that was approved. That comparison is the first check. It deploys only when they match. Then it takes another what-if, the second check, which has to show nothing left to change. If anything differs at any of these points, the job stops.
+> After approval, the apply job first checks that `master` hasn't changed and that the plan is less than a day old. It then signs in as the deploy identity, takes a fresh what-if, and compares that result with the approved plan. This is the first check, and deployment proceeds only if the two plans match. After deploying, the job takes a second what-if to confirm there is nothing left to change. If either check finds a difference, the job stops.
 
 > In production, the reviewer is anyone in the approvers team except the person who started the run, and the comment names IT's change ticket.
 
@@ -814,9 +810,9 @@ An apply that runs at once, with no pause, means the GitHub environment has no r
 
 ### 10. Download the evidence (GUIDE.md section 4.2, item 10)
 
-> Every deployment leaves evidence. In production this goes on the change ticket.
+> Every deployment leaves evidence that shows what happened. In production, we attach that evidence to the change ticket.
 >
-> The deployment has finished, so let's find its evidence artifact. This list shows each artifact's ID and name. We need `evidence-deploy-pilot-empty-rg`. Use the same `RUN_ID` from step 9.
+> The deployment has finished, so let's find its evidence artifact. The list shows an ID and name for each artifact. Find `evidence-deploy-pilot-empty-rg` and use the same `RUN_ID` from step 9.
 
 ```powershell
 gh api "repos/themasterishome/demo-bicep-deploy-test/actions/runs/RUN_ID/artifacts" --jq ".artifacts[] | [.id, .name] | @tsv"
@@ -850,13 +846,13 @@ Get-ChildItem -Path C:\demo-setup\evidence-pilot -Recurse -Include approval.txt,
 
 The last command prints the paths of `approval.txt`, which has a `deployed=` line, and `post-summary.txt`, which says Gate PASS.
 
-> `approval.txt` records who ran it, which run, which options, and that it deployed. `post-summary.txt` is the second check. Together they show what was planned, what was approved, and what Azure ended up with.
+> `approval.txt` records who started the run, which options they chose, and whether it deployed. `post-summary.txt` contains the second check. Together, these files show what we planned, what the reviewer approved, and what Azure ended up with.
 
 ### 11. Wave 1, the network (GUIDE.md section 4.3)
 
 A wave is the next unit in the deploy order. Wave 0 was the pilot. Wave 1 creates the network.
 
-> Now real resources. The network unit creates a network security group, a virtual network, a private endpoint and its DNS, plus a lock, a policy assignment and a Reader role assignment on the group. I'll enable this unit, and the routing unit with it, in one pull request. Routing comes after the network, so it waits until this wave has finished.
+> Now we're moving on to the first units that create real resources. The network unit sets up a network security group, a virtual network, a private endpoint with its DNS, and the related lock, policy, and Reader assignment. I'll enable both the network and routing units in one pull request, but routing won't run until the network wave is complete.
 >
 > Let's create a branch for the network and routing changes, and switch to it.
 
@@ -904,7 +900,7 @@ git switch master
 git pull test master
 ```
 
-> Just as before, the merge started no deployment. Now I'll ask the pipeline for a plan.
+> Just as before, merging only updates the code and starts no deployment. I'll ask the pipeline for a plan now, so we can see what the network unit would create.
 >
 > I'll start a plan-only run for `rg-demo-network` with ticket `DEMO-0004`. The summary will give us the resource IDs, including two with GUIDs generated by Bicep, so I'll copy those from the output rather than guess them.
 
@@ -914,9 +910,9 @@ gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-network -f c
 
 Open that run. The plan is red, and its summary gives the ready command with the nine resource IDs.
 
-> The plan is red because it would create nine resources, and nobody has agreed to those creates yet. The gate does not let a Create through on its own. The person who starts the deployment has to name every resource that will be created, by its full resource ID, in an input called `allowCreate`. The reviewer sees that list. A resource the code would create that is not on the list stops the run.
+> The plan is red because it would create nine resources, and we haven't approved those creates yet. The gate requires the person starting the deployment to list every resource by its full resource ID in `allowCreate`. The reviewer can then check that list, and the run stops if the plan includes any create that wasn't named.
 
-> The summary gives a ready command, with the nine resource IDs already filled in. This is that command, in shape. Copy the IDs from the summary into `allowCreate`. The ticket is `DEMO-0004` and the reason is `Wave 1, create the network`. `apply` is on, so after the approval it deploys. GUIDE.md section 4.3, item 5, lists the nine IDs.
+> The summary gives us a ready-to-use command with the nine resource IDs. Copy those IDs into `allowCreate` here, then check the ticket and reason before running it. This deployment uses ticket `DEMO-0004`, the reason `Wave 1, create the network`, and `apply` is on, so it will wait for approval before it deploys. GUIDE.md section 4.3, item 5, lists the nine IDs.
 
 ```powershell
 gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-network -f changeRef=DEMO-0004 -f reason="Wave 1, create the network" -f apply=true -f allowCreate="ID1,ID2,ID3,ID4,ID5,ID6,ID7,ID8,ID9" --repo themasterishome/demo-bicep-deploy-test
@@ -928,15 +924,15 @@ The plan shows the verdict approvable and nine Create records. After the approva
 
 In the portal, `rg-demo-network` holds `nsg-demo` and `vnet-demo`. The lock `lock-rg-demo-network` shows under **Locks**.
 
-> The second check is a fresh what-if, and it does not get the list of allowed creates. So this pass means each resource was created as the code describes.
+> The second check runs a fresh what-if without the `allowCreate` list. Since it passes, we know the gate found no differences beyond the documented `Ignore` and `Modify` cases, so the resources are in the expected state under those rules.
 
 Download the evidence as in step 10, with `evidence-deploy-rg-demo-network`. If the resources exist already, the plan shows NoChange and passes with no `allowCreate`, and the apply still waits for the reviewer. A red plan with exit code 2 names a setup problem (GUIDE.md section 5).
 
 ### 12. Wave 2, the routing (GUIDE.md section 4.4)
 
-> The routing unit was enabled in the same pull request, so it needs no new one. It comes second in the order, so it deploys after the network has finished. It also holds an Automation account with a credential. The password for that credential lives in a Key Vault. No file in the repository holds that password.
+> We enabled routing in the same pull request, so there is no need to open another one. It runs after the network because it is second in the deployment order. This unit also creates an Automation account and a credential for it. The credential's password stays in Key Vault, so it never appears in the repository.
 
-> I'll start this only after the run of step 11 has finished. First the plan, so we can read the Create records before anyone approves a deployment.
+> I'll wait for the network deployment in step 11 to finish before starting routing. As before, we'll begin with a plan and review its Create records before anyone approves the deployment.
 >
 > The network wave is complete. Next, let's get a plan for `rg-demo-routing` with ticket `DEMO-0005`.
 
@@ -946,7 +942,7 @@ gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-routing -f c
 
 In an empty group the plan is red with four Creates: `rt-demo`, `asg-demo`, the Automation account `aa-demo-secrets` and its credential `demo-cred`.
 
-> The plan summary gives us the command to run. Here it is with all four resource IDs filled in: `apply` is on, the ticket is `DEMO-0005`, and `allowCreate` names every resource in the plan. The reason is `Wave 2, create the routing`.
+> The plan summary gives us the exact command and all four resource IDs. Here, `allowCreate` names every resource in the plan, `apply` is on, and the ticket is `DEMO-0005`. The reason tells the reviewer that this run creates the routing.
 
 ```powershell
 gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-routing -f changeRef=DEMO-0005 -f reason="Wave 2, create the routing" -f apply=true -f allowCreate="/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-routing/providers/Microsoft.Network/routeTables/rt-demo,/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-routing/providers/Microsoft.Network/applicationSecurityGroups/asg-demo,/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-routing/providers/Microsoft.Automation/automationAccounts/aa-demo-secrets,/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-routing/providers/Microsoft.Automation/automationAccounts/aa-demo-secrets/credentials/demo-cred" --repo themasterishome/demo-bicep-deploy-test
@@ -956,11 +952,11 @@ If the resources exist already, the plan is green with no Create and the deploym
 
 The second check shows `rt-demo`, `asg-demo`, `aa-demo-secrets` and `demo-cred` as NoChange.
 
-> The deployment read the password from the vault at the moment it ran, through the `az.getSecret` function in the parameters file. The evidence shows `<secure input, not recorded>` in its place. The password is in no log and in no file.
+> When the deployment needed the password, it read it directly from Key Vault using `az.getSecret` in the parameters file. The evidence replaces the value with `<secure input, not recorded>`, so the password never appears in a log or in a repository file.
 
 > In production, the same vault pattern holds the VPN shared keys. IT loads them into the vault once, and the code reads them at deployment.
 
-> Now let's deploy the same code a second time. The plan should contain no Creates, so this run needs no `allowCreate` list. The reason records that we're applying the same commit again.
+> Now let's deploy the same code a second time. Since the first deployment already created the resources, the plan should contain no Creates and won't need an `allowCreate` list. The reason records that we're applying the same commit again.
 
 ```powershell
 gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-routing -f changeRef=DEMO-0005 -f reason="Wave 2, the second deployment of the same commit" -f apply=true --repo themasterishome/demo-bicep-deploy-test
@@ -968,7 +964,7 @@ gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-routing -f c
 
 Approve it as in step 9. The plan, the first check and the second check all show `NoChange=4`, and the gate step exits 0.
 
-> This is the proof that the code is a true mirror of what is live. Deploying the same commit again finds nothing to change. That is what we aim for with every unit in production.
+> This shows that the code now matches what's live. When we deploy the same commit again, Azure finds nothing to change. That's the state we want every production unit to reach.
 
 A failure that names the vault means the deploy identity lacks the role Mirror Key Vault Deployment on that vault (GUIDE.md step 3.15). GUIDE.md section 4.4 explains the proof.
 
@@ -976,7 +972,7 @@ A failure that names the vault means the deploy identity lacks the role Mirror K
 
 This demo has no wave 3. `demo-subscription` stays disabled, on purpose. The next unit is wave 4.
 
-> Some resources control access, such as an Owner role assignment or a custom role. Those live in a privileged unit, with their own managed identity and their own GitHub environment. An identity that can both create resources and grant access is, in effect, Owner of the subscription. So the deploy identity cannot grant Owner. Access changes go through a second door.
+> Some resources control who has access, such as Owner role assignments and custom roles. We put those in a privileged unit with its own managed identity and GitHub environment. If the ordinary deploy identity could both create resources and grant access, it could effectively make itself an Owner. That's why it cannot grant Owner. Access changes have to go through a separate, more restricted path.
 >
 > Let's create and switch to a branch for the privileged unit: `enable-privileged`.
 
@@ -1040,15 +1036,15 @@ gh workflow run mirror-deploy-unit.yml --ref master -f unit=demo-privileged -f c
 
 The job that waits is `apply privileged demo-privileged`. It is not named `apply demo-privileged`. It waits in the GitHub environment `mirror-privileged-demo`, and it deploys as the govern identity `id-mirror-govern-demo`. The second check ends with `NoChange=2`.
 
-> This run is waiting in a different GitHub environment. The tier of the unit decided that. The person who started the run did not pick it. Before approving, the reviewer checks that every role assignment is named, and that nobody gains Owner beyond what the ticket says.
+> Notice that this run is waiting in a different GitHub environment. The unit's tier selected that environment automatically, not the person who started the run. Before approving, the reviewer checks that every role assignment is named and that nobody gets Owner access beyond what the ticket allows.
 
-> In production, a smaller team approves the privileged environments. That team is the people who may change who has access to what. In the demo, the same second account approves both tiers, because a personal account has no teams.
+> In production, only a smaller team can approve the privileged environments because that team is responsible for access changes. In this demo, the same second account approves both tiers since a personal account can't belong to the approver teams.
 
 Approve it in `mirror-privileged-demo` as `klaudiomarashi`, with a comment that names `DEMO-0006`. A production unit that declares an Owner assignment fails the `preflight` job of `mirror-validate`. That is the other half of the same rule: the code is refused before anyone can deploy it from the ordinary tier.
 
 ### 14. Wave 5, the management group (GUIDE.md section 4.6)
 
-> Not everything lives in a subscription. Management groups sit above the subscriptions, so their units deploy at tenant level, with a managed identity of their own.
+> Not everything lives inside a subscription. Management groups sit above subscriptions, so their units deploy at the tenant level and use their own managed identity.
 >
 > Next, let's create and switch to a branch for the tenant management-group unit: `enable-tenant-mg`.
 
@@ -1096,7 +1092,7 @@ git switch master
 git pull test master
 ```
 
-> Azure can't run a what-if against a management group that doesn't exist yet, so we created `mg-demo` by hand beforehand. This unit updates that existing group, and the pull-request preview showed no Creates. That means we can start the deployment directly, without a separate plan-only run or an `allowCreate` list. The ticket is `DEMO-0007`.
+> We created `mg-demo` by hand because Azure can't run a what-if against a management group that doesn't exist yet. This unit updates that existing group, and the pull-request preview showed no Creates. So we can go straight to deployment without a separate plan-only run or an `allowCreate` list. We'll use ticket `DEMO-0007`.
 >
 > Let's start that deployment now.
 
@@ -1106,13 +1102,13 @@ gh workflow run mirror-deploy-unit.yml --ref master -f unit=demo-tenant-manageme
 
 Approve the waiting job `apply privileged demo-tenant-management-group` in the GitHub environment `mirror-privileged-tenant`, as `klaudiomarashi`, with a comment that names `DEMO-0007`. The apply signs in as `id-mirror-govern-tenant`. The second check passes with `NoChange=1`.
 
-> In production, the management group above the subscriptions is found the same way. The tenant units deploy with the tenant govern identity, after the privileged team's approval.
+> In production, we find the management group above the subscriptions the same way. Tenant-level units then deploy with the tenant govern identity, but only after the privileged team approves them.
 
 `AuthorizationFailed` on a tenant unit means the reader identity lacks Reader, or lacks Mirror What-If Reader Tenant, on the Tenant Root Group (GUIDE.md step 3.14, item 3).
 
 ### 15. Wave 6, the Reader role assignment on the management group (GUIDE.md section 4.7)
 
-> The last unit gives the reader identity the Reader role on the management group. It has its own pull request, so each tenant unit has its own preview and its own approval.
+> This final unit assigns the Reader role to the reader identity at the management-group scope. It has a separate pull request, which gives each tenant unit its own preview and approval.
 >
 > For the final tenant unit, let's create and switch to `enable-tenant-governance`.
 
@@ -1178,9 +1174,9 @@ Approve the waiting job `apply privileged demo-tenant-governance` in `mirror-pri
 
 ### 16. The drift check and the drift issue (GUIDE.md section 4.9)
 
-> Everything we deployed matches the code. People still have the portal. If someone changes a resource by hand, live Azure and the code drift apart. The drift check finds that. It runs a what-if of every enabled unit, read-only, and keeps one GitHub issue up to date with what it found.
+> Everything we've deployed now matches the code, but people can still make changes in the portal. When someone changes a resource by hand, live Azure and the code drift apart. The drift check catches those differences by running a read-only what-if for every enabled unit, then keeping a single GitHub issue up to date with its findings.
 
-> I'll wait for each run to finish before the next one. A drift run started while another one is still waiting replaces the waiting one.
+> I'll wait for each run to finish before starting the next one. If another drift run starts while one is still waiting, GitHub replaces the waiting run.
 >
 > Before we run the drift check, let's look at its recent runs. We'll use this view to track each run in this part.
 
@@ -1188,7 +1184,7 @@ Approve the waiting job `apply privileged demo-tenant-governance` in `mirror-pri
 gh run list --workflow mirror-drift.yml --limit 3 --repo themasterishome/demo-bicep-deploy-test
 ```
 
-> First, let's confirm the clean baseline: we'll run `mirror-drift` from `master` while everything still matches the code.
+> We'll start with a clean baseline by running `mirror-drift` from `master` while everything still matches the code.
 
 ```powershell
 gh workflow run mirror-drift.yml --ref master --repo themasterishome/demo-bicep-deploy-test
@@ -1196,13 +1192,13 @@ gh workflow run mirror-drift.yml --ref master --repo themasterishome/demo-bicep-
 
 The run is green. The `report` job prints `Drift report: every checked unit is clean, and no drift issue is open.`
 
-> I'll change a tag on the route table in the portal, outside the code.
+> Now I'll make a small change directly in the portal by adding a tag to the route table. That gives us a simple example of drift to find.
 
 In the Azure portal, search for **Route tables**, select `rt-demo`, select **Tags**, add the name `changedBy` with the value `portal` and select **Apply**.
 
-> I just did what happens in real life. Someone fixed something in the portal, outside the code.
+> That's a common real-world situation. Someone makes a quick fix in the portal, but the code hasn't caught up yet.
 
-> I've changed the tag outside the code. Now let's run the drift check again and see whether it finds the difference.
+> I've changed the tag outside the code, so let's run the drift check again and see if it spots the difference.
 
 ```powershell
 gh workflow run mirror-drift.yml --ref master --repo themasterishome/demo-bicep-deploy-test
@@ -1212,9 +1208,9 @@ The run is red. `rg-demo-routing` is `DRIFT`, with a Modify on `rt-demo` that re
 
 Open the **Issues** tab and show the issue. It lists `rg-demo-routing` and links the run.
 
-> The check changed nothing in Azure. It only reports. The issue is the alert. The people who watch the repository are notified when it opens, and the issue says which unit drifted and links the evidence.
+> The drift check hasn't changed anything in Azure. It only reports what it found, and the GitHub issue acts as the alert. People watching the repository are notified when that issue opens, and the report tells them which unit drifted and links to the evidence.
 
-> Nothing else has changed, so let's run the check once more and see how it handles the same finding a second time.
+> Nothing else has changed. Let's run the check once more and see how the workflow handles the same finding when it comes back.
 
 ```powershell
 gh workflow run mirror-drift.yml --ref master --repo themasterishome/demo-bicep-deploy-test
@@ -1222,9 +1218,9 @@ gh workflow run mirror-drift.yml --ref master --repo themasterishome/demo-bicep-
 
 The `report` job prints `Drift report: issue #N is updated with this run, and its findings are the same (drift).` It adds no comment.
 
-> The findings are the same, so it updates the run link and stays quiet. Nobody gets the same alert every week.
+> The findings haven't changed, so the workflow updates the run link without adding another comment. That way, people don't receive the same alert every week.
 
-> To repair the drift, we'll deploy the value already recorded in the code. Because `rt-demo` exists, we need to name it in `allowModify`. This run uses ticket `DEMO-0010`, and `apply` is on.
+> To repair the drift, we'll deploy the value that's already recorded in the code. Since `rt-demo` already exists, we need to name it in `allowModify`. We'll run this with ticket `DEMO-0010` and `apply` turned on.
 
 ```powershell
 gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-routing -f changeRef=DEMO-0010 -f reason="Undo the drift on rt-demo" -f apply=true -f allowModify=/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-routing/providers/Microsoft.Network/routeTables/rt-demo --repo themasterishome/demo-bicep-deploy-test
@@ -1232,9 +1228,9 @@ gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-routing -f c
 
 Approve the run as `klaudiomarashi` and wait for it to finish.
 
-> The repair is an ordinary deployment, with a ticket and an approval. If the portal change had been the right one, we would bring it into the code with a pull request instead of deploying over it.
+> This is still an ordinary deployment, so it has a ticket and needs approval. If the portal change had been the right one, we would update the code through a pull request instead of deploying over that change.
 
-> The repair is complete. Let's run the check one last time. Every unit should now be clean, and the drift issue should close.
+> The repair is complete, so let's run the check one last time. We expect every unit to be clean and the drift issue to close.
 
 ```powershell
 gh workflow run mirror-drift.yml --ref master --repo themasterishome/demo-bicep-deploy-test
@@ -1242,15 +1238,15 @@ gh workflow run mirror-drift.yml --ref master --repo themasterishome/demo-bicep-
 
 The run is green. The `report` job prints `Drift report: every checked unit is clean, so issue #N is closed.` The issue is closed with a comment.
 
-> When everything is clean again, the issue closes itself.
+> Once the check confirms that everything is back in sync, it closes the issue for us.
 
 A run that lists `demo-subscription` as `DRIFT`, with NoRecord lines, means that unit is enabled. The subscription holds resource groups that are not part of the demo, such as WinServ2022, Automation, coach01 to coach29 and consultant01 to consultant13. Leave them alone, and keep `demo-subscription` disabled. A drift run that reports another resource group the code does not declare means the subscription holds another group. The summary names it. A `report` job that fails means Issues are off. `klaudiomarashi` is notified only when that account watches the repository.
 
 ### 17. Turn on the weekly drift run
 
-> The check can also start by itself, every Monday at 05:00 UTC. It has its own switch, `MIRROR_DRIFT_SCHEDULE_ENABLED`, so it starts only when the team is ready to act on what it finds.
+> The drift check can also run automatically every Monday at 05:00 UTC. We control that schedule with `MIRROR_DRIFT_SCHEDULE_ENABLED`, and we turn it on only when the team is ready to respond to anything it finds.
 >
-> To enable the weekly schedule, I'll set `MIRROR_DRIFT_SCHEDULE_ENABLED` to `true`. We should do that only when at least one unit is enabled. Step 5 showed that a run with every unit disabled fails on purpose.
+> To enable the weekly schedule, I'll set `MIRROR_DRIFT_SCHEDULE_ENABLED` to `true`. We should turn it on only when at least one unit is enabled, since step 5 showed that a run with every unit disabled fails on purpose.
 
 ```powershell
 gh variable set MIRROR_DRIFT_SCHEDULE_ENABLED --body true --repo themasterishome/demo-bicep-deploy-test
@@ -1264,19 +1260,19 @@ gh variable list --repo themasterishome/demo-bicep-deploy-test
 
 The list shows `MIRROR_DRIFT_SCHEDULE_ENABLED` with the value `true`. The next Monday, the runs of `mirror-drift` include one whose event is `schedule`. The demo does not wait for that Monday. **Run workflow** runs the same two jobs.
 
-> In production, the weekly start stays off until IT is ready for it, and then IT sets the same variable. GitHub tells only the last person who edited the schedule about a failed scheduled run. That is one more reason the result is an issue, which everyone watching the repository can see.
+> In production, IT leaves the weekly schedule off until the team is ready to use it, then turns it on with the same variable. GitHub notifies only the person who last edited the schedule when a scheduled run fails. That's another reason we report drift through an issue, where everyone watching the repository can see it.
 
 A weekly run that skipped every job means this variable is not `true`, or the pipeline switch is off.
 
 ### 18. A change after the baseline, and a rollback (optional, GUIDE.md sections 4.8 and 4.10)
 
-> Once a unit mirrors what is live, every later change is a normal pull request. If a change turns out wrong, the rollback is the same route in reverse: a revert in git, a what-if, an approval, and a deployment.
+> Once a unit matches what's live, every later change follows the normal pull-request process. If a change turns out to be wrong, we roll it back the same way in reverse: revert it in Git, run a what-if, get approval, and deploy the correction.
 
 Follow GUIDE.md section 4.8 and then 4.10. The merge of each pull request starts no run. The resource IDs for `allowModify` are in the preview's comment. The second check ends with `NoChange=2` after the rule is added, and `nsg-demo` is NoChange again after the rollback. GUIDE.md section 5 lists the causes when something fails.
 
 ## The closing
 
-> To sum up. Every change is code, reviewed in a pull request that carries a real what-if. A deployment happens only when a person starts it, a second person approves that exact plan, and a second check passes afterwards. The pipeline signs in with federated credentials, and no stored secret. The identities that write can sign in from `master` only. A change to who has access goes through the privileged tier, which is a separate door. And every week the drift check looks for a difference between live Azure and the code, and tells us when it finds one.
+> To bring it all together, every change starts as code and is reviewed in a pull request with a real what-if. A deployment starts only when someone requests it, a second person approves that exact plan, and the follow-up check passes. The pipeline signs in through federated credentials without storing secrets, and write-capable identities can be used only from `master`. Changes to access go through the more restricted privileged tier. Then, every week, the drift check compares live Azure with the code and lets us know if they no longer match.
 
 ## Turning the demo off
 
