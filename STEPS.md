@@ -640,6 +640,8 @@ foreach ($g in 'rg-demo-pilot', 'rg-demo-network', 'rg-demo-routing') { az group
 
 The output is `Succeeded` three times.
 
+> In production, IT creates only the pilot's resource group, under the pilot's change ticket, and it needs no tags. Every other group exists already, because the code mirrors what is live.
+
 > I'll create a branch called `enable-pilot` and switch to it. Then I'll edit the `pilot-empty-rg` flag by hand, so we can see exactly which unit we're enabling.
 
 ```powershell
@@ -676,9 +678,9 @@ A `whatif` job that fails with `ResourceGroupNotFound` means `rg-demo-pilot` is 
 
 In the private window, as `klaudiomarashi`, open the pull request, select **Files changed**, then **Review changes**, **Approve** and **Submit review**.
 
-> The second person has approved the code, so now I'll merge the pull request.
->
-> After the second person approves, I'll squash-merge the pull request and delete its branch.
+> The second person has approved the code, so now I'll squash-merge the pull request and delete its branch.
+
+> In production, that approval has to come from a member of the approvers team. The CODEOWNERS file names that team, and the repository's ruleset on `master` asks for a code owner's review before any merge.
 
 ```powershell
 gh pr merge enable-pilot --squash --delete-branch --repo themasterishome/demo-bicep-deploy-test
@@ -705,6 +707,8 @@ gh run list --workflow mirror-deploy-unit.yml --branch master --limit 3 --repo t
 No run of `mirror-deploy-unit` began at the merge.
 
 > The merge changed the code on `master`, but it deployed nothing, and that's intentional. A deployment needs its own change ticket, reason, and reviewer for that specific run. Merging doesn't provide those details, so someone has to start the deployment as a separate step.
+
+> As in production, the merge starts the checks on `master`, and we wait for them to go green before anyone starts a deployment.
 
 GitHub refuses the merge while a required check is still running, or while the branch is not up to date. Wait for the checks, or select **Update branch**. If you are running alone, follow GUIDE.md section 3.0 and merge your own pull request. With the two accounts, `klaudiomarashi` approves first. If a run did start, open it and read its trigger. `mirror-deploy-unit.yml` starts only from `workflow_dispatch`, which is **Run workflow**.
 
@@ -739,6 +743,8 @@ Open the run. After `plan pilot-empty-rg` and `collect`, the job `apply pilot-em
 > The deployment is paused while it waits for a reviewer. Since I started the run, GitHub won't let me approve it. That's Prevent self-review at work. The reviewer inspects the plan attached to this run and compares it with the plan-only preview, then approves with a comment that includes the ticket number.
 
 Do not select **Start all waiting jobs**. That is the administrator bypass, and it would approve the run as the person who started it. **Review deployments** shows nothing to tick on an old or finished run, so stay on the newest one.
+
+> In production, that bypass stays on as the break-glass route for an emergency, but only the two or three organization owners hold Admin on the repository. An approval and a bypass both show in the environment's deployment record, and the owners read those records every month.
 
 In the private window, open the run, select **Review deployments**, tick `mirror-production-demo`, write a comment that names `DEMO-0003` and select **Approve and deploy**.
 
@@ -920,11 +926,15 @@ Approve it as in step 9. The plan, the first check and the second check all show
 
 > This shows that the code now matches what's live. When we deploy the same commit again, Azure finds nothing to change. That's the state we want every production unit to reach.
 
+> Two inputs of the form stay empty in this demo. In production, `allowHeld` lifts a hold, for example on the VPN gateways, and `acknowledgeReview` is ticked when the reviewer accepts the plan's review items. The demo has no hold and no review item, so we never need them here.
+
 A failure that names the vault means the deploy identity lacks the role Mirror Key Vault Deployment on that vault (GUIDE.md step 3.15). GUIDE.md section 4.4 explains the proof.
 
 ### 13. Wave 4, the privileged unit (GUIDE.md section 4.5)
 
 This demo has no wave 3. `demo-subscription` stays disabled, on purpose. The next unit is wave 4.
+
+> In production, the subscription units, the budgets among them, deploy the same way as the resource group units we just saw. Here we skip that wave, because this subscription holds other resource groups that are not part of the demo.
 
 > Some resources control who has access, such as Owner role assignments and custom roles. We put those in a privileged unit with its own managed identity and GitHub environment. If the ordinary deploy identity could both create resources and grant access, it could effectively make itself an Owner. That's why it cannot grant Owner. Access changes have to go through a separate, more restricted path.
 >
@@ -993,6 +1003,8 @@ The job that waits is `apply privileged demo-privileged`. It is not named `apply
 > Notice that this run is waiting in a different GitHub environment. The unit's tier selected that environment automatically, not the person who started the run. Before approving, the reviewer checks that every role assignment is named and that nobody gets Owner access beyond what the ticket allows.
 
 > In production, only a smaller team can approve the privileged environments because that team is responsible for access changes. In this demo, the same second account approves both tiers since a personal account can't belong to the approver teams.
+>
+> In production, we also prove the privileged tier with a plan only before any privileged unit deploys, so the first privileged run ends at the plan, with every count NoChange.
 
 Approve it in `mirror-privileged-demo` as `klaudiomarashi`, with a comment that names `DEMO-0006`. A production unit that declares an Owner assignment fails the `preflight` job of `mirror-validate`. That is the other half of the same rule: the code is refused before anyone can deploy it from the ordinary tier.
 
@@ -1056,7 +1068,7 @@ gh workflow run mirror-deploy-unit.yml --ref master -f unit=demo-tenant-manageme
 
 Approve the waiting job `apply privileged demo-tenant-management-group` in the GitHub environment `mirror-privileged-tenant`, as `klaudiomarashi`, with a comment that names `DEMO-0007`. The apply signs in as `id-mirror-govern-tenant`. The second check passes with `NoChange=1`.
 
-> In production, we find the management group above the subscriptions the same way. Tenant-level units then deploy with the tenant govern identity, but only after the privileged team approves them.
+> In production, there are three tenant units. Two deploy against the Tenant Root Group, one for the management groups and one for their role assignments, and the third deploys against the management group below it. They deploy the same way, with the tenant govern identity, and only after the privileged team approves them.
 
 `AuthorizationFailed` on a tenant unit means the reader identity lacks Reader, or lacks Mirror What-If Reader Tenant, on the Tenant Root Group (GUIDE.md step 3.14, item 3).
 
@@ -1110,7 +1122,7 @@ git switch master
 git pull test master
 ```
 
-> Before we deploy, let's ask for the plan with ticket `DEMO-0008`. Its summary will give us the Reader role assignment's resource ID. This tenant-level plan also needs `mg-demo` to exist, which is why we ran step 14 first.
+> Before we deploy, let's ask for the plan with ticket `DEMO-0008`. Its summary will give us the Reader role assignment's resource ID. This plan needs `mg-demo` to exist, and it does, because we created it by hand before the demo. Step 14 came first only to keep the order production uses.
 
 ```powershell
 gh workflow run mirror-deploy-unit.yml --ref master -f unit=demo-tenant-governance -f changeRef=DEMO-0008 -f reason="Wave 6, read the plan" --repo themasterishome/demo-bicep-deploy-test
@@ -1184,6 +1196,8 @@ Approve the run as `klaudiomarashi` and wait for it to finish.
 
 > This is still an ordinary deployment, so it has a ticket and needs approval. If the portal change had been the right one, we would update the code through a pull request instead of deploying over that change.
 
+> In production, IT decides each drift finding. We first find who changed the resource and when, through Change Analysis or the activity log, and a change in the portal is never quietly reversed.
+
 > The repair is complete, so let's run the check one last time. We expect every unit to be clean and the drift issue to close.
 
 ```powershell
@@ -1214,7 +1228,7 @@ gh variable list --repo themasterishome/demo-bicep-deploy-test
 
 The list shows `MIRROR_DRIFT_SCHEDULE_ENABLED` with the value `true`. The next Monday, the runs of `mirror-drift` include one whose event is `schedule`. The demo does not wait for that Monday. **Run workflow** runs the same two jobs.
 
-> In production, IT leaves the weekly schedule off until the team is ready to use it, then turns it on with the same variable. GitHub notifies only the person who last edited the schedule when a scheduled run fails. That's another reason we report drift through an issue, where everyone watching the repository can see it.
+> In production, IT leaves the weekly schedule off until the team is ready to use it, then turns it on with the same variable. GitHub notifies only the person who last edited the schedule when a scheduled run fails. That's another reason we report drift through an issue, where everyone watching the repository can see it. With Enterprise Managed Users, the schedule also stops if that person is removed from the identity provider, so a member of the approvers team makes the last change to the schedule.
 
 A weekly run that skipped every job means this variable is not `true`, or the pipeline switch is off.
 
@@ -1222,7 +1236,7 @@ A weekly run that skipped every job means this variable is not `true`, or the pi
 
 > Once a unit matches what's live, every later change follows the normal pull-request process. If a change turns out to be wrong, we roll it back the same way in reverse: revert it in Git, run a what-if, get approval, and deploy the correction.
 
-Follow GUIDE.md section 4.8 and then 4.10. The merge of each pull request starts no run. The resource IDs for `allowModify` are in the preview's comment. The second check ends with `NoChange=2` after the rule is added, and `nsg-demo` is NoChange again after the rollback. GUIDE.md section 5 lists the causes when something fails.
+Follow GUIDE.md section 4.8 and then 4.10. GUIDE.md names the remote `origin` in its commands, and here it is `test`, so write `test` in each `git push`. The merge of each pull request starts no run. The resource IDs for `allowModify` are in the preview's comment. After the rule is added, the second check ends with `NoChange=8`, one `Ignore` and one `Modify`, as in wave 1, with `nsg-demo` among the NoChange records, and `nsg-demo` is NoChange again after the rollback. GUIDE.md section 5 lists the causes when something fails.
 
 ## The closing
 
@@ -1262,8 +1276,8 @@ az account set --subscription SUBSCRIPTION_ID
 
 ## Reading a failed run
 
-1. On GitHub, open **Actions**, then **mirror-deploy-unit**, then the run, then the apply job. The gate step's log prints its exit code and the last lines of the deploy script. The codes are 0 for deployed and checked, 1 for refused by the gate, 2 for a setup or identity problem, and 3 for a deployment that ran and failed, or whose second check failed. The job summary holds the plan verdict. The artifacts `evidence-deploy-UNIT` and `reviewed-plan-UNIT` hold the what-if results as JSON.
-2. In Azure, open the deployment record `mirror-UNIT-COMMIT`. In the portal, that is the subscription or the resource group, then **Deployments**, then the failed record, then **Operation details**. That page names the resource and the error code. From the CLI, the next two commands read the same error. Replace `UNIT`, `COMMIT` and `RESOURCE_GROUP` from the run.
+1. On GitHub, open **Actions**, then **mirror-deploy-unit**, then the run, then the apply job. The gate step's log prints its exit code and the last lines of the deploy script. The codes are 0 for deployed and checked, 1 for refused by the gate, 2 for a setup or identity problem, and 3 for a deployment that ran and failed, or whose second check failed. A step that ends with `error` or `started` instead of a code may have started a deployment, so list the deployments of the scope before anything else. The job summary holds the plan verdict. The artifacts `evidence-deploy-UNIT` and `reviewed-plan-UNIT` hold the what-if results as JSON.
+2. In Azure, open the deployment record `mirror-UNIT-COMMIT`. In the portal, that is the subscription or the resource group, then **Deployments**, then the failed record, then **Operation details**. That page names the resource and the error code. For a tenant unit, it is the management group, then **Deployments**. From the CLI, the next three commands read the same error. Replace `UNIT`, `COMMIT`, `RESOURCE_GROUP` and `MANAGEMENT_GROUP_ID` from the run.
 
    > For a subscription-scope deployment, let's read the error details here.
 
@@ -1277,8 +1291,14 @@ az account set --subscription SUBSCRIPTION_ID
    az deployment group show --name mirror-UNIT-COMMIT --resource-group RESOURCE_GROUP --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query properties.error
    ```
 
+   > A tenant unit deploys against a management group, so its record is there. `MANAGEMENT_GROUP_ID` is the unit's `managementGroup` in `deploy/units.json`.
+
+   ```powershell
+   az deployment mg show --name mirror-UNIT-COMMIT --management-group-id MANAGEMENT_GROUP_ID --query properties.error
+   ```
+
 3. The project's PIPELINE.md section 7 maps each message to its cause and its fix. REFERENCE.md section 4 is the rollback after exit 3. GUIDE.md section 5 lists the causes seen in this demo.
-4. A deployment can fail in Azure with `ResourceNotFound` even though its plan showed NoChange. A what-if never checks that a resource a setting points at still exists, for example the scale set named by an autoscale setting. The other resources of that deployment keep their live values, and nothing is deleted. The fix is in the code. The resource whose target is gone is changed to an existing reference, and the unit is planned and deployed again at the new commit.
+4. A deployment can fail in Azure with `ResourceNotFound` even though its plan showed NoChange. A what-if never checks that a resource a setting points at still exists, for example the scale set named by an autoscale setting. The other resources of that deployment keep their live values, and nothing is deleted. The fix is in the code. The resource whose target is gone is changed to an existing reference, and the unit is planned and deployed again at the new commit. The Failed record stays in the deployment history. In production, we check before a unit's first deployment that every resource a setting points at still exists, so this failure is found before the run, not during it.
 5. A retry is a new run, at the commit that contains the fix. Re-running the failed run does not deploy.
 6. For the drift check, open the **Issues** tab and the run the issue links to. The `drift` artifact holds each unit's evidence.
 
@@ -1287,10 +1307,9 @@ az account set --subscription SUBSCRIPTION_ID
 Do this in order. Delete each object by its ID, so a delete cannot hit a different object that happens to share the name.
 
 1. Take the delete lock `mirror-identities-no-delete` off the identity resource group.
-2. Delete each role assignment of that managed identity.
+2. Delete each role assignment of that managed identity, then read the list again to confirm it is empty.
 3. Delete the managed identity. Its federated credentials go with it.
-4. Delete the role definitions the setup created for it.
-5. Delete the policy assignment on the resource group.
-6. Put the lock back.
+4. Delete the role definitions the setup created for it, once nothing else uses them.
+5. Put the lock back, and check that the identity is gone.
 
 On the GitHub side, delete the environment's variables, then delete the GitHub environment and its branch rule. GUIDE.md section 6 has the commands for this demo. The project's PIPELINE.md section 7.1 has the commands for the project.

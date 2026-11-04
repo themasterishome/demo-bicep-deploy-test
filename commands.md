@@ -304,10 +304,6 @@ gh issue list --state open --repo themasterishome/demo-bicep-deploy-test
 ```
 
 ```powershell
-gh issue close ISSUE_NUMBER --comment "Closed before a new run of the demo" --repo themasterishome/demo-bicep-deploy-test
-```
-
-```powershell
 gh issue close ISSUE_NUMBER --repo themasterishome/demo-bicep-deploy-test
 ```
 
@@ -609,4 +605,8 @@ az deployment sub show --name mirror-UNIT-COMMIT --subscription 77488719-1168-4d
 
 ```powershell
 az deployment group show --name mirror-UNIT-COMMIT --resource-group RESOURCE_GROUP --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query properties.error
+```
+
+```powershell
+az deployment mg show --name mirror-UNIT-COMMIT --management-group-id MANAGEMENT_GROUP_ID --query properties.error
 ```

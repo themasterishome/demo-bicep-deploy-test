@@ -1055,7 +1055,7 @@ Each part says what to do and what the audience sees on screen. Nothing changes 
 
 Prepare two browser windows side by side, the repository in your own window and the same repository in the private window of the second account. Keep a PowerShell window at the root of the local repository, on `master`.
 
-Do section 3 the day before, or at least two hours before the audience arrives. The policy of step 3.17 takes over an hour to show its first compliance result, and the Deny check needs its wait.
+Do section 3 the day before, or at least two hours before the audience arrives. The managed identities and their roles can take a few minutes to be known to Azure, and a run that starts too early fails its sign-in.
 
 **Check before the demo:**
 - [ ] Steps 3.1 to 3.22 are done, and the mirror-validate run of the step 3.21 pull request is green.
@@ -1233,10 +1233,10 @@ This is project sections 4.2 to 4.8 and 4.10, for a production unit that creates
    /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Authorization/locks/lock-rg-demo-network
    /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Authorization/policyAssignments/POLICY_ASSIGNMENT_NAME
    /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Authorization/roleAssignments/ROLE_ASSIGNMENT_NAME
-/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Network/privateDnsZones/privatelink.vaultcore.azure.net
-/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Network/privateDnsZones/privatelink.vaultcore.azure.net/virtualNetworkLinks/link-vnet-demo
-/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Network/privateEndpoints/pe-kv-demo-mirror-secrets
-/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Network/privateEndpoints/pe-kv-demo-mirror-secrets/privateDnsZoneGroups/default
+   /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Network/privateDnsZones/privatelink.vaultcore.azure.net
+   /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Network/privateDnsZones/privatelink.vaultcore.azure.net/virtualNetworkLinks/link-vnet-demo
+   /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Network/privateEndpoints/pe-kv-demo-mirror-secrets
+   /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Network/privateEndpoints/pe-kv-demo-mirror-secrets/privateDnsZoneGroups/default
    ```
 
    Type it in PowerShell with the nine IDs joined by commas and no space.
@@ -1444,7 +1444,7 @@ This is project section 4.9. The resources now exist, and a real change names it
    gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head nsg-rule --title "Deny remote desktop from the internet on nsg-demo" --body "Deny remote desktop from the internet on nsg-demo"
    ```
 
-   On screen, `whatif rg-demo-network` shows the gate FAIL with `Modify=1` on `nsg-demo`, the new rule under `securityRules`, for information. The comment is on the **Conversation** tab of the pull request.
+   On screen, `whatif rg-demo-network` shows the gate FAIL with a Modify on `nsg-demo`, the new rule under `securityRules`, for information. The comment is on the **Conversation** tab of the pull request.
 
 3. Approve it as the second account and, once every check is green, select **Squash and merge** and **Confirm squash and merge**. The merge starts no run and deploys nothing. The NSG's ID for `allowModify` is in the preview's comment of item 2. A plan only (4.3 item 4) would stop with a message that names it.
 
@@ -1454,7 +1454,7 @@ This is project section 4.9. The resources now exist, and a real change names it
    gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-network -f changeRef=DEMO-0009 -f reason="Deny remote desktop from the internet" -f apply=true -f allowModify=/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-network/providers/Microsoft.Network/networkSecurityGroups/nsg-demo --repo themasterishome/demo-bicep-deploy-test
    ```
 
-5. On screen, the plan shows "Gate REVIEW, approvable", with REVIEW in bold, and each property change is marked "would be allowed with -AllowModify". Approve it as the second account with **Review deployments**, as in 4.2 item 8. The gate step deploys only when its fresh preview shows exactly the planned property changes, and the second check ends with `NoChange=2`, with `nsg-demo` among them. To show the rule in the Azure portal, search for **Network security groups**, select `nsg-demo` and select **Inbound security rules**. The list shows `Deny-Internet-RDP` with the priority 100, besides the default rules.
+5. On screen, the plan shows "Gate REVIEW, approvable", with REVIEW in bold, and each property change is marked "would be allowed with -AllowModify". Approve it as the second account with **Review deployments**, as in 4.2 item 8. The gate step deploys only when its fresh preview shows exactly the planned property changes, and the second check ends with `NoChange=8`, one `Ignore` and one `Modify`, as in 4.3, with `nsg-demo` among the NoChange records. To show the rule in the Azure portal, search for **Network security groups**, select `nsg-demo` and select **Inbound security rules**. The list shows `Deny-Internet-RDP` with the priority 100, besides the default rules.
 
 ### 4.9 Drift
 
@@ -1564,8 +1564,7 @@ A rollback cannot remove a resource that a deployment created with `allowCreate`
 | A tenant unit cannot be previewed, with `AuthorizationFailed` on the group's own scope "or the scope is invalid" | The management group `mg-demo` does not exist, because step 3.15 item 8 was not done. A preview cannot run against a group that is not there | Create the group as step 3.15 item 8 shows |
 | A plan or the apply job fails with `AuthorizationFailed` for `Microsoft.Resources/deployments/whatIf/action` | The identity that signs in lacks a role. The fresh preview of the apply job shows a missing grant first | Compare the identity's roles with step 3.15 and the role table of step 3.13, grant the missing one and wait about 10 minutes |
 | A write of an Owner, User Access Administrator or Role Based Access Control Administrator assignment is refused, or `preflight` fails | The record sits in a production unit. The deploy identity's condition refuses it, and the preflight keeps it out of the production tier | Move it into a privileged unit, as `privileged.bicep` does for the Owner assignment |
-| `az policy assignment delete` fails with `ScopeLocked`, or a resource group cannot be deleted | The CanNotDelete lock on `rg-demo-identities` covers the assignment, and `lock-rg-demo-network` covers its group | Remove the locks first, as section 6 does |
-| The policy compliance list stays empty after step 3.17 | The first evaluation of a new assignment can take over an hour | Run `az policy state trigger-scan` with `--no-wait` as step 3.17 shows, and use the Deny check as the quicker proof |
+| A delete in `rg-demo-identities` fails with `ScopeLocked`, or a resource group cannot be deleted | The CanNotDelete lock on `rg-demo-identities` covers everything in that group, and `lock-rg-demo-network` covers its group | Remove the locks first, as section 6 does |
 
 The apply job logs the two messages of the client ID check as follows.
 
@@ -1598,7 +1597,8 @@ Remove everything in the order Azure needs. The lock on the identity group comes
    ```powershell
    $root = '/providers/Microsoft.Management/managementGroups/d1a349ef-6ac8-4588-a88d-5dab272c700b'
    foreach ($p in 'READER_PRINCIPAL', 'DEPLOY_PRINCIPAL', 'GOVERN_PRINCIPAL', 'TENANT_PRINCIPAL') {
-     $ids = @(az role assignment list --assignee-object-id $p --all --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[].id" -o tsv)
+     if (-not $p -or $p -like '*_PRINCIPAL') { Write-Host "skipped, fill in the principalId"; continue }
+     $ids = @(az role assignment list --assignee-object-id $p --all --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[?principalId=='$p'].id" -o tsv)
      $ids += @(az role assignment list --assignee-object-id $p --scope $root --query "[?scope=='$root'].id" -o tsv)
      foreach ($id in $ids) {
        if ($id) {
