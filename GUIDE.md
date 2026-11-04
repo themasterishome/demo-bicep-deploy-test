@@ -295,25 +295,14 @@ The output is two lines, `@SECOND_LOGIN` and `@themasterishome`.
 
 ### 3.5 Push the folder
 
-1. Make sure the local remote `origin` points to the new repository. If `origin` is not set up yet, add it. If it already exists, update its URL instead. The push carries every local commit, this guide among them.
+1. Push the local `master` to the new repository. The push carries every local commit, this guide among them.
 
    ```powershell
    git remote add origin https://github.com/themasterishome/demo-bicep-deploy-test.git
-   ```
-
-   If `origin` already exists, run this instead:
-
-   ```powershell
-   git remote set-url origin https://github.com/themasterishome/demo-bicep-deploy-test.git
-   ```
-
-2. Push the local `master` to the new repository.
-
-   ```powershell
    git push -u origin master
    ```
 
-3. Check that the remote has the branch.
+2. Check that the remote has the branch.
 
    ```powershell
    git ls-remote origin master
@@ -321,7 +310,7 @@ The output is two lines, `@SECOND_LOGIN` and `@themasterishome`.
 
    The output is one line, the commit ID then `refs/heads/master`.
 
-4. Check the default branch. An empty repository takes its default branch name from your personal setting, which is `main` unless you changed it under your profile's **Settings** > **Repositories**. It can still show `main` after the push of `master`.
+3. Check the default branch. An empty repository takes its default branch name from your personal setting, which is `main` unless you changed it under your profile's **Settings** > **Repositories**. It can still show `main` after the push of `master`.
 
    ```powershell
    gh api repos/themasterishome/demo-bicep-deploy-test --jq .default_branch
@@ -1118,7 +1107,7 @@ This is project step 3.23 and sections 4.2 to 4.8. Project section 4.6, the chec
    ```powershell
    gh pr merge enable-pilot --squash --delete-branch --repo themasterishome/demo-bicep-deploy-test
    git switch master
-   git pull origin master
+   git pull
    ```
 
 4. Show that the merge started no run. Open the repository's **Actions** tab and select **mirror-deploy-unit** in the left sidebar. Or list the runs.
@@ -1225,7 +1214,7 @@ This is project sections 4.2 to 4.8 and 4.10, for a production unit that creates
    ```powershell
    gh pr merge enable-waves --squash --delete-branch --repo themasterishome/demo-bicep-deploy-test
    git switch master
-   git pull origin master
+   git pull
    ```
 
 4. Show that the merge started no run, as in 4.2 item 4, and read what the deployment needs. Both units hold Creates nobody named, so a deployment needs `allowCreate` with their resource IDs. The IDs are in the comment of the pull request's preview, where each Create record shows its ID. Or read them from a plan only, which is a run with `apply` off.
@@ -1307,7 +1296,7 @@ This is project step 3.23 item 8 and sections 4.2 to 4.8, for a privileged unit.
    ```powershell
    gh pr merge enable-privileged --squash --delete-branch --repo themasterishome/demo-bicep-deploy-test
    git switch master
-   git pull origin master
+   git pull
    ```
 
 4. Show that the merge started no run, as in 4.2 item 4. The pull request's preview names the two Creates of `demo-privileged`. A plan only, started as in 4.3 item 4 with `unit=demo-privileged`, is not approvable and names `allowCreate`. Nothing waits and nothing deploys.
@@ -1358,7 +1347,7 @@ This is the first tenant unit. It deploys at management group scope against the 
    ```powershell
    gh pr merge enable-tenant-mg --squash --delete-branch --repo themasterishome/demo-bicep-deploy-test
    git switch master
-   git pull origin master
+   git pull
    ```
 
 4. Show that the merge started no run, as in 4.2 item 4. The pull request's preview showed no effective change, and nothing waits.
@@ -1400,7 +1389,7 @@ This unit runs against `mg-demo`, which step 3.15 item 8 created. Its preview an
    ```powershell
    gh pr merge enable-tenant-governance --squash --delete-branch --repo themasterishome/demo-bicep-deploy-test
    git switch master
-   git pull origin master
+   git pull
    ```
 
 4. Start the deployment with the assignment's ID in `allowCreate`. The pull request's preview shows the ID, and a plan only (4.3 item 4) gives the ready command. The merge started no run. The ID has this form.
@@ -1528,7 +1517,7 @@ This is REFERENCE.md section 4.1. It takes the rule of section 4.8 out again.
 
    ```powershell
    git switch master
-   git pull origin master
+   git pull
    git log --oneline -5
    git switch --create revert-nsg-rule
    git revert --no-edit BAD_COMMIT

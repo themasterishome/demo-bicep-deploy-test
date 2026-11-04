@@ -244,7 +244,7 @@ git commit -m "Disable every unit for the next demo"
 ```
 
 ```powershell
-git push origin master
+git push test HEAD:master
 ```
 
 ```powershell
@@ -280,7 +280,7 @@ git commit --all --message "First run of the checks"
 ```
 
 ```powershell
-git push -u origin first-checks
+git push -u test first-checks
 ```
 
 ```powershell
@@ -320,7 +320,7 @@ gh run list --workflow mirror-drift.yml --limit 3 --repo themasterishome/demo-bi
 ```
 
 ```powershell
-git push origin --delete first-checks
+git push test --delete first-checks
 ```
 
 ```powershell
@@ -340,7 +340,7 @@ git commit --all --message "Enable the pilot unit"
 ```
 
 ```powershell
-git push -u origin enable-pilot
+git push -u test enable-pilot
 ```
 
 ```powershell
@@ -356,7 +356,7 @@ git switch master
 ```
 
 ```powershell
-git pull origin master
+git pull test master
 ```
 
 ```powershell
@@ -408,7 +408,7 @@ git commit --all --message "Enable the network and routing units"
 ```
 
 ```powershell
-git push -u origin enable-waves
+git push -u test enable-waves
 ```
 
 ```powershell
@@ -424,7 +424,7 @@ git switch master
 ```
 
 ```powershell
-git pull origin master
+git pull test master
 ```
 
 ```powershell
@@ -456,7 +456,7 @@ git commit --all --message "Enable the privileged unit"
 ```
 
 ```powershell
-git push -u origin enable-privileged
+git push -u test enable-privileged
 ```
 
 ```powershell
@@ -472,7 +472,7 @@ git switch master
 ```
 
 ```powershell
-git pull origin master
+git pull test master
 ```
 
 ```powershell
@@ -492,7 +492,7 @@ git commit --all --message "Enable the management group unit"
 ```
 
 ```powershell
-git push -u origin enable-tenant-mg
+git push -u test enable-tenant-mg
 ```
 
 ```powershell
@@ -508,7 +508,7 @@ git switch master
 ```
 
 ```powershell
-git pull origin master
+git pull test master
 ```
 
 ```powershell
@@ -524,7 +524,7 @@ git commit --all --message "Enable the management group governance unit"
 ```
 
 ```powershell
-git push -u origin enable-tenant-governance
+git push -u test enable-tenant-governance
 ```
 
 ```powershell
@@ -540,7 +540,7 @@ git switch master
 ```
 
 ```powershell
-git pull origin master
+git pull test master
 ```
 
 ```powershell

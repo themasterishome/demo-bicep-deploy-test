@@ -11,7 +11,7 @@ How to read it:
 
 Run every command in a Windows PowerShell window in this folder, never in Git Bash. Git Bash rewrites an argument that starts with `/subscriptions/` into a Windows path, and the command then fails.
 
-Git commands in this script use the local remote name `origin`, which points to the test repository. GUIDE.md has the full detail behind each step. The GUIDE.md numbers in the headings are the same numbers as the project's PIPELINE.md. The numbers of this script, 1 to 18, are the order of the talk.
+In this folder the test repository's remote is named `test`. GUIDE.md calls that same remote `origin`. Use `test` in every command here. GUIDE.md has the full detail behind each step. The GUIDE.md numbers in the headings are the same numbers as the project's PIPELINE.md. The numbers of this script, 1 to 18, are the order of the talk.
 
 Two accounts take part. `themasterishome` owns the repository, writes the code, merges, and starts every run. `klaudiomarashi` reviews pull requests and approves deployments, in a private browser window. GitHub will not let an account approve a deployment that the same account started.
 
@@ -59,7 +59,7 @@ python --version
 git remote -v
 ```
 
-The output should show `origin` pointing to `https://github.com/themasterishome/demo-bicep-deploy-test.git`, confirming that the remote points to the test repository.
+`git remote -v` lists the remote `test` with the address `https://github.com/themasterishome/demo-bicep-deploy-test.git`.
 
 ### The Azure sign-in
 
@@ -487,12 +487,12 @@ git commit -m "Disable every unit for the next demo"
 > Now I'll push the updated `master` to the test repository, where direct pushes are allowed and the pipeline switch is still off, so every job will skip.
 
 ```powershell
-git push origin master
+git push test HEAD:master
 ```
 
 The push prints the new commit range. On GitHub, open the **Actions** tab and look for `mirror-validate`. Its jobs should all be skipped because the pipeline switch is off. There should be no `mirror-deploy-unit` run because that workflow starts only when someone selects **Run workflow**.
 
-> In the production Enterprise repository, a ruleset protects `master`, so we'd push this same commit to a temporary branch in that repository and open a pull request into `master`. We won't run those steps here because this test repository allows direct pushes, and this commit is already on `master`.
+> In the production Enterprise repository, a ruleset protects `master`, so we'd push this same commit to a branch with a command like `git push origin HEAD:refs/heads/sync-demo` and open a pull request into `master`. We won't run those steps here because this test repository allows direct pushes, and this commit is already on `master`.
 
 A refusal that names the token scope means `gh auth refresh -h github.com -s workflow`. A refusal that names the account means `gh auth switch --hostname github.com --user themasterishome`, then `gh auth setup-git`.
 
@@ -541,7 +541,7 @@ git commit --all --message "First run of the checks"
 > Next, I'll push `first-checks` and set the test remote as its upstream.
 
 ```powershell
-git push -u origin first-checks
+git push -u test first-checks
 ```
 
 > With the branch pushed, let's open its pull request into `master`.
@@ -617,7 +617,7 @@ The run fails before any step, with `Branch "first-checks" is not allowed to dep
 > Now let's remove `first-checks` from the remote.
 
 ```powershell
-git push origin --delete first-checks
+git push test --delete first-checks
 ```
 
 > And we'll remove the local copy too.
@@ -657,7 +657,7 @@ git commit --all --message "Enable the pilot unit"
 > Next, I'll push `enable-pilot` to the test repository.
 
 ```powershell
-git push -u origin enable-pilot
+git push -u test enable-pilot
 ```
 
 > With the branch up, let's open the pull request into `master`.
@@ -693,7 +693,7 @@ git switch master
 > I'll now bring local `master` up to date with the test repository.
 
 ```powershell
-git pull origin master
+git pull test master
 ```
 
 > Let's look at the recent deploy runs on `master` and confirm that the merge didn't start a deployment.
@@ -825,7 +825,7 @@ git commit --all --message "Enable the network and routing units"
 > Next, I'll push `enable-waves` to the test repository.
 
 ```powershell
-git push -u origin enable-waves
+git push -u test enable-waves
 ```
 
 > With the branch pushed, let's open its pull request into `master`.
@@ -851,7 +851,7 @@ git switch master
 > And I'll bring local `master` up to date with the test repository.
 
 ```powershell
-git pull origin master
+git pull test master
 ```
 
 > Just as before, merging only updates the code and starts no deployment. I'll ask the pipeline for a plan now, so we can see what the network unit would create.
@@ -945,7 +945,7 @@ git commit --all --message "Enable the privileged unit"
 > Next, I'll push `enable-privileged` to the test repository.
 
 ```powershell
-git push -u origin enable-privileged
+git push -u test enable-privileged
 ```
 
 > With the branch pushed, let's open its pull request into `master`.
@@ -971,7 +971,7 @@ git switch master
 > Now I'll update local `master` from the test repository.
 
 ```powershell
-git pull origin master
+git pull test master
 ```
 
 > Before we deploy, let's ask for a plan with ticket `DEMO-0006`. The summary will give us the two resource IDs we need for the deployment command.
@@ -1017,7 +1017,7 @@ git commit --all --message "Enable the management group unit"
 > Now I'll push `enable-tenant-mg` to the test repository.
 
 ```powershell
-git push -u origin enable-tenant-mg
+git push -u test enable-tenant-mg
 ```
 
 > Let's open a pull request from this branch into `master`.
@@ -1043,7 +1043,7 @@ git switch master
 > And I'll update local `master` from the test repository.
 
 ```powershell
-git pull origin master
+git pull test master
 ```
 
 > We created `mg-demo` by hand because Azure can't run a what-if against a management group that doesn't exist yet. This unit updates that existing group, and the pull-request preview showed no Creates. So we can go straight to deployment without a separate plan-only run or an `allowCreate` list. We'll use ticket `DEMO-0007`.
@@ -1081,7 +1081,7 @@ git commit --all --message "Enable the management group governance unit"
 > Next, I'll push the branch to the test repository.
 
 ```powershell
-git push -u origin enable-tenant-governance
+git push -u test enable-tenant-governance
 ```
 
 > With the branch pushed, let's open its pull request into `master`.
@@ -1107,7 +1107,7 @@ git switch master
 > I'll bring local `master` up to date one more time.
 
 ```powershell
-git pull origin master
+git pull test master
 ```
 
 > Before we deploy, let's ask for the plan with ticket `DEMO-0008`. Its summary will give us the Reader role assignment's resource ID. This tenant-level plan also needs `mg-demo` to exist, which is why we ran step 14 first.
