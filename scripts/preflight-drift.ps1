@@ -9,8 +9,8 @@
   main.bicep it also fails on a live resource group with no record in the preview (NoRecord). Results go to
   -EvidenceRoot, one folder per unit, plus drift-summary.txt and drift-summary.json at the top.
 
-  The drift workflow (.github/workflows/mirror-drift.yml) runs it, by hand only, because it has no schedule
-  until IT approves one. It is also what to run
+  The drift workflow (.github/workflows/mirror-drift.yml) runs it with Run workflow, and every Monday at 05:00 UTC
+  once the repository variable MIRROR_DRIFT_SCHEDULE_ENABLED is set to true. It is also what to run
   after an incident or a portal change to see what moved. Units are run one after another so the
   sweep never overlaps itself.
 

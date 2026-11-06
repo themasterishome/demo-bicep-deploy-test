@@ -9,8 +9,8 @@
 # Please do not merge these while a deployment waits for its reviewers. The merge ends the plan, and the
 # deployment is started again with Run workflow.
 #
-# Off until the pipeline is set up. open-pull-requests-limit 0 stops the monthly pull requests. PIPELINE.md step 3.20
-# removes that line when it turns the pipeline on.
+# Off until the pipeline is set up. open-pull-requests-limit 0 stops the monthly pull requests. PIPELINE.md step 3.24
+# removes that line as its last item, after the pilot has deployed and the security alerts are on.
 version: 2
 updates:
   - package-ecosystem: github-actions

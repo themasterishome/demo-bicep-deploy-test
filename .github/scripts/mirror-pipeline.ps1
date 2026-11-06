@@ -344,8 +344,8 @@ function Get-UnitEnvironment($UnitDef) {
   return "mirror-$tier-$(Get-UnitScope $UnitDef)"
 }
 
-# Why a unit cannot be previewed, or $null. What-if cannot read a resource name with a # in it, so the unit that
-# holds the certificate with a # in its name never passes the gate.
+# Why a unit cannot be previewed, or $null. What-if cannot read a resource name with a # in it, so a unit that holds
+# such a resource, named <something>-hash-excluded, never passes the gate.
 function Get-UnrunnableReason($UnitDef) {
   $n = [string](Get-Prop $UnitDef 'name')
   if ($n -like '*-hash-excluded') { return 'a resource name with a # in it, which what-if cannot preview' }
