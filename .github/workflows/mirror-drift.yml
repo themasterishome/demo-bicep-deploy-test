@@ -10,7 +10,7 @@
 # The summary is also in the run's job summary. While every unit in deploy/units.json is disabled the sweep has
 # nothing to check, so it fails with that message and the report opens the issue.
 # It uses the mirror-reader-dispatch environment, with the same reader identity as the pull request previews. Its
-# variables are AZURE_CLIENT_ID of the reader identity (Reader plus the "Mirror What-If Reader" custom role on all 11
+# variables are AZURE_CLIENT_ID of the reader identity (Reader plus the "Mirror What-If Reader" custom role on all 10
 # subscriptions) and AZURE_TENANT_ID. deployment: false keeps these runs out of the environment's deployment history.
 # The environment allows only the branch master, and the reader identity's credential for it trusts only that
 # environment. GitHub refuses the job when the run is started on any other branch, so an older copy of this file

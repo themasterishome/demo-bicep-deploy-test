@@ -2,8 +2,7 @@
 #   gitleaks detect --redact --no-banner --no-git --source . --config .gitleaks.toml
 # The default Gitleaks rules apply, plus three Azure patterns they do not cover. Any finding fails
 # the run. The only folder left out is reports/work/ at the root of the repository, the local working
-# folder that is never committed (sweep output and deployment evidence). The Application Insights rule
-# has one file exception, described at that rule.
+# folder that is never committed (sweep output and deployment evidence).
 
 title = "Estate mirror secret scan"
 
@@ -27,18 +26,6 @@ id = "azure-app-insights-key"
 description = "Application Insights instrumentation key or connection string"
 regex = '''(?i)(?:InstrumentationKey=|app-insights-instrumentation-key['"]?\s*[:=]\s*['"]?)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'''
 keywords = ["instrumentationkey=", "app-insights-instrumentation-key"]
-# One file, the resource group file of rg-demo-web, carries the live hidden-link tags of two web apps
-# and the two slots of app-demo-web, which hold the instrumentation key and connection string of their Application Insights
-# components. The code mirrors live tags exactly, and Bicep cannot compute a tag from another resource
-# (BCP120). Microsoft documents the instrumentation key as an identifier, not a security token or key
-# (learn.microsoft.com/azure/azure-monitor/app/connection-strings). Requiring Entra ID for ingestion is
-# the control against misuse. That is a live change raised for IT. Only this file is excepted. If one of
-# those web apps or slots moves to another file, add that file's path to this exception.
-[[rules.allowlists]]
-description = "Live Application Insights link tags in rg-demo-web (identifiers, not secrets)"
-paths = [
-  '''^infra[\\/]subscriptions[\\/]demo[\\/]resource-groups[\\/]rg-demo-web\.bicep$''',
-]
 
 # The default generic-api-key rule reads any long value under a key whose name contains "api" as a
 # key, so a subscription ID in deploy/units.json was reported. Subscription, tenant
@@ -52,8 +39,7 @@ regexTarget = "secret"
 regexes = ['''^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$''']
 
 # The default sourcegraph-access-token rule reads any 40-character hex value as a token when "sgp_"
-# appears anywhere in the same file, and the demo subscription's resource group files name machines and local
-# network gateways with SGP_. Three kinds of 40-character hex value are identifiers, not secrets: the
+# appears anywhere in the same file. Three kinds of 40-character hex value are identifiers, not secrets: the
 # machine ID in the status message of an Arc machine extension, the thumbprint of the public root
 # certificate on a VPN gateway, and the commit a GitHub Actions release is pinned to. This exception
 # covers that rule only, and only a line that holds one of the three.

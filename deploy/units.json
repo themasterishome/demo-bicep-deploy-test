@@ -1,5 +1,5 @@
 {
-  "description": "Deployment units and their order. scripts/deploy-unit.ps1 refuses anything not listed here or listed with enabled false. Every unit deploys from the pipeline. A unit marked \"tier\": \"privileged\" holds the role assignments of Owner, User Access Administrator and Role Based Access Control Administrator, the custom role definitions and the pipeline identities' own roles, and deploys through the mirror-privileged-<folder> environment with that subscription's privileged identity. Every other unit is production tier and deploys through mirror-production-<folder>. A tenant-kind unit names the management group it deploys against in \"managementGroup\". Paths are relative to the repository root.",
+  "description": "Deployment units and their order. scripts/deploy-unit.ps1 refuses anything not listed here or listed with enabled false. Every unit deploys from the pipeline. A unit marked \"tier\": \"privileged\" holds the role assignments of Owner, User Access Administrator and Role Based Access Control Administrator, the custom role definitions and the pipeline identities' own roles, and deploys through the mirror-privileged-<folder> environment with that subscription's govern identity. Every other unit is production tier and deploys through mirror-production-<folder>. A tenant-kind unit names the management group it deploys against in \"managementGroup\". Paths are relative to the repository root.",
   "tenantId": "d1a349ef-6ac8-4588-a88d-5dab272c700b",
   "allowedPrincipals": [
     {
@@ -72,7 +72,7 @@
       "risk": "high",
       "tier": "privileged",
       "enabled": true,
-      "notes": "The privileged part of the demo-subscription unit: the Owner role assignment on rg-demo-network, the custom role definition Demo Reader Plus, and later the standing roles of the pipeline's own identities. Only the subscription's privileged identity writes them, after approval in mirror-privileged-demo. Nothing else is declared here. It runs after demo-subscription and rg-demo-network, which create the resource group the Owner assignment sits on."
+      "notes": "The privileged part of the demo-subscription unit: the Owner role assignment on rg-demo-network, the custom role definition Demo Reader Plus, and later the standing roles of the pipeline's own identities. Only the subscription's govern identity writes them, after approval in mirror-privileged-demo. Nothing else is declared here. It runs after demo-subscription and rg-demo-network, which create the resource group the Owner assignment sits on."
     },
     {
       "name": "demo-tenant-management-group",
@@ -86,7 +86,7 @@
       "risk": "high",
       "tier": "privileged",
       "enabled": true,
-      "notes": "The management group mg-demo, with no subscription link. It deploys at management group scope against the Tenant Root Group, which declares the child group with scope tenant(), so nothing is assigned or deployed at the root scope /. Privileged tier: the pipeline deploys it through mirror-privileged-tenant with the tenant identity, which holds User Access Administrator, Management Group Contributor and Mirror Deployment Operator at the Tenant Root Group. The reader previews it with Reader and Mirror What-If Reader there."
+      "notes": "The management group mg-demo, with no subscription link. It deploys at management group scope against the Tenant Root Group, which declares the child group with scope tenant(), so nothing is assigned or deployed at the root scope /. Privileged tier: the pipeline deploys it through mirror-privileged-tenant with the tenant govern identity, which holds User Access Administrator, Management Group Contributor and Mirror Deployment Operator at the Tenant Root Group. The reader previews it with Reader and Mirror What-If Reader there."
     },
     {
       "name": "demo-tenant-governance",
@@ -100,7 +100,7 @@
       "risk": "high",
       "tier": "privileged",
       "enabled": true,
-      "notes": "One Reader role assignment made directly on the management group mg-demo. Runs after demo-tenant-management-group, which declares the group. Privileged tier: the pipeline deploys it through mirror-privileged-tenant with the tenant identity, at management group scope against mg-demo, and deploy-unit.ps1 runs it like any other unit (az deployment mg what-if and create). The reader previews it with Reader and Mirror What-If Reader at the Tenant Root Group."
+      "notes": "One Reader role assignment made directly on the management group mg-demo. Runs after demo-tenant-management-group, which declares the group. Privileged tier: the pipeline deploys it through mirror-privileged-tenant with the tenant govern identity, at management group scope against mg-demo, and deploy-unit.ps1 runs it like any other unit (az deployment mg what-if and create). The reader previews it with Reader and Mirror What-If Reader at the Tenant Root Group."
     }
   ]
 }

@@ -363,7 +363,7 @@ function Get-UnitIdPrefix($UnitDef, $UnitsDoc) {
   return "/subscriptions/$subId/"
 }
 
-# One of the 11 subscription units (a subscription folder's main.bicep), the part of a subscription that is not
+# One of the 10 subscription units (a subscription folder's main.bicep), the part of a subscription that is not
 # privileged.
 function Test-SubscriptionMainUnit($UnitDef) {
   return ([string](Get-Prop $UnitDef 'kind') -eq 'subscription' -and

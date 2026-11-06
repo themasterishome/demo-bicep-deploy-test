@@ -51,6 +51,10 @@ gh api repos/themasterishome/demo-bicep-deploy-test/environments/mirror-producti
 ```
 
 ```powershell
+foreach ($e in 'mirror-reader-dispatch', 'mirror-production-demo', 'mirror-privileged-demo', 'mirror-privileged-tenant') { Write-Host $e; gh api "repos/themasterishome/demo-bicep-deploy-test/environments/$e/deployment-branch-policies" --jq ".branch_policies[].name" }
+```
+
+```powershell
 az identity list --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[].name" -o tsv
 ```
 
@@ -60,6 +64,14 @@ az lock list --resource-group rg-demo-identities --subscription 77488719-1168-4d
 
 ```powershell
 az role definition list --custom-role-only true --scope /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7 --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[].roleName" -o tsv
+```
+
+```powershell
+az role assignment list --assignee-object-id (az identity show --name id-mirror-deploy-demo --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query principalId -o tsv) --all --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[].{role:roleDefinitionName, scope:scope}" -o table
+```
+
+```powershell
+az keyvault show --name kv-demo-mirror-secrets --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "{rbac:properties.enableRbacAuthorization, template:properties.enabledForTemplateDeployment, retention:properties.softDeleteRetentionInDays, purge:properties.enablePurgeProtection, firewall:properties.networkAcls.defaultAction}" -o json
 ```
 
 ```powershell
@@ -96,6 +108,10 @@ foreach ($pair in $pairs) {
 ```
 
 ```powershell
+foreach ($e in 'mirror-reader', 'mirror-reader-dispatch', 'mirror-production-demo', 'mirror-privileged-demo', 'mirror-privileged-tenant') { Write-Host $e; gh variable list --env $e --repo themasterishome/demo-bicep-deploy-test }
+```
+
+```powershell
 az account management-group show --name mg-demo
 ```
 
@@ -120,6 +136,10 @@ Select-String -Path deploy\units.json -Pattern '"enabled"'
 ```
 
 ```powershell
+gh run list --workflow mirror-deploy-unit.yml --status waiting --repo themasterishome/demo-bicep-deploy-test
+```
+
+```powershell
 gh api repos/themasterishome/demo-bicep-deploy-test --jq .has_issues
 ```
 
@@ -141,6 +161,14 @@ gh api repos/themasterishome/demo-bicep-deploy-test/environments --jq ".environm
 
 ```powershell
 az identity list --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[].name" -o tsv
+```
+
+```powershell
+gh api --method DELETE repos/themasterishome/demo-bicep-deploy-test/environments/mirror-example
+```
+
+```powershell
+az group delete --name rg-demo-example --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --yes
 ```
 
 ```powershell
@@ -336,6 +364,14 @@ git switch --create enable-pilot
 ```
 
 ```powershell
+(Get-Content deploy\units.json -Raw) -replace '(?s)("name": "pilot-empty-rg".*?"enabled": )false', '${1}true' | Set-Content deploy\units.json -NoNewline
+```
+
+```powershell
+git diff --stat
+```
+
+```powershell
 git commit --all --message "Enable the pilot unit"
 ```
 
@@ -404,6 +440,14 @@ git switch --create enable-waves
 ```
 
 ```powershell
+(Get-Content deploy\units.json -Raw) -replace '(?s)("name": "rg-demo-network".*?"enabled": )false', '${1}true' -replace '(?s)("name": "rg-demo-routing".*?"enabled": )false', '${1}true' | Set-Content deploy\units.json -NoNewline
+```
+
+```powershell
+git diff --stat
+```
+
+```powershell
 git commit --all --message "Enable the network and routing units"
 ```
 
@@ -452,6 +496,14 @@ git switch --create enable-privileged
 ```
 
 ```powershell
+(Get-Content deploy\units.json -Raw) -replace '(?s)("name": "demo-privileged".*?"enabled": )false', '${1}true' | Set-Content deploy\units.json -NoNewline
+```
+
+```powershell
+git diff --stat
+```
+
+```powershell
 git commit --all --message "Enable the privileged unit"
 ```
 
@@ -488,6 +540,14 @@ git switch --create enable-tenant-mg
 ```
 
 ```powershell
+(Get-Content deploy\units.json -Raw) -replace '(?s)("name": "demo-tenant-management-group".*?"enabled": )false', '${1}true' | Set-Content deploy\units.json -NoNewline
+```
+
+```powershell
+git diff --stat
+```
+
+```powershell
 git commit --all --message "Enable the management group unit"
 ```
 
@@ -517,6 +577,14 @@ gh workflow run mirror-deploy-unit.yml --ref master -f unit=demo-tenant-manageme
 
 ```powershell
 git switch --create enable-tenant-governance
+```
+
+```powershell
+(Get-Content deploy\units.json -Raw) -replace '(?s)("name": "demo-tenant-governance".*?"enabled": )false', '${1}true' | Set-Content deploy\units.json -NoNewline
+```
+
+```powershell
+git diff --stat
 ```
 
 ```powershell

@@ -7,11 +7,10 @@
 # executable in git, so scripts/whatif-rg-sweep.sh ... works on Linux as well).
 #   bash scripts/whatif-rg-sweep.sh <outdir> [slug ...]      no slugs = every resource-groups/*.bicepparam
 # A slug is a resource group file's name without .bicep, for example rg-demo-network or
-# rg-demo-network.deploy-excluded. Only a resource group file with a .bicepparam next to it is previewed.
-# Four files in that folder have none and are left out. The two *.vpn-gateways.bicep files are modules of
-# network-gateways.bicep (unit demo-vpn-gateways), which is previewed at subscription scope on its own.
-# networkwatchers.bicep is a module of main.bicep, previewed with the demo-subscription unit, and
-# rg-demo-web.hash-excluded.bicep holds a name with '#' that what-if cannot preview.
+# rg-demo-routing. Only a resource group file with a .bicepparam next to it is previewed.
+# A file in that folder with none is left out. rg-demo-identities.deploy-excluded.bicep is a module of
+# main.bicep behind a switch, previewed with the demo-subscription unit and its parameters.verify.bicepparam.
+# A file whose resource name holds a '#' would be left out as well, because what-if cannot preview it.
 # Then summarize the results.
 #   pwsh -File scripts/summarize-whatif.ps1 -Dir <outdir> [-Detail]   (powershell -File on Windows PowerShell)
 #
@@ -64,7 +63,7 @@ if ! az group list --subscription "$SUB" --query "[].name" -o tsv 2> "$OUT/rgs.e
   exit 1
 fi
 
-# A slug matches its live RG name case-insensitively, with '_' and '-' ignored (Rg_Demo_Web == rg-demo-web)
+# A slug matches its live RG name case-insensitively, with '_' and '-' ignored (Rg_Demo_Network == rg-demo-network)
 norm() { echo "$1" | tr -d '_-' | tr 'A-Z' 'a-z'; }
 
 cd "$RGDIR" || exit 1

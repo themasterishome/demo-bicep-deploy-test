@@ -12,10 +12,9 @@
        path, a non-empty changeTypes list and onDeploy exactly "inert" or "review" (a review boundary
        also has a note), a hold has a reason and an idPattern or a type with a namePattern, and an
        expected Ignore has a pattern and a reason. Every pattern is a valid regular expression.
-    2. Compiles every entry point once: tenant/main.bicep, the 11 subscription mains, every file in
-       the demo subscription's resource-groups folder (the routine group files, the deploy-excluded and hash-excluded
-       ones, networkwatchers.bicep and the two vpn-gateways files), and every other unit template (the
-       VPN gateway, budget, pilot and tenant templates). The group files of the other ten subscriptions
+    2. Compiles every entry point once: tenant/main.bicep, every subscription main, every file in
+       the demo subscription's resource-groups folder (the routine group files and the deploy-excluded and hash-excluded
+       ones), and every other unit template (the pilot and tenant templates). The group files of any other subscription
        are compiled through their main.bicep, because a module behind a false condition is still compiled.
        Linter rules at error level in bicepconfig.json fail the build, so this is also the lint gate.
        Every compile of steps 2 and 3 runs in one Bicep process, the Bicep CLI's JSON-RPC server (bicep jsonrpc
@@ -29,8 +28,8 @@
        rules the sweeps and the deploy script rely on:
        a. every demo resource-groups/<x>.bicep has <x>.bicepparam whose using line names './<x>.bicep'
           (the resource group sweep finds files only through their .bicepparam), except *.hash-excluded.bicep
-          and the files another file calls as a module (networkwatchers.bicep from main.bicep, the two
-          *.vpn-gateways.bicep files from network-gateways.bicep). Every .bicepparam there names a file that
+          and the files another file calls as a module (the identity group's deploy-excluded file, which main.bicep
+          calls behind a switch). Every .bicepparam there names a file that
           exists, and every demo group unit names the resource group its file is named after.
           For every unit in deploy/units.json with a .bicepparam parameters file, the using line of
           that file names the unit's template. deploy-unit.ps1 gives the Azure CLI only the .bicepparam
@@ -68,7 +67,7 @@
           it fits Windows' limit of about 260 with the checkout folder in front of it.
     5. find-duplicate-declarations.ps1 on every subscription and resource group unit with its
        parameters file (ResourceDeployedMultipleTimes would fail that deployment), as deploy-unit.ps1
-       does, and on the three subscriptions that keep a parameters.verify.bicepparam with that file, so
+       does, and on each subscription that keeps a parameters.verify.bicepparam with that file, so
        the modules behind switches that are off in the routine file are checked too. Then the
        declarations of all units are merged, and the same resource (subscription, resource group, extension
        scope, type and name) declared by two units fails the run, for example a lock declared both in
@@ -710,9 +709,7 @@ try {
 # 2. Compile every entry point once
 $seen = @{}
 $entries = New-Object System.Collections.Generic.List[string]
-# An estate without tenant-scope code has no infra/tenant/main.bicep, so that entry point is taken only when it exists.
-$tenantMain = [IO.Path]::Combine($infra, 'tenant', 'main.bicep')
-$candidates = @(Get-ChildItem -LiteralPath $tenantMain -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }) +
+$candidates = @((Get-Item ([IO.Path]::Combine($infra, 'tenant', 'main.bicep'))).FullName) +
               @(Get-SortedByPath (Get-ChildItem ([IO.Path]::Combine($infra, 'subscriptions', '*', 'main.bicep'))) | ForEach-Object { $_.FullName }) +
               @(Get-SortedByPath (Get-ChildItem (Join-Path $mainRgDir '*.bicep')) | ForEach-Object { $_.FullName }) +
               @($units | Where-Object { $_.template -and (Test-Path -LiteralPath (Get-RepoPath $_.template)) } | ForEach-Object { Get-RepoPath $_.template })

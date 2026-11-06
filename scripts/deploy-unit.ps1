@@ -11,9 +11,9 @@
     2. A deploy run has a committed tree (no uncommitted change under infra, deploy, pipelines or scripts,
        or in the bicepconfig.json at the root). A tree git cannot read counts as uncommitted.
     3. The signed-in identity and tenant are right. A person is listed in units.json (allowedPrincipals) and the
-       tenant is its tenantId. A service principal is listed there too, or it is the identity of a GitHub Actions job:
-       GITHUB_ACTIONS is true and its name equals the client ID in MIRROR_CLIENT_ID, which the workflow takes from
-       the AZURE_CLIENT_ID variable of the job's environment.
+       tenant is its tenantId. A service principal is listed there too, or it is the identity of a GitHub Actions job.
+       That is the case when GITHUB_ACTIONS is true and its name equals the client ID in MIRROR_CLIENT_ID, which
+       the workflow takes from the AZURE_CLIENT_ID variable of the job's environment.
     4. The Azure CLI runs Bicep 0.48.1 (az bicep version, recorded as Bicep: in pre-summary.txt), the
        unit's files compile, and a resource group file or subscription main declares no
        resource twice (find-duplicate-declarations.ps1). Azure would refuse such a deployment
@@ -129,8 +129,8 @@
   is not, so that preflight-drift.ps1 can say how many resources nothing measures yet. Any other
   unexplained Ignore still fails, including a resource in a
   group that has no unit. A resource group record itself fails too, unless the unit names, in
-  groupsDeclaredBy, the subscription unit that declares its resource groups (demo-vpn-gateways
-  deploys into two groups that demo-subscription declares), then it is reported as "declared by
+  groupsDeclaredBy, the subscription unit that declares its resource groups (a gateway unit
+  deploys into a group that another subscription unit declares), then it is reported as "declared by
   <unit>", and that unit's own drift check measures the group.
 
 .PARAMETER Unit

@@ -2,7 +2,7 @@ targetScope = 'subscription'
 
 // The privileged part of the demo subscription: the Owner role assignment on the resource group rg-demo-network and
 // the custom role definition Demo Reader Plus. This file is the template of the unit demo-privileged in
-// deploy/units.json, deployed with privileged.bicepparam beside it. Only the subscription's privileged identity writes
+// deploy/units.json, deployed with privileged.bicepparam beside it. Only the subscription's govern identity writes
 // these, after approval in the environment mirror-privileged-demo, so the identity that deploys the rest of the
 // subscription never has the right to grant itself or anyone else these roles. The other role assignments stay in the
 // resource group files, deployed with their own units.

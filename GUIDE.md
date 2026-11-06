@@ -14,7 +14,7 @@ Contents:
 
 The repository holds the project's four workflows, the helper script `.github/scripts/mirror-pipeline.ps1`, the gate script `scripts/deploy-unit.ps1` and the preflight, unchanged in what they do. The estate is seven units in the Visual Studio subscription, in the project's two tiers. A merge starts no run and deploys nothing, because the pull request's preview already shows what it would change. **Run workflow** plans a unit and deploys it, and only after a reviewer who did not start the run reads the plan and approves it in GitHub. A production unit deploys with the deploy identity `id-mirror-deploy-demo`. A privileged unit changes who has access, so it deploys with a govern identity and waits in a privileged environment. The identity then takes a fresh preview, deploys and takes the second check, and the run keeps the evidence.
 
-The scripts, the workflows and their comments are the production ones with only the names changed, so some comments speak of a team, IT or more subscriptions. The preflight differs in two checks only. Its layout rules accept a deploy-excluded file that `main.bicep` calls behind a switch, and accept `parameters.verify.bicepparam`, because the demo keeps its identity group in one folder with its resource group files, where the project keeps it in a subscription folder of its own.
+The scripts, the workflows and their comments are the production ones with only the names changed, so some comments speak of a team, IT or more subscriptions, and some point to PIPELINE.md and REFERENCE.md, which are the project's documents and not part of this repository. The preflight differs in two checks only. Its layout rules accept a deploy-excluded file that `main.bicep` calls behind a switch, and accept `parameters.verify.bicepparam`, because the demo keeps its identity group in one folder with its resource group files, where the project keeps it in a subscription folder of its own.
 
 The units, in the order they deploy:
 
@@ -23,7 +23,7 @@ The units, in the order they deploy:
 | 0 | `pilot-empty-rg` | Production | `rg-demo-pilot` | An empty template. It proves the identities, the approval, the gate and the evidence without touching a resource. |
 | 1 | `rg-demo-network` | Production | `rg-demo-network` | The network security group `nsg-demo`, the virtual network `vnet-demo` (10.250.0.0/24) and its subnet `snet-default` (10.250.0.0/26), linked to that network security group. Also the lock `lock-rg-demo-network` (CanNotDelete), the policy assignment of the built-in policy "Audit resource location matches resource group location" with the effect Audit, and a Reader role assignment for the reader identity, and the private endpoint `pe-kv-demo-mirror-secrets` of the secrets vault with the zone `privatelink.vaultcore.azure.net`, its link to `vnet-demo` and the endpoint's zone group. |
 | 2 | `rg-demo-routing` | Production | `rg-demo-routing` | The route table `rt-demo` with no routes, the application security group `asg-demo`, and the Automation account `aa-demo-secrets` with the credential `demo-cred`, whose password the unit reads from the secrets vault with `getSecret`. |
-| none | `demo-subscription` | Production | The subscription | The four resource groups (the identity group among them) and the Defender plan for virtual machines, declared in `infra/subscriptions/demo/main.bicep`. The identity group's contents are in `resource-groups/rg-demo-identities.deploy-excluded.bicep`, which `main.bicep` calls only when `deployIdentityGroup` is on. `parameters.bicepparam` leaves it off and `parameters.verify.bicepparam` turns it on for a preview. |
+| 3 | `demo-subscription` | Production | The subscription | The four resource groups (the identity group among them) and the Defender plan for virtual machines, declared in `infra/subscriptions/demo/main.bicep`. The identity group's contents are in `resource-groups/rg-demo-identities.deploy-excluded.bicep`, which `main.bicep` calls only when `deployIdentityGroup` is on. `parameters.bicepparam` leaves it off and `parameters.verify.bicepparam` turns it on for a preview. |
 | 4 | `demo-privileged` | Privileged | The subscription | The Owner role assignment on `rg-demo-network` and the custom role definition `Demo Reader Plus`. |
 | 5 | `demo-tenant-management-group` | Privileged | The Tenant Root Group | Declares the management group `mg-demo` under the Tenant Root Group, which step 3.15 item 8 creates once by hand. |
 | 6 | `demo-tenant-governance` | Privileged | The management group `mg-demo` | A Reader role assignment made on `mg-demo`. |
@@ -42,7 +42,7 @@ This follows project section 1.4. Every unit in `deploy/units.json` has a tier. 
 
 A privileged unit holds the role assignments of Owner, User Access Administrator and Role Based Access Control Administrator and the custom role definitions. A production unit holds everything else, the Reader assignment, the lock and the policy assignment of `rg-demo-network` among it. The `preflight` job of mirror-validate fails a change that puts a role definition or an assignment of one of those three roles into a production unit. A tenant-kind unit names its `managementGroup` in `units.json` and deploys with `az deployment mg` against it. The Tenant Root Group's name is the tenant ID, `d1a349ef-6ac8-4588-a88d-5dab272c700b`, and the other group is `mg-demo`. Nothing is assigned or deployed at the scope `/`.
 
-The project has one unit the pipeline cannot preview, `fdm-rsg-uks-003-hash-excluded`, because it holds a certificate whose name contains `#`. The demo has no such unit.
+The project has one unit the pipeline cannot preview, because it holds a certificate whose name contains `#`. The demo has no such unit.
 
 ### How the identities are protected
 
@@ -79,17 +79,17 @@ Nobody can deploy alone in the normal flow. The person who starts a run cannot a
 | Item | Demo | Project |
 |---|---|---|
 | Tenant | `d1a349ef-6ac8-4588-a88d-5dab272c700b`, the personal tenant | The production tenant |
-| Subscriptions | One, the Visual Studio Enterprise Subscription `77488719-1168-4d53-af9a-f5c3bc9291d7`, folder `demo` | Eleven, plus a separate subscription for the identities |
-| Where the identities live | `rg-demo-identities`, in the same subscription the units deploy to. The deploy identity holds its roles on the workload groups only, so it cannot write in that group | `rg-mirror-identities` in the platform subscription FDM - Infrastructure, where its deploy identity is kept away from the group in the same way |
+| Subscriptions | One, the Visual Studio Enterprise Subscription `77488719-1168-4d53-af9a-f5c3bc9291d7`, folder `demo` | Ten. The identities live in one of them, the platform subscription |
+| Where the identities live | `rg-demo-identities`, in the same subscription the units deploy to. The deploy identity holds its roles on the workload groups only, so it cannot write in that group | `rg-mirror-identities` in the platform subscription, where its deploy identity is kept away from the group in the same way |
 | Repository | `themasterishome/demo-bicep-deploy-test`, public, personal account | A private repository in a GitHub Enterprise Cloud organization |
 | GitHub plan | Free. Every environment control works on Free for a public repository | Enterprise Cloud, which a private repository needs for required reviewers |
-| Reviewers | The second account `klaudiomarashi`, as a user, with Prevent self-review on. A personal repository has no teams | Two approvers teams, `technology-services-platforms` for the production environments and `mirror-privileged-approvers` for the 12 privileged ones, with Prevent self-review on |
+| Reviewers | The second account `klaudiomarashi`, as a user, with Prevent self-review on. A personal repository has no teams | Two approvers teams, one for the production environments and `mirror-privileged-approvers` for the 11 privileged ones, with Prevent self-review on |
 | Code owners | `@themasterishome`, plus the second account | The approvers team |
-| Units | 7 pipeline units, 4 production and 3 privileged | 67 pipeline units, 53 production and 14 privileged |
-| Identities | 4, with 5 federated credentials | 24, with 25 federated credentials |
-| Environments | 5, `mirror-reader`, `mirror-reader-dispatch`, `mirror-production-demo`, `mirror-privileged-demo` and `mirror-privileged-tenant` | 25 |
+| Units | 7 pipeline units, 4 production and 3 privileged | 65 pipeline units, 52 production and 13 privileged |
+| Identities | 4, with 5 federated credentials | 22, with 23 federated credentials |
+| Environments | 5, `mirror-reader`, `mirror-reader-dispatch`, `mirror-production-demo`, `mirror-privileged-demo` and `mirror-privileged-tenant` | 23 |
 | Custom roles | 7, which are Mirror What-If Reader, Mirror What-If Reader Tenant, Mirror Lock Writer, Mirror Deployment Operator, Mirror Deployment Operator Tenant, Mirror Key Vault Deployment and Mirror Platform Deployment | 9 |
-| Tenant units | Two, against the Tenant Root Group and `mg-demo` | Three, against the Tenant Root Group and `FDMGroupResources` |
+| Tenant units | Two, against the Tenant Root Group and `mg-demo` | Three, against the Tenant Root Group and a management group below it |
 | Rulesets | `protect-master` and `protect-tags` | `protect-master`, `protect-github-folder` and `protect-tags`, next to the organization ruleset |
 | Retention | 90 days, the longest for a public repository | 365 days |
 | Change tickets | Made-up numbers such as `DEMO-0001` | IT's change tickets |
@@ -130,6 +130,7 @@ You need these tools on the workstation.
 | Bicep CLI | 0.48.1, the version the workflows pin and `deploy-unit.ps1` requires. Only needed to run the preflight or the gate script locally, because every job installs its own | `az bicep version` |
 | GitHub CLI | 2.48 or later | `gh --version` |
 | Git | 2.28 or later | `git --version` |
+| Python | 3, used once to unpack the evidence zip in section 4.2 item 10 | `python --version` |
 | Windows PowerShell | 5.1, for every command in this guide | `$PSVersionTable.PSVersion` |
 | PowerShell 7 | 7.4 or later, optional, to run the helper tests locally as the runners do | `pwsh --version` |
 
@@ -216,7 +217,7 @@ With one account, nobody can approve what that account started while Prevent sel
 
 Skip every item that says to approve the pull request as the second account (4.2 item 3, 4.3 item 3, 4.5 item 3, 4.6 item 3, 4.7 item 3, 4.8 item 3 and 4.10 item 2), and merge the pull request yourself. Where an item says to approve a deployment as the second account, you approve it yourself.
 
-Everything else is the same. An earlier run of these steps used exactly this variant.
+Everything else is the same.
 
 ### 3.1 Check the plan
 
@@ -316,7 +317,7 @@ The output is two lines, `@SECOND_LOGIN` and `@themasterishome`.
    gh api repos/themasterishome/demo-bicep-deploy-test --jq .default_branch
    ```
 
-   The output must be `master`. If it is not, set it and run the check again. An earlier run of these steps showed `main` after the first push, and this command fixed it.
+   The output must be `master`. If it is not, set it and run the check again. An empty repository can show `main` after the push of `master`, and this command sets it.
 
    ```powershell
    gh api --method PATCH repos/themasterishome/demo-bicep-deploy-test -f default_branch=master --jq .default_branch
@@ -343,7 +344,7 @@ In the repository, select **Settings**. In the left sidebar select **Actions**, 
 
 Under **Actions permissions**, select the option shown in the table. It adds the choices **Allow actions created by GitHub** and **Allow or block specified actions and reusable workflows**. Tick the first, type `azure/login@*` in the box of the second, and select **Save**. Separate several patterns with a comma. The setting **Require actions to be pinned to a full-length commit SHA** sits in the same section. The retention box is labeled **Check, workflow run, status, artifact and log retention**.
 
-Select **Save** under each section you change. To check, reload the page and confirm each value. A run of these steps checked the same values through the REST API on a public Free repository, and all of them held.
+Select **Save** under each section you change. To check, reload the page and confirm each value.
 
 ### 3.7 Create the branch ruleset protect-master
 
@@ -365,7 +366,7 @@ The project's organization ruleset already blocks force pushes and branch deleti
    | Allowed merge methods | **Squash** only. It is also an option under the pull request rule. The change ticket lookup expects one commit per pull request |
    | Require status checks to pass before merging | On, with **Require branches to be up to date before merging** |
 
-   The run of these steps on a public Free repository ended with the rules deletion, non-fast-forward and pull request (squash only) on the branch ruleset.
+   The branch ruleset then holds the rules deletion, non-fast-forward and pull request (squash only).
 
 3. Select **Create**. A ruleset in **Active** status takes effect at once.
 
@@ -399,11 +400,11 @@ Check that `gh api repos/themasterishome/demo-bicep-deploy-test/rulesets --jq ".
 
 ### 3.10 Turn on push protection
 
-Secret scanning already runs on every public repository for free. Push protection for the repository is off by default. In the repository, select **Settings**. In the left sidebar, in the section "Security and quality" ("Security" in older layouts), select **Advanced Security**. If **Secret Protection** is not enabled yet, select **Enable** to the right of it first. In the Secret Protection section, select **Enable** to the right of **Push protection**. The run of these steps confirmed that push protection was on afterwards. The project needs GitHub Secret Protection in its plan for the same switch. In both, the Gitleaks scan of mirror-validate catches what push protection misses.
+Secret scanning already runs on every public repository for free. Push protection for the repository is off by default. In the repository, select **Settings**. In the left sidebar, in the section "Security and quality" ("Security" in older layouts), select **Advanced Security**. If **Secret Protection** is not enabled yet, select **Enable** to the right of it first. In the Secret Protection section, select **Enable** to the right of **Push protection**. Check afterwards that push protection is on. The project needs GitHub Secret Protection in its plan for the same switch. In both, the Gitleaks scan of mirror-validate catches what push protection misses.
 
 ### 3.11 Create the 5 environments
 
-The project has 25 environments, one per identity that deploys, two for the reader, and a production and a privileged one for each of its 11 subscriptions. The demo has one subscription and one tenant, so it has five.
+The project has 23 environments, one per identity that deploys, two for the reader, and a production and a privileged one for each of its 10 subscriptions, plus one for the tenant units. The demo has one subscription and one tenant, so it has five.
 
 | Environment | Reviewers | Deployment branches | Used by |
 |---|---|---|---|
@@ -495,7 +496,7 @@ The project puts the identities in a group of the platform subscription. The dem
 
    The private endpoint, the zone and the zone group come with the unit `rg-demo-network` (wave 1), which declares them. The vault must exist before that unit runs, because the endpoint points at it. The audit log of the project's vault goes to a Log Analytics workspace, and the demo subscription has none of its own, so the demo vault has no audit setting.
 
-   Give your own account the role Key Vault Secrets Officer on the vault, so you can write a secret. Replace `YOUR_OBJECT_ID` with the object ID of your signed-in account.
+   Give your own account the role Key Vault Secrets Officer on the vault, so you can write a secret. In the project, the set-up engineer's own assignment on the vault is removed afterwards, with the lock off first. The demo leaves it until the group is deleted. Replace `YOUR_OBJECT_ID` with the object ID of your signed-in account.
 
    ```powershell
    az role assignment create --assignee-object-id YOUR_OBJECT_ID --assignee-principal-type User --role "Key Vault Secrets Officer" --scope /subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-identities/providers/Microsoft.KeyVault/vaults/kv-demo-mirror-secrets
@@ -554,7 +555,7 @@ The project needs nine custom roles, and the demo needs seven. Each carries only
 | Mirror Platform Deployment | `Microsoft.Resources/deployments/*`, `Microsoft.Resources/subscriptions/resourceGroups/read`, `Microsoft.Resources/subscriptions/resourceGroups/write`, `Microsoft.Security/pricings/read` and `Microsoft.Security/pricings/write` | The deploy identity, at the subscription |
 
 The reasons are these:
-- Mirror What-If Reader adds the one action Reader lacks for a preview at the validation level `ProviderNoRbac`, which every preview in this folder uses. The Tenant Root Group needs its own copy, because a custom role on a management group may name only one scope, and it cannot mix scopes. The project lists 11 subscriptions as the scopes of the first, and the demo one.
+- Mirror What-If Reader adds the one action Reader lacks for a preview at the validation level `ProviderNoRbac`, which every preview in this folder uses. The Tenant Root Group gets its own copy, so the role that is assignable at the Tenant Root Group is a different role from the one assignable at the subscription and each role's reach stays plain. The project lists 10 subscriptions as the scopes of the first, and the demo one.
 - Mirror Lock Writer exists because only Owner and User Access Administrator carry `Microsoft.Authorization/locks/*`, and the deploy identity holds neither. The production unit `rg-demo-network` writes a lock.
 - Mirror Deployment Operator exists because User Access Administrator lacks the deployment actions, so the govern identity needs a role to start a deployment. It carries nothing else. The tenant copy adds the two read actions on management groups that a deployment at management group scope needs.
 - Mirror Key Vault Deployment carries two rights, both on the vault only. The first lets a template read a secret through a reference. It does not let the identity read the secret itself, because Azure Resource Manager does that. The second is what Azure checks when a deployment writes a private endpoint that points at the vault, because the endpoint's connection is approved on the vault's side. Without it Azure refuses the write of `pe-kv-demo-mirror-secrets` with `LinkedAuthorizationFailed`, although the identity may write endpoints in its own group, and a preview does not show the refusal.
@@ -658,7 +659,7 @@ The reader identity runs every pipeline preview: pull request previews, the plan
 
 ### 3.15 Create the deploy and govern identities
 
-The project creates two identities per subscription, because every subscription has units of both tiers, and one more for the tenant units. That makes 23 beside the reader. The demo has one subscription, so it creates three.
+The project creates two identities per subscription, because every subscription has units of both tiers, and one more for the tenant units. That makes 21 beside the reader. The demo has one subscription, so it creates three.
 - `id-mirror-deploy-demo`, for the production units
 - `id-mirror-govern-demo`, for `demo-privileged`
 - `id-mirror-govern-tenant`, for the two tenant units
@@ -749,7 +750,7 @@ Each identity holds its standing roles on its own scope only. Never give a deplo
 
 7. The project's item 5 declares these standing assignments in the privileged units after the pilot. The demo leaves it out.
 
-8. Create the management group `mg-demo` once by hand, like `rg-demo-pilot`. A preview cannot run for a management group that does not exist yet, and Azure answers `AuthorizationFailed` on the group's own scope "or the scope is invalid". Once the group exists, `demo-tenant-management-group` previews and deploys as NoChange. The project's group `FDMGroupResources` exists in the same way. The demo account needs Management Group Contributor at the Tenant Root Group for this one command. Grant it, create the group and remove the grant.
+8. Create the management group `mg-demo` once by hand, like `rg-demo-pilot`. A preview cannot run for a management group that does not exist yet, and Azure answers `AuthorizationFailed` on the group's own scope "or the scope is invalid". Once the group exists, `demo-tenant-management-group` previews and deploys as NoChange. The project's management group exists in the same way. The demo account needs Management Group Contributor at the Tenant Root Group for this one command. Grant it, create the group and remove the grant.
 
    ```powershell
    $root = '/providers/Microsoft.Management/managementGroups/d1a349ef-6ac8-4588-a88d-5dab272c700b'
@@ -761,7 +762,7 @@ Each identity holds its standing roles on its own scope only. Never give a deplo
 
    The create command prints the group in JSON, with the display name `Demo`. A new role assignment can take a few minutes to take effect, so wait if the create command is refused and run it again. In the browser, search for **Management groups**, select **Create**, type `mg-demo` as the ID and `Demo` as the display name, and select **Submit**.
 
-The demo run proved every grant of this step. A missing role shows first in the fresh preview of an apply job, as `AuthorizationFailed` for `Microsoft.Resources/deployments/whatIf/action` (section 5).
+A missing role shows first in the fresh preview of an apply job, as `AuthorizationFailed` for `Microsoft.Resources/deployments/whatIf/action` (section 5).
 
 Check that both lists of identities are complete.
 
@@ -846,7 +847,7 @@ That makes five credentials, one for each environment. Create them one at a time
    }
    ```
 
-   The output is two rows for the reader and one for each of the other three identities, each with its subject, the issuer and the audience `api://AzureADTokenExchange`. If a value differs, run that credential's `create` command of item 1 again, with the same `--name` and the right value. It replaces the credential in place. Do not delete it, because the lock of step 3.12 refuses the delete.
+   The output is two rows for the reader and one for each of the other three identities, each with its subject, the issuer and the audience `api://AzureADTokenExchange`. If a value differs, run `az identity federated-credential update --name CREDENTIAL_NAME --identity-name IDENTITY_NAME --resource-group rg-demo-identities --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --subject SUBJECT`, adding `--issuer` or `--audiences` for those values. Do not delete it, because the lock of step 3.12 refuses the delete.
 
    In the portal, search for **Managed Identities** and select it. Select `id-mirror-reader`, then, in the left menu under **Settings**, select **Federated credentials**. The list shows the credentials of that identity with their subject.
 
@@ -890,7 +891,7 @@ The client IDs of the pipeline's identities live in one place, the `AZURE_CLIENT
 
 The check in the script is a guard against mistakes. The boundary is Entra and the identity's roles. Entra issues a token to a job only when the job's subject matches a federated credential of the identity, and the subject names one repository and one environment. If someone changes a variable to another identity's client ID, the sign-in fails unless that identity trusts the environment. A changed workflow could pass the script any client ID, so what stops it is the ruleset on `master` (step 3.7) and the rule of each environment that only `master` may use it (step 3.11). Both apply jobs, `apply` and `apply-privileged`, also stop in the step before the sign-in when no `AZURE_CLIENT_ID` reaches the job or the value is not a GUID. That step cannot tell a repository or organization value from the environment's own, so the variable is set on the environments only (step 3.18).
 
-Entra is the boundary that holds when that check is passed. In an earlier run of these steps, the reader's client ID was put into the deploy environment on purpose. It passed the GUID check, and `azure/login` then failed with the following message.
+Entra is the boundary that holds when that check is passed. If the reader's client ID is put into the deploy environment, it passes the GUID check, and `azure/login` then fails with the following message.
 
 ```text
 AADSTS700213: No matching federated identity record found for presented assertion subject 'repo:OWNER@OWNER_ID/REPO@REPO_ID:environment:mirror-production-demo'
@@ -1067,7 +1068,7 @@ Do section 3 the day before, or at least two hours before the audience arrives. 
 - [ ] You merge nothing else while a deployment waits. A merge moves `master`, and the waiting apply then refuses (project section 4.1).
 - [ ] Before a unit's first deployment, every resource it declares that points at another resource finds that target in Azure.
 
-The last item protects the write. A what-if never checks that a resource's target exists, so a plan of NoChange passes the gate and Azure then refuses the write with `ResourceNotFound`. The pointers to check are an autoscale setting's `targetResourceUri`, a diagnostic setting's `workspaceId`, `storageAccountId` and `eventHubAuthorizationRuleId`, a private endpoint's `privateLinkServiceId`, a DNS zone link's `virtualNetwork`, a peering's `remoteVirtualNetwork`, the scopes of alerts, the receivers of action groups, backup and Site Recovery items, Logic App connections and the runbooks of job schedules. A resource whose target is gone is declared as an existing reference, not written (project REFERENCE.md sections 8.3 and 9.2). The demo has three pointers, the private endpoint to the vault, the zone link to `vnet-demo` and the zone group to the endpoint. The vault exists since step 3.12 and the other two targets sit in the same unit, which writes each target before the resource that points at it.
+The last item protects the write. A what-if never checks that a resource's target exists, so a plan of NoChange passes the gate and Azure then refuses the write with `ResourceNotFound`. The pointers to check are an autoscale setting's `targetResourceUri`, a diagnostic setting's `workspaceId`, `storageAccountId` and `eventHubAuthorizationRuleId`, a private endpoint's `privateLinkServiceId`, a DNS zone link's `virtualNetwork`, a peering's `remoteVirtualNetwork`, the scopes of alerts, the Logic App, Function and Automation runbook receivers of action groups, backup and Site Recovery items, Logic App connections and the runbooks of job schedules. A resource whose target is gone is declared as an existing reference, not written (project REFERENCE.md sections 8.3 and 9.2). A creation source is not a target of this kind. Azure accepts a write of a managed disk, a managed image or a gallery image version whose snapshot, source machine or image was deleted, of a virtual machine whose boot diagnostics storage account is gone, and of a dashboard that pins a deleted resource. Leave these declared. The demo has three pointers, the private endpoint to the vault, the zone link to `vnet-demo` and the zone group to the endpoint. The vault exists since step 3.12 and the other two targets sit in the same unit, which writes each target before the resource that points at it.
 
 Plan jobs take one to two minutes, and apply jobs about three.
 
@@ -1075,7 +1076,7 @@ Plan jobs take one to two minutes, and apply jobs about three.
 
 This is project step 3.23 and sections 4.2 to 4.8. Project section 4.6, the check of the deploy identity's roles, is step 3.15 item 6 here, done once at set-up.
 
-1. Create the three resource groups of the demo estate. The project creates only the pilot's group, because its other groups exist already. The demo makes its groups exist in the same way. Their name, region and tag match `infra/subscriptions/demo/main.bicep`.
+1. Create the three resource groups of the demo estate. The project creates only the pilot's group, by hand under the pilot's change ticket, because its other groups exist already. The demo makes its groups exist in the same way. Their name, region and tag match `infra/subscriptions/demo/main.bicep`.
 
    ```powershell
    foreach ($g in 'rg-demo-pilot', 'rg-demo-network', 'rg-demo-routing') {
@@ -1139,7 +1140,7 @@ This is project step 3.23 and sections 4.2 to 4.8. Project section 4.6, the chec
 
 6. Show the waiting apply. Open the run from the **Actions** tab. After `plan pilot-empty-rg` and `collect`, the job `apply pilot-empty-rg` shows **Waiting**, for the environment `mirror-production-demo`. The plan's summary says it holds no effective change. Show the audience that the plan summary and the artifact `reviewed-plan-pilot-empty-rg` can be read while it waits. The artifacts are listed in the "Artifacts" section at the bottom of the run's page, and selecting a name downloads it as a zip file.
 
-7. Show Prevent self-review. In your own window, open the run. You started it, so GitHub does not let you approve it. The text of the refusal was not recorded in the run of these steps, so read what the page says and tell the audience that. Most likely the **Review deployments** button is missing, or GitHub does not let you tick the environment. Do not use **Start all waiting jobs** here. It is the administrators' bypass of step 3.11, and it would skip Prevent self-review in front of the audience. With the one-account variant, skip this item.
+7. Show Prevent self-review. In your own window, open the run. You started it, so GitHub does not let you approve it. GitHub's text for this refusal is not recorded here, so read what the page says and tell the audience that. Most likely the **Review deployments** button is missing, or GitHub does not let you tick the environment. Do not use **Start all waiting jobs** here. It is the administrators' bypass of step 3.11, and it would skip Prevent self-review in front of the audience. With the one-account variant, skip this item.
 
 8. Approve it as the second account. In the private window, open the repository's **Actions** tab and the run. The page shows a notice that the run is waiting for review. Select **Review deployments**, tick `mirror-production-demo`, write a comment that names `DEMO-0003`, and select **Approve and deploy**. The apply job then starts.
 
@@ -1269,7 +1270,7 @@ The unit is enabled already, so this wave needs no pull request.
 
    The unit deploys the Automation account's credential with a password that no file in the repository holds. `rg-demo-routing.bicepparam` reads it from the vault with `az.getSecret`, the deploy identity holds Mirror Key Vault Deployment on the vault, and Azure Resource Manager reads the secret as a trusted service, although the vault's public network access is disabled. `parameters.json` in the evidence shows `<secure input, not recorded>` for the password. A preview does not evaluate the secret, so only the deployment proves it. Start the same unit again with no `allowCreate`. Both checks show `NoChange=4`, and nothing is deployed that changes a value. This is the proof of project section 4.8. A second deployment of the same commit changes nothing, so its plan, its first check and its second check all show the same records.
 
-   Two units that depend on each other deploy one after the other, as the project's two VPN gateway units do. Start `rg-demo-routing` only after the run of `rg-demo-network` has finished, and approve each run on its own.
+   Two units that depend on each other deploy one after the other, and the project's units that depend on each other do the same. Start `rg-demo-routing` only after the run of `rg-demo-network` has finished, and approve each run on its own.
 
 ### 4.5 Wave 4, the privileged unit
 
@@ -1324,7 +1325,7 @@ This is project step 3.23 item 8 and sections 4.2 to 4.8, for a privileged unit.
 
 ### 4.6 Wave 5, the management group
 
-This is the first tenant unit. It deploys at management group scope against the Tenant Root Group, whose name is the tenant ID, and it declares the management group `mg-demo` with `scope: tenant()`. A preview cannot run for a management group that does not exist yet, so `mg-demo` was created once by hand in step 3.15 item 8, and this unit previews and deploys it as NoChange. The project's group `FDMGroupResources` exists in the same way. The reader previews it with Reader and Mirror What-If Reader Tenant on the Tenant Root Group (step 3.14). `id-mirror-govern-tenant` deploys it, with User Access Administrator, Management Group Contributor and Mirror Deployment Operator Tenant there (step 3.15), after the approval in `mirror-privileged-tenant`.
+This is the first tenant unit. It deploys at management group scope against the Tenant Root Group, whose name is the tenant ID, and it declares the management group `mg-demo` with `scope: tenant()`. A preview cannot run for a management group that does not exist yet, so `mg-demo` was created once by hand in step 3.15 item 8, and this unit previews and deploys it as NoChange. The project's management group exists in the same way. The reader previews it with Reader and Mirror What-If Reader Tenant on the Tenant Root Group (step 3.14). `id-mirror-govern-tenant` deploys it, with User Access Administrator, Management Group Contributor and Mirror Deployment Operator Tenant there (step 3.15), after the approval in `mirror-privileged-tenant`.
 
 1. Enable the unit in a pull request. Create a branch.
 
@@ -1542,7 +1543,7 @@ A rollback cannot remove a resource that a deployment created with `allowCreate`
 | A re-run of a failed deploy run is green, and nothing deployed | The apply job runs only on the first attempt (`github.run_attempt == '1'`). A skipped job counts as passed, so the run shows green | Read the apply job, not the run's color. To retry, start a new run with Run workflow |
 | **Review deployments** shows nothing to tick | The button belongs to the run whose apply job waits. A failed or finished run of the same unit has nothing to approve | Open the newest run, named "Deploy UNIT (TICKET)", whose apply job shows **Waiting** |
 | The person who started the run cannot approve it | Prevent self-review is on, which is the intended control | The second account approves. Alone, use the variant of section 3.0. An admin can also use **Start all waiting jobs**, with a comment |
-| The first deployment of a new resource passes, and the second check shows a Modify on a value nobody set, with exit 3 | The code left out a value Azure sets on create, so live has it and the code does not. An earlier run of these steps hit this with `privateEndpointVNetPolicies` on a virtual network, which the demo now declares | Keep the resource. Declare the live value in the resource group file through a code pull request, then start a new run. Do not retry the same commit |
+| The first deployment of a new resource passes, and the second check shows a Modify on a value nobody set, with exit 3 | The code left out a value Azure sets on create, so live has it and the code does not. A virtual network whose `privateEndpointVNetPolicies` the code leaves out shows this. The demo declares it | Keep the resource. Declare the live value in the resource group file through a code pull request, then start a new run. Do not retry the same commit |
 | A run started from Git Bash is refused, and the IDs read `C:/Program Files/Git/subscriptions/...` | Git Bash rewrites arguments that start with `/subscriptions/` into Windows paths | Run the command from PowerShell. In Git Bash, put `MSYS_NO_PATHCONV=1` in front of it |
 | `az policy assignment create` fails with `InvalidAuthenticationTokenTenant` | With `--scope`, the command signs in with the CLI default subscription, which is in another tenant | Run `az account set --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7` and try again (section 2) |
 | A sign-in fails with `AADSTS70021` or `AADSTS700213` | The federated credential's subject does not match the job's, or the credential is only a few minutes old, or the environment's `AZURE_CLIENT_ID` names an identity whose credential does not name this repository and environment | Compare the subject the `azure/login` step prints with step 3.17's read-back, and run the check of step 3.19. If they match, wait a few minutes and start a new run |
@@ -1559,7 +1560,7 @@ A rollback cannot remove a resource that a deployment created with `allowCreate`
 | A plan of a tenant unit fails with `AuthorizationFailed` | The reader lacks Reader or Mirror What-If Reader Tenant on the Tenant Root Group, or the roles have not taken effect yet | Run the second check of step 3.14 item 3, wait about 10 minutes and start a new run |
 | A role assignment fails with `PrincipalNotFound` | A parameter file holds a `principalId` that differs from the identity's, for example after the identity was created again. Or the identity is only a minute old and Azure does not know it yet | Put the identity's `principalId` into `rg-demo-network.bicepparam`, `privileged.bicepparam` and `governance.mg-demo.bicepparam` through a code pull request. For a new identity, wait a minute and run the command again |
 | An apply job ran at once, with no pause for the second account | The environment has no required reviewer, for example because a workflow named an environment that did not exist and GitHub created it with no rules | Treat the run as unreviewed. Set the reviewers and the branch rule as step 3.11 shows, and check them with its read-back before the next run |
-| An apply fails in Azure with `ResourceNotFound` on one resource, after a plan of NoChange and a passed gate | A what-if never checks that a resource's target exists. The resource points at one that is gone, such as an autoscale setting on a deleted scale set. The deployment is left as Failed in the deployment history, and nothing was deleted | Make the resource an existing reference through a code pull request (project REFERENCE.md sections 8.3 and 9.2), then start a new run at the fixed commit. Do not retry the old run. The check before a first deployment is in section 4.1 |
+| An apply fails in Azure with `ResourceNotFound` on one resource, after a plan of NoChange and a passed gate | A what-if never checks that a resource's target exists. The resource points at one that is gone, such as an autoscale setting on a deleted scale set. The deployment is left as Failed in the deployment history, and nothing was deleted | Stop, keep the evidence of the run and deploy no other unit, because the failed apply may have written part of the unit. Then make the resource an existing reference through a code pull request (project REFERENCE.md sections 8.3 and 9.2), then start a new run at the fixed commit. Do not retry the old run. The check before a first deployment is in section 4.1 |
 | `gh run download` fails with a zip error on Windows | The artifact's zip holds the same entry twice, which the command refuses | Fetch the zip through `gh api` and unpack it with Python, as 4.2 item 10 shows |
 | A tenant unit cannot be previewed, with `AuthorizationFailed` on the group's own scope "or the scope is invalid" | The management group `mg-demo` does not exist, because step 3.15 item 8 was not done. A preview cannot run against a group that is not there | Create the group as step 3.15 item 8 shows |
 | A plan or the apply job fails with `AuthorizationFailed` for `Microsoft.Resources/deployments/whatIf/action` | The identity that signs in lacks a role. The fresh preview of the apply job shows a missing grant first | Compare the identity's roles with step 3.15 and the role table of step 3.13, grant the missing one and wait about 10 minutes |

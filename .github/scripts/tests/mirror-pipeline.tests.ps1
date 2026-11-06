@@ -292,7 +292,7 @@ try {
   $v = New-Verdict 'pilot-empty-rg' 'plan' 2 (Join-Path $tmp 'nothing')
   Assert-True $v.technical 'no gate result is a technical failure'
   Assert-True ((Format-VerdictMarkdown (New-Verdict 'pilot-empty-rg' 'code' 1 $ev1)) -like '*for information*') 'a code verdict is marked as information'
-  $planObj = [pscustomobject][ordered]@{ unit = 'pilot-empty-rg'; subscription = 'demo'; scope = 'demo'; tier = 'production'; environment = 'mirror-production-demo'; commit = ('a' * 40); trigger = 'push'; startedBy = 'it-user-one'
+  $planObj = [pscustomobject][ordered]@{ unit = 'pilot-empty-rg'; subscription = 'demo'; scope = 'demo'; tier = 'production'; environment = 'mirror-production-demo'; commit = ('a' * 40); trigger = 'Run workflow'; startedBy = 'it-user-one'
     changeRef = 'CHG0012345'; reason = "Pilot, add`na thing"; options = [ordered]@{ acknowledgeReview = $true; allowCreate = @(); allowModify = @($inScope); allowHeld = @() } }
   $md = Format-PlanMarkdown $planObj (New-Verdict 'pilot-empty-rg' 'plan' 1 $ev2)
   Assert-True ($md -like '*## Plan for pilot-empty-rg*Scope: demo, tier production, environment mirror-production-demo*Change ticket: CHG0012345*Options in force: acknowledgeReview, allowModify (1)*allowModify: /subscriptions/*' -and $md -notlike '*add' + "`n" + 'a thing*') 'the plan markdown leads with the unit, the ticket and the options in force, on one line each'

@@ -11,8 +11,8 @@ The units, in the order they deploy:
 |---|---|---|---|
 | 0 | `pilot-empty-rg` | Production | An empty template into the resource group `rg-demo-pilot`. It proves the sign-in, the roles, the approval and the evidence without touching a resource. |
 | 1 | `rg-demo-network` | Production | The network security group `nsg-demo` and the virtual network `vnet-demo` with one subnet, `snet-default`. Also a lock, a policy assignment and a Reader role assignment on the group. |
-| 2 | `rg-demo-routing` | Production | The route table `rt-demo` and the application security group `asg-demo`. |
-| none | `demo-subscription` | Production | The three resource groups, declared in `infra/subscriptions/demo/main.bicep`. No deployment step enables it, and the drift check reads it when it is enabled. |
+| 2 | `rg-demo-routing` | Production | The route table `rt-demo`, the application security group `asg-demo` and the Automation account `aa-demo-secrets` with its credential `demo-cred`. |
+| 3 | `demo-subscription` | Production | The four resource groups and the Defender plan for virtual machines, declared in `infra/subscriptions/demo/main.bicep`. No deployment step enables it, and the drift check reads it when it is enabled. |
 | 4 | `demo-privileged` | Privileged | The Owner role assignment on `rg-demo-network` and the custom role `Demo Reader Plus`. |
 | 5 | `demo-tenant-management-group` | Privileged | The management group `mg-demo` under the Tenant Root Group. |
 | 6 | `demo-tenant-governance` | Privileged | A Reader role assignment on `mg-demo`. |
@@ -44,7 +44,7 @@ and closes the issue when a run finds every unit clean.
 | `infra/subscriptions/demo/` | The Bicep code of the subscription. One file per resource group, every resource written out in full, and `privileged.bicep` for the privileged unit. |
 | `infra/tenant/` | The Bicep code of the two tenant units, the management group and the role assignment on it. |
 | `deploy/units.json` | The deployment units, their tier and order, the subscription, the tenant and the people who may run the scripts by hand. |
-| `deploy/boundaries.json` | The fields the gate accepts or stops on, the held resources and the expected Ignore records. All three lists are empty here. |
+| `deploy/boundaries.json` | The fields the gate accepts or stops on, the held resources and the expected Ignore records. Here it holds four inert boundaries on the private endpoint's zone group, two expected Ignore patterns and no hold. |
 | `pipelines/pilot/empty-rg.bicep` | The empty template of the pilot unit. |
 | `scripts/` | The deploy gate (`deploy-unit.ps1`), the preflight, the duplicate check, the drift check and the read-only sweeps. |
 | `.github/workflows/` | The four workflows: `mirror-validate`, `mirror-pr`, `mirror-deploy-unit` and `mirror-drift`. |
