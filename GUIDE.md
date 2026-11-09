@@ -458,7 +458,7 @@ The first command lists the five names. The second and the third each show a `re
 
 Never add another rule to `mirror-reader-dispatch` or to a production or privileged environment. A rule such as `refs/pull/*/merge` on one of them would let a pull request deploy.
 
-Keep **Allow administrators to bypass configured protection rules** on, as GitHub's default and as the project does. It is the break-glass route. You, as the repository's admin, can then use **Start all waiting jobs** on a waiting run, after a comment. The REST call has no field for it, so it is a setting under **Settings** > **Environments** > `mirror-production-demo` only. Check that the box **Allow administrators to bypass configured protection rules** is ticked, and leave it.
+Keep **Allow administrators to bypass configured protection rules** on, as GitHub's default and as the project does. It is the break-glass route. You, as the repository's admin, can then use **Start all waiting jobs** on a waiting run, after a comment. The REST call above leaves it as it is, and the same call with `can_admins_bypass` in its body changes it. In the browser it is under **Settings** > **Environments** > `mirror-production-demo`. Check that the box **Allow administrators to bypass configured protection rules** is ticked, and leave it.
 
 ### 3.12 Create the resource group for the identities
 
