@@ -843,7 +843,7 @@ gh api "repos/themasterishome/demo-bicep-deploy-test/actions/runs/RUN_ID/artifac
 New-Item -ItemType Directory -Force C:\demo-setup\evidence-pilot | Out-Null
 ```
 
-> On Windows, `gh run download` fails on these artifacts, because the zip holds the same entry twice, so I'll fetch the zip through the API instead. Wrapping it in `cmd /c` stops Windows PowerShell 5.1 from changing the bytes on the way to the file.
+> `gh run download` unpacks these artifacts with a current GitHub CLI. An older one failed on them, because the zip holds the same entry twice, so I'll show the route through the API that works with any version. Wrapping it in `cmd /c` stops Windows PowerShell 5.1 from changing the bytes on the way to the file.
 
 ```powershell
 cmd /c "gh api repos/themasterishome/demo-bicep-deploy-test/actions/artifacts/ARTIFACT_ID/zip > C:\demo-setup\evidence-pilot\ARTIFACT_NAME.zip"
