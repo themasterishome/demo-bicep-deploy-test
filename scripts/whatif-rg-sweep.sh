@@ -32,13 +32,13 @@ OUT="${1:?usage: bash scripts/whatif-rg-sweep.sh <outdir> [slug ...]}"; shift
 # so a relative <outdir> still points at the same place for status.txt and the JSON output.
 mkdir -p "$OUT" && OUT="$(cd "$OUT" && pwd)" || exit 1
 # Each preview compiles the code with the Bicep version the Azure CLI uses, and the CLI installs the newest release
-# when none is installed. The code is measured with Bicep 0.48.1, so the sweep refuses any other version before its
+# when none is installed. The code is measured with Bicep 0.49.2, so the sweep refuses any other version before its
 # first Azure call and keeps what the CLI reported in bicep.txt. Change it together with BICEP_VERSION in the
 # workflows.
 az bicep version 2>&1 | tr -d '\r' > "$OUT/bicep.txt"
-if ! grep -qE 'version 0\.48\.1( |$)' "$OUT/bicep.txt"; then
+if ! grep -qE 'version 0\.49\.2( |$)' "$OUT/bicep.txt"; then
   echo "BICEP-VERSION-FAIL" >> "$OUT/status.txt"
-  echo "az bicep version does not report Bicep 0.48.1 (see $OUT/bicep.txt), so the sweep stops" >&2
+  echo "az bicep version does not report Bicep 0.49.2 (see $OUT/bicep.txt), so the sweep stops" >&2
   exit 1
 fi
 

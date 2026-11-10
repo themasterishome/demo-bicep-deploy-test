@@ -722,7 +722,7 @@ $rpc = $null
 $bicepExe = Get-PreflightBicep
 $bicepVersion = ''
 if (-not $bicepExe) {
-  $failures.Add('compile: no Bicep CLI found. Install it with az bicep install --version v0.48.1, or put bicep on PATH')
+  $failures.Add('compile: no Bicep CLI found. Install it with az bicep install --version v0.49.2, or put bicep on PATH')
   Write-Host '  no Bicep CLI found, so nothing is compiled' -ForegroundColor Red
   $entries.Clear()
 } else {

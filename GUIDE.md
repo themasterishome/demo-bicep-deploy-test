@@ -127,14 +127,14 @@ You need these tools on the workstation.
 | Tool | Version | Check |
 |---|---|---|
 | Azure CLI | 2.76 or later | `az version` |
-| Bicep CLI | 0.48.1, the version the workflows pin and `deploy-unit.ps1` requires. Only needed to run the preflight or the gate script locally, because every job installs its own | `az bicep version` |
+| Bicep CLI | 0.49.2, the version the workflows pin and `deploy-unit.ps1` requires. Only needed to run the preflight or the gate script locally, because every job installs its own | `az bicep version` |
 | GitHub CLI | 2.48 or later | `gh --version` |
 | Git | 2.28 or later | `git --version` |
 | Python | 3, used once to unpack the evidence zip in section 4.2 item 10 | `python --version` |
 | Windows PowerShell | 5.1, for every command in this guide | `$PSVersionTable.PSVersion` |
 | PowerShell 7 | 7.4 or later, optional, to run the helper tests locally as the runners do | `pwsh --version` |
 
-To install the pinned Bicep CLI, run `az bicep install --version v0.48.1`.
+To install the pinned Bicep CLI, run `az bicep install --version v0.49.2`.
 
 Run every command in a Windows PowerShell window, never in Git Bash. Git Bash rewrites any argument that starts with `/subscriptions/` into a Windows path, and the command then fails or is refused (section 5).
 

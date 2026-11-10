@@ -42,12 +42,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # SHA256 of bicep-win-x64.exe (a Windows runner) and of bicep-linux-x64 (a Linux runner) in the Bicep v0.48.1
+  # SHA256 of bicep-win-x64.exe (a Windows runner) and of bicep-linux-x64 (a Linux runner) in the Bicep v0.49.2
   # GitHub release. Change the three together, and the Bicep version that scripts/deploy-unit.ps1,
   # scripts/whatif-rg-sweep.sh and scripts/whatif-sub-sweep.sh require.
-  BICEP_VERSION: v0.48.1
-  BICEP_SHA256_WINDOWS: 398AF294CF16AC4BECDBD008A77D148D0E8E91492309A6B60EC911B7E1CAB082
-  BICEP_SHA256_LINUX: B09EC25A9D376C1F8E33EDE6ED22B587F915AD68488D5DB77A6F9541748C7F6E
+  BICEP_VERSION: v0.49.2
+  BICEP_SHA256_WINDOWS: ACFFF0453C9BCF442AA97103ACBCD845EF366634E6EA2A2BA5734514409CE9C3
+  BICEP_SHA256_LINUX: 0AB9DE90C2493F206F8281BAE74F9EE2D5ED3605548DAB1ADF41FEF185E1F7C5
 
 # Actions are pinned to the full commit SHA of the release named in the comment. Every job runs on windows-2025, or
 # on ubuntu-24.04 when the repository variable MIRROR_RUNNER is ubuntu-24.04. No other value of the variable reaches

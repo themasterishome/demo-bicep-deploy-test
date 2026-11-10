@@ -600,7 +600,7 @@ try {
   Assert-True ($r.sweep -and @($r.preview).Count -eq 0) 'a bicepconfig.json in a subfolder asks for a sweep'
   [IO.File]::WriteAllText((Join-Path $rt 'infra/other.bicepparam'), "// using './nothing.bicep'`nusing './sub/a.bicep'`n")
   Assert-Equal ([IO.Path]::GetFullPath((Join-Path $rt 'infra/sub/a.bicep'))) (Get-BicepparamUsing (Join-Path $rt 'infra/other.bicepparam')) 'the using line of a parameters file names the template Azure deploys'
-  # Bicep 0.48.1 (bicep build-params) compiles ./sub/a.bicep from each of the next three files. The earlier using
+  # Bicep 0.49.2 (bicep build-params) compiles ./sub/a.bicep from each of the next three files. The earlier using
   # line, at the start of its own line, is inside a block comment in the first and the third, and inside a
   # multi-line string in the second, so Bicep does not read it as a statement. In the third, the multi-line string
   # ends with four quotes. Bicep keeps the fourth in the string (s is x'), so the block comment after it is a comment.
@@ -683,7 +683,7 @@ try {
   [IO.File]::WriteAllText((Join-Path $ccDir '001-u1.json'), (ConvertTo-Json -InputObject ([ordered]@{ parametersJson = '{}'; templateJson = $tplText }) -Compress))
   [IO.File]::WriteAllText((Join-Path $ccDir '002-u2.json'), $tplText)
   function Write-CcIndex($Entries, [int]$Format = 1) {
-    [IO.File]::WriteAllText((Join-Path $ccDir 'index.json'), (ConvertTo-Json -InputObject ([ordered]@{ format = $Format; bicep = '0.48.1'; entries = @($Entries) }) -Depth 8))
+    [IO.File]::WriteAllText((Join-Path $ccDir 'index.json'), (ConvertTo-Json -InputObject ([ordered]@{ format = $Format; bicep = '0.49.2'; entries = @($Entries) }) -Depth 8))
   }
   function New-CcEntries {
     $in1 = @(@('bicepconfig.json', 'infra/u1/main.bicep', 'infra/u1/parameters.bicepparam') | ForEach-Object { [ordered]@{ path = $_; sha256 = (Get-CcHash $_) } })
@@ -735,7 +735,7 @@ try {
   Write-CcIndex (New-CcEntries)
   $keepPin = $env:BICEP_VERSION
   try {
-    $env:BICEP_VERSION = 'v0.48.1'
+    $env:BICEP_VERSION = 'v0.49.2'
     Assert-True ($null -ne (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})) 'an index of the pinned Bicep release hits'
     $env:BICEP_VERSION = 'v0.49.0'
     Assert-True ($null -eq (Get-CompileCacheText $ccDir $t2 'template' $ccRoot @{})) 'an index of another Bicep release is a miss'

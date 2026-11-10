@@ -14,7 +14,7 @@
        tenant is its tenantId. A service principal is listed there too, or it is the identity of a GitHub Actions job.
        That is the case when GITHUB_ACTIONS is true and its name equals the client ID in MIRROR_CLIENT_ID, which
        the workflow takes from the AZURE_CLIENT_ID variable of the job's environment.
-    4. The Azure CLI runs Bicep 0.48.1 (az bicep version, recorded as Bicep: in pre-summary.txt), the
+    4. The Azure CLI runs Bicep 0.49.2 (az bicep version, recorded as Bicep: in pre-summary.txt), the
        unit's files compile, and a resource group file or subscription main declares no
        resource twice (find-duplicate-declarations.ps1). Azure would refuse such a deployment
        with ResourceDeployedMultipleTimes.
@@ -1126,10 +1126,10 @@ Info "Identity ok: $($context.identity)"
 # ---------------------------------------------------------------------------------------------
 # 3. Compile and repository checks
 # ---------------------------------------------------------------------------------------------
-# The code is compiled and measured with Bicep 0.48.1, and another release can compile the same files to another
+# The code is compiled and measured with Bicep 0.49.2, and another release can compile the same files to another
 # template. The Azure CLI installs the latest release when it finds no Bicep, so the version it runs is checked before
 # the first compile and recorded in the summary. The workflows install and check the same version (BICEP_VERSION).
-$bicepWant = '0.48.1'
+$bicepWant = '0.49.2'
 $bv = Invoke-Az @('bicep', 'version') -AllowFailure
 $bvLine = @("$($bv.Out)`n$($bv.Err)" -split "`r?`n" | Where-Object { $_ -match 'version' } | Select-Object -First 1)
 $bvm = [regex]::Match([string]$bv.Out, 'version ([0-9][0-9A-Za-z.+-]*)( \(\w+\))?')
