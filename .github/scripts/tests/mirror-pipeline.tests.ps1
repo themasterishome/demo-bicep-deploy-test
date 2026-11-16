@@ -414,7 +414,7 @@ Assert-Contains $e 'mirror-deploy-unit.yml: the deploy workflow starts only with
 Assert-Contains $e 'y.yml: requests id-token*' 'id-token on a closed pull request is refused'
 $e = @(Test-WorkflowHygiene @{ 'z.yml' = "# environment: mirror-production-demo`n" })
 Assert-Equal 0 $e.Count 'a comment line is not a rule break'
-$rc = "    steps:`n      - name: Runner check`n        shell: pwsh`n        run: |`n          if (`$env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or `$env:RUNNER_ARCH -cne 'X64' -or `$env:ImageOS -cne 'win25') { exit 1 }`n"
+$rc = "    steps:`n      - uses: actions/checkout@$sha`n      - name: Runner check`n        uses: ./.github/actions/runner-check`n"
 $sw = "    if: $($script:PipelineSwitch)`n"
 $okRunner = "jobs:`n  a:`n$sw    runs-on: $($script:RunnerChoices[0])`n$rc      - shell: pwsh`n        run: x`n  b:`n$sw    runs-on: ubuntu-24.04`n$rc      - name: y`n        shell: pwsh`n        run: |`n          y`n  c:`n$sw    runs-on: 'windows-2025'  # pinned`n$rc  d:`n$sw    runs-on: $($script:RunnerChoices[1])`n$rc"
 $e = @(Test-WorkflowHygiene @{ 'ok.yml' = $okRunner })
@@ -426,8 +426,10 @@ $badRunner = @{
   'r4.yml' = "jobs:`n  a:`n    runs-on: [ self-hosted, windows ]`n$rc"
   'r5.yml' = "jobs:`n  a:`n    runs-on: `${{ vars.MIRROR_RUNNER || 'windows-2025' }}`n$rc"
   'r6.yml' = "jobs:`n  a:`n    runs-on: windows-2022`n$rc"
-  'c1.yml' = "jobs:`n  a:`n    runs-on: windows-2025`n    steps:`n      - uses: actions/checkout@$('a' * 40)`n      - name: Runner check`n        shell: pwsh`n        run: RUNNER_ENVIRONMENT RUNNER_ARCH ImageOS`n"
-  'c2.yml' = "jobs:`n  a:`n    runs-on: windows-2025`n    steps:`n      - name: Runner check`n        shell: pwsh`n        run: exit 0`n"
+  'c1.yml' = "jobs:`n  a:`n    runs-on: windows-2025`n    steps:`n      - name: Runner check`n        uses: ./.github/actions/runner-check`n      - uses: actions/checkout@$('a' * 40)`n"
+  'c2.yml' = "jobs:`n  a:`n    runs-on: windows-2025`n    steps:`n      - uses: actions/checkout@$('a' * 40)`n      - name: Runner check`n        shell: pwsh`n        run: exit 0`n"
+  'c3.yml' = "jobs:`n  a:`n    runs-on: windows-2025`n    steps:`n      - uses: actions/checkout@$('a' * 40)`n      - uses: ./.github/actions/other`n"
+  'c4.yml' = "jobs:`n  a:`n    runs-on: windows-2025`n    steps:`n      - uses: actions/checkout@$('a' * 40)`n      - name: Runner check`n        uses: ./.github/actions/runner-check`n      - uses: ./.github/actions/setup-bicep`n"
   's1.yml' = "jobs:`n  a:`n    runs-on: windows-2025`n    steps:`n      - shell: powershell`n        run: x`n"
   's2.yml' = "jobs:`n  a:`n    runs-on: windows-2025`n    steps:`n      - run: x`n"
 }
@@ -438,11 +440,34 @@ Assert-Contains $e "r3.yml: runs-on * is not windows-2025*" 'MIRROR_RUNNER witho
 Assert-Contains $e "r4.yml: runs-on * is not windows-2025*" 'a self-hosted label list is refused'
 Assert-Contains $e "r5.yml: runs-on * is not windows-2025*" 'MIRROR_RUNNER used as the label itself is refused, because any value would reach runs-on'
 Assert-Contains $e "r6.yml: runs-on 'windows-2022' is not windows-2025*" 'another pinned image is refused'
-Assert-Contains $e 'c1.yml: the first step of the job a is not the runner check*' 'a runner check that is not the first step is refused'
-Assert-Contains $e 'c2.yml: the first step of the job a is not the runner check*' 'a runner check that reads nothing is refused'
-Assert-Equal 0 @($e | Where-Object { $_ -like 'r1.yml: the first step*' }).Count 'a job with the runner check first passes that rule'
+Assert-Contains $e 'c1.yml: the first step of the job a is not the checkout*' 'a runner check before the checkout is refused'
+Assert-Contains $e 'c2.yml: the first step of the job a is not the checkout*' 'an inline runner check in place of the local action is refused'
+Assert-Contains $e 'c3.yml: uses the local action ./.github/actions/other*' 'a local action outside the allowed two is refused'
+Assert-Equal 0 @($e | Where-Object { $_ -like 'c4.yml: uses the local action*' }).Count 'the Bicep setup action is an allowed local action'
+Assert-Equal 0 @($e | Where-Object { $_ -like 'r1.yml: the first step*' }).Count 'a job with the checkout first and the runner check second passes that rule'
 Assert-Contains $e "s1.yml: a step uses the shell 'powershell'*" 'Windows PowerShell as a step shell is refused'
 Assert-Contains $e 's2.yml: 1 run step(s) name no shell*' 'a run step without a shell is refused'
+
+Write-Host '--- the local actions'
+$ac = @{}
+foreach ($d in @(Get-ChildItem -LiteralPath (Join-Path $repo '.github/actions') -Directory -Force)) { $ac[$d.Name] = [IO.File]::ReadAllText((Join-Path $d.FullName 'action.yml')) }
+Assert-Equal 2 $ac.Count 'the repository has the two local actions'
+$e = @(Test-ActionHygiene $ac)
+Assert-Equal 0 $e.Count "the repository's local actions pass the rules ($($e -join '; '))"
+$e = @(Test-ActionHygiene @{ 'runner-check' = $ac['runner-check'].Replace('RUNNER_ARCH', 'RUNNER_X') })
+Assert-Contains $e '*runner-check/action.yml: must keep RUNNER_ARCH*' 'a runner check that stops reading the architecture is refused'
+$e = @(Test-ActionHygiene @{ 'setup-bicep' = $ac['setup-bicep'].Replace('Get-FileHash', 'Get-Item') })
+Assert-Contains $e '*setup-bicep/action.yml: must keep Get-FileHash*' 'a Bicep setup that stops checking the hash is refused'
+$e = @(Test-ActionHygiene @{ 'setup-bicep' = $ac['setup-bicep'].Replace('shell: pwsh', 'shell: bash') })
+Assert-Contains $e "*a step uses the shell 'bash'*" 'a local action with another shell is refused'
+$e = @(Test-ActionHygiene @{ 'runner-check' = $ac['runner-check'] + "    - uses: actions/checkout@$sha`n" })
+Assert-Contains $e '*uses another action*' 'a local action that uses another action is refused'
+$e = @(Test-ActionHygiene @{ 'runner-check' = $ac['runner-check'].Replace('Write-Host "GitHub-hosted', 'Write-Host "${{ github.actor }} GitHub-hosted') })
+Assert-Contains $e '*uses an expression*' 'a local action with an expression is refused'
+$e = @(Test-ActionHygiene @{ 'runner-check' = $ac['runner-check'].Replace('using: composite', 'using: node20') })
+Assert-Contains $e '*must be a composite action*' 'a local action that is not composite is refused'
+$e = @(Test-ActionHygiene @{ 'other' = $ac['runner-check'] })
+Assert-Contains $e '*is not one of the local actions*' 'a third local action is refused'
 
 Write-Host '--- the pipeline switch'
 $swJob = "    runs-on: windows-2025`n$rc"
@@ -782,7 +807,7 @@ Assert-Equal 'deploy/UNITS.json (deploy/UNITS.json and deploy/units.json)' $cc[0
 Assert-Equal 0 @(Find-CaseCollisions @('infra/new.bicep') @('infra/a.bicep', 'infra/new.bicep')).Count 'an added name that is unique is not a collision'
 Assert-Equal 0 @(Find-CaseCollisions @() @('infra/a.bicep')).Count 'no added path is no collision'
 Assert-Equal 'Infra/b.bicep (Infra and infra)' (@(Find-CaseCollisions @('Infra/b.bicep') @('infra/a.bicep', 'Infra/b.bicep'))[0]) 'a folder that differs only in case is a collision too'
-foreach ($p in @('scripts/preflight-validate.ps1', 'scripts/sub/x.sh', '.github/scripts/mirror-pipeline.ps1', '.github/scripts/tests/a.ps1', 'bicepconfig.json', '.gitattributes', '.gitignore', '.github/workflows/mirror-validate.yml', 'scripts\x.ps1')) {
+foreach ($p in @('scripts/preflight-validate.ps1', 'scripts/sub/x.sh', '.github/scripts/mirror-pipeline.ps1', '.github/scripts/tests/a.ps1', '.github/actions/setup-bicep/action.yml', 'bicepconfig.json', '.gitattributes', '.gitignore', '.github/workflows/mirror-validate.yml', 'scripts\x.ps1')) {
   Assert-True (Test-PortabilitySensitivePath $p) "sensitive: $p"
 }
 foreach ($p in @('infra/a.bicep', 'deploy/units.json', '.github/workflows/mirror-pr.yml', 'README.md', 'SCRIPTS/x.ps1', 'Scripts/x.ps1', 'infra/bicepconfig.json', 'pipelines/scripts/x.ps1', '.github/scriptsx/a.ps1', 'bicepconfig.json.bak', 'infra/.gitattributes', '.gitattributes.bak')) {

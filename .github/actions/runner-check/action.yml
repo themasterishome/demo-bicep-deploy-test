@@ -1,0 +1,20 @@
+name: Runner check
+description: Stops the job unless the runner is GitHub-hosted, x64 and on the windows-2025 or the ubuntu-24.04 image.
+runs:
+  using: composite
+  steps:
+    - name: Check the runner
+      # Stops the job unless the runner is GitHub-hosted, x64 and has the windows-2025 or the ubuntu-24.04
+      # image, the two the scripts and the pinned tools are checked on. The images set ImageOS. The label
+      # windows-2025 gives win25, or win25-vs2026 for its build with Visual Studio 2026, and ubuntu-24.04 gives
+      # ubuntu24. On a failure, the job log's "Set up job" step names the image under "Runner Image". If that
+      # is windows-2025 or ubuntu-24.04 with an ImageOS value not listed here, the value is added to this step
+      # and to this comment, through a code pull request.
+      shell: pwsh
+      run: |
+        $os = if (@('win25', 'win25-vs2026') -ccontains $env:ImageOS) { 'Windows' } elseif ($env:ImageOS -ceq 'ubuntu24') { 'Linux' } else { '' }
+        if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_ARCH -cne 'X64' -or -not $os -or $env:RUNNER_OS -cne $os) {
+          Write-Error "the runner is $env:RUNNER_ENVIRONMENT, $env:RUNNER_OS $env:RUNNER_ARCH, image '$env:ImageOS'. The jobs run only on a GitHub-hosted x64 runner with the windows-2025 or the ubuntu-24.04 image. Compare the image under 'Runner Image' in this job's 'Set up job' step. If it is windows-2025 or ubuntu-24.04 with a new ImageOS value, add that value to the runner-check action, .github/actions/runner-check/action.yml, and to its comment, in a code pull request"
+          exit 1
+        }
+        Write-Host "GitHub-hosted $env:RUNNER_OS $env:RUNNER_ARCH runner, image $env:ImageOS $env:ImageVersion"

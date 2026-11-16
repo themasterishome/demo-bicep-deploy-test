@@ -12,7 +12,8 @@
 
     Hygiene        mirror-validate. Catches workflow files that could hand a deploy token to code nobody reviewed
                    (a check for mistakes, the controls are GitHub settings), and a job without the pipeline switch
-                   (the repository variable MIRROR_PIPELINE_ENABLED)
+                   (the repository variable MIRROR_PIPELINE_ENABLED). It also reads the two local actions under
+                   .github/actions
     PipelineScope  mirror-validate. Reads every unit as Azure receives it (through its parameters file), from the
                    compile cache of the preflight when its files are unchanged, else by compiling it. Fails
                    when a production unit declares a role definition, a role assignment of Owner, User Access
@@ -23,8 +24,8 @@
     PortabilityScope
                    mirror-validate, portability job. Decides whether the job runs the full preflight on its runner
                    image. It does when the event is Run workflow or any event but a push or a pull request, when the
-                   change touches scripts/, .github/scripts/, bicepconfig.json, .gitattributes, .gitignore or the
-                   validate workflow, when it adds a path whose name differs only in case from another path of the
+                   change touches scripts/, .github/scripts/, .github/actions/, bicepconfig.json, .gitattributes,
+                   .gitignore or the validate workflow, when it adds a path whose name differs only in case from another path of the
                    tree, or when the changed files cannot be read. Writes the step output full
     InputCheck     mirror-pr, mirror-deploy-unit and mirror-drift, before the sign-in to Azure. Reads every Bicep
                    file of the checkout and refuses one that reads an environment variable, a registry module or a
@@ -103,13 +104,15 @@ $script:BotLogin = 'github-actions[bot]'
 $script:MaxSummaryChars = 60000
 # The only actions a workflow may use, each pinned to a full commit SHA.
 $script:AllowedActions = @('actions/checkout', 'actions/upload-artifact', 'actions/download-artifact', 'azure/login')
+# The only local actions a workflow may use, with their folders under .github/actions. Each holds run steps only.
+$script:AllowedLocalActions = @('./.github/actions/runner-check', './.github/actions/setup-bicep')
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 # The runner images a job may run on, the two the scripts and the pinned tools are checked on. A -latest label
 # moves to a new system without a change in the repository, and a repository variable changes without a review.
 # So a job names one of the two images, or one of the two expressions below. They map the repository variable
 # MIRROR_RUNNER to the two images and nothing else. The first gives ubuntu-24.04 when the variable is
 # ubuntu-24.04 and windows-2025 for any other value or none. The second gives the other image, for the
-# portability job. The first step of every job is the runner check, which stops the job on any other runner.
+# portability job. The runner check, the step after the checkout in every job, stops the job on any other runner.
 $script:RunnerImages = @('windows-2025', 'ubuntu-24.04')
 $script:RunnerChoices = @(
   '${{ vars.MIRROR_RUNNER == ''ubuntu-24.04'' && ''ubuntu-24.04'' || ''windows-2025'' }}',
@@ -1094,6 +1097,48 @@ function Test-PipelineSwitch([string]$Condition) {
   return ($depth -eq 0)
 }
 
+# The steps of one job, as the text of each step without its leading dash, in order. The job text is one job of a
+# workflow body (full-line comments already left out). The steps are the entries of the job's steps: list.
+function Get-JobSteps([string]$JobText) {
+  $m = [regex]::Match($JobText, '(?m)^[ \t]*steps:[ \t]*\r?\n(?<ind>[ \t]*)-[ \t]')
+  if (-not $m.Success) { return @() }
+  $ind = $m.Groups['ind'].Value
+  $rest = $JobText.Substring($m.Groups['ind'].Index)
+  $parts = @([regex]::Split($rest, "(?m)^$([regex]::Escape($ind))-[ \t]+") | Where-Object { $_.Trim().Length -gt 0 })
+  return @($parts | ForEach-Object { $_.TrimEnd() })
+}
+
+# The rules for the two local actions under .github/actions. Each is a composite action of run steps in pwsh. It uses
+# no other action and no expression, so nothing a caller or an event supplies reaches its commands. The runner check
+# must read the runner's three facts, and the Bicep setup must keep the pinned version, both hashes, the check of the
+# binary and the PATH setting.
+function Test-ActionHygiene([hashtable]$Files) {
+  $errors = @()
+  $needs = @{
+    'runner-check' = @('RUNNER_ENVIRONMENT', 'RUNNER_ARCH', 'ImageOS')
+    'setup-bicep'  = @('az bicep install --version', 'BICEP_VERSION', 'BICEP_SHA256_WINDOWS', 'BICEP_SHA256_LINUX', 'Get-FileHash', 'GITHUB_PATH', 'AZURE_BICEP_USE_BINARY_FROM_PATH', 'az bicep version')
+  }
+  foreach ($name in @($Files.Keys | Sort-Object)) {
+    $label = ".github/actions/$name/action.yml"
+    if (-not (Test-InList @('runner-check', 'setup-bicep') $name)) { $errors += "${label}: is not one of the local actions the workflows may use (runner-check, setup-bicep)"; continue }
+    $body = (@(([string]$Files[$name]) -split "`r?`n" | Where-Object { -not $_.TrimStart().StartsWith('#') }) -join "`n")
+    if ($body -notmatch '(?ms)^runs:[ \t]*\n[ \t]+using:[ \t]*composite[ \t]*\n') { $errors += "${label}: must be a composite action (runs: using: composite)" }
+    if ($body -match '(?m)^\s*(?:-\s*)?uses:') { $errors += "${label}: uses another action, and a local action holds run steps only" }
+    if ($body.Contains('${{')) { $errors += "${label}: uses an expression, and a local action reads only the environment of the job" }
+    foreach ($m in [regex]::Matches($body, '(?m)^[ \t]*(?:-[ \t]+)?shell:(?<v>[^\r\n]*)$')) {
+      $v = ($m.Groups['v'].Value -replace '\s+#.*$', '').Trim().Trim([char[]]@("'", '"'))
+      if (-not (Test-Same $v 'pwsh')) { $errors += "${label}: a step uses the shell '$v'. The steps use pwsh" }
+    }
+    $runCount = [regex]::Matches($body, '(?m)^[ \t]*(?:-[ \t]+)?run:[ \t]*\S').Count
+    $shellCount = [regex]::Matches($body, '(?m)^[ \t]*(?:-[ \t]+)?shell:').Count
+    if ($runCount -gt $shellCount) { $errors += "${label}: $($runCount - $shellCount) run step(s) name no shell. Each names shell: pwsh" }
+    foreach ($word in $needs[$name]) {
+      if (-not $body.Contains($word)) { $errors += "${label}: must keep $word" }
+    }
+  }
+  return $errors
+}
+
 # Workflow rules. A deploy token is issued to any job that names a production or privileged environment from master, whatever
 # workflow file the job is in. These rules catch honest mistakes early. They are text matches and a determined
 # writer can get past them, and on a pull request they run the pull request's own copy of this file. The
@@ -1142,8 +1187,10 @@ function Test-WorkflowHygiene([hashtable]$Files) {
         $errors += "${name}: runs-on '$v' is not windows-2025, ubuntu-24.04 or one of the two MIRROR_RUNNER expressions in .github/scripts/mirror-pipeline.ps1"
       }
     }
-    # The first step of every job is the runner check. It stops the job unless the runner is GitHub-hosted, x64 and
-    # one of the two images, so a runner label set elsewhere or a changed image never runs the job's other steps.
+    # The runner check follows the checkout in every job. It is the local action .github/actions/runner-check, which
+    # stops the job unless the runner is GitHub-hosted, x64 and one of the two images, so a runner label set
+    # elsewhere or a changed image never runs the job's other steps. A local action needs the repository, so the
+    # pinned checkout is the first step and nothing runs between the two.
     $jobsAt = [regex]::Match($body, '(?m)^jobs:[ \t]*$')
     if ($jobsAt.Success) {
       $jobText = $body.Substring($jobsAt.Index + $jobsAt.Length)
@@ -1151,10 +1198,11 @@ function Test-WorkflowHygiene([hashtable]$Files) {
       for ($k = 0; $k -lt $heads.Count; $k++) {
         $to = if ($k + 1 -lt $heads.Count) { $heads[$k + 1].Index } else { $jobText.Length }
         $job = $jobText.Substring($heads[$k].Index, $to - $heads[$k].Index)
-        $first = [regex]::Match($job, '(?m)^[ \t]*steps:[ \t]*\n[ \t]*-[ \t]+(?<first>[^\n]*)')
-        $firstText = if ($first.Success) { $first.Groups['first'].Value.Trim() } else { '' }
-        if (-not (Test-Same $firstText "name: $($script:RunnerCheckStep)") -or $job -cnotmatch 'RUNNER_ENVIRONMENT' -or $job -cnotmatch 'RUNNER_ARCH' -or $job -cnotmatch 'ImageOS') {
-          $errors += "${name}: the first step of the job $($heads[$k].Groups['job'].Value) is not the runner check (- name: $($script:RunnerCheckStep), which reads RUNNER_ENVIRONMENT, RUNNER_ARCH and ImageOS)"
+        $steps = @(Get-JobSteps $job)
+        $checkoutFirst = ($steps.Count -ge 1 -and $steps[0] -match '^uses:[ \t]*actions/checkout@')
+        $checkSecond = ($steps.Count -ge 2 -and $steps[1] -match "^name:[ \t]*$([regex]::Escape($script:RunnerCheckStep))[ \t]*\r?\n[ \t]*uses:[ \t]*\./\.github/actions/runner-check[ \t]*(\r?\n|$)")
+        if (-not ($checkoutFirst -and $checkSecond)) {
+          $errors += "${name}: the first step of the job $($heads[$k].Groups['job'].Value) is not the checkout, or the second is not the runner check (- name: $($script:RunnerCheckStep), uses: ./.github/actions/runner-check)"
         }
         # Every job carries the pipeline switch in its job condition, so no runner starts until IT turns the
         # pipeline on.
@@ -1223,7 +1271,10 @@ function Test-WorkflowHygiene([hashtable]$Files) {
     }
     foreach ($m in [regex]::Matches($body, '(?m)^\s*(?:-\s*)?uses:\s*[''"]?([^\s''"#]+)')) {
       $ref = $m.Groups[1].Value
-      if ($ref.StartsWith('./')) { $errors += "${name}: uses the local action $ref, and the workflows use none"; continue }
+      if ($ref.StartsWith('./')) {
+        if (-not (Test-InList $script:AllowedLocalActions $ref)) { $errors += "${name}: uses the local action $ref, and only $($script:AllowedLocalActions -join ' and ') are allowed" }
+        continue
+      }
       $mm = [regex]::Match($ref, '^(?<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:/[^@]*)?@(?<sha>[^@]+)$')
       if (-not $mm.Success -or $mm.Groups['sha'].Value -cnotmatch '^[0-9a-f]{40}$') { $errors += "${name}: $ref is not pinned to a full commit SHA"; continue }
       if ($script:AllowedActions -notcontains $mm.Groups['action'].Value.ToLowerInvariant()) { $errors += "${name}: $($mm.Groups['action'].Value) is not one of the allowed actions ($($script:AllowedActions -join ', '))" }
@@ -1296,8 +1347,22 @@ function Invoke-HygieneMode {
   $files = @{}
   foreach ($f in @(Get-ChildItem -LiteralPath $dir -File | Where-Object { $_.Extension -in '.yml', '.yaml' })) { $files[$f.Name] = [IO.File]::ReadAllText($f.FullName) }
   $errors = @(Test-WorkflowHygiene $files)
+  # The local actions sit in the folder next to the workflows folder. Both must exist, and no other may.
+  $actionsDir = Join-Path (Split-Path -Parent $dir) 'actions'
+  $actions = @{}
+  if (Test-Path -LiteralPath $actionsDir -PathType Container) {
+    foreach ($d in @(Get-ChildItem -LiteralPath $actionsDir -Directory -Force)) {
+      $f = Join-Path $d.FullName 'action.yml'
+      $actions[$d.Name] = if (Test-Path -LiteralPath $f -PathType Leaf) { [IO.File]::ReadAllText($f) } else { '' }
+    }
+  }
+  foreach ($a in $script:AllowedLocalActions) {
+    $short = $a.Substring($a.LastIndexOf('/') + 1)
+    if (-not $actions.ContainsKey($short) -or -not $actions[$short]) { $errors += ".github/actions/$short/action.yml is missing, and the workflows use it" }
+  }
+  $errors += @(Test-ActionHygiene $actions)
   if ($errors.Count -gt 0) { Stop-WithErrors 'Workflow rules broken' $errors }
-  Write-Summary @("Workflow rules: $($files.Count) workflow file(s) checked, all pass.")
+  Write-Summary @("Workflow rules: $($files.Count) workflow file(s) and $($actions.Count) local action(s) checked, all pass.")
 }
 
 # The Bicep CLI. In the preflight job the checked binary is first on PATH. On a workstation it is the copy the
@@ -1479,12 +1544,13 @@ function Invoke-PipelineScopeMode {
 }
 
 # The paths whose change makes the portability job run the full preflight on its image: the scripts the preflight and
-# the pipeline run, the Bicep settings, the git settings that decide line endings and which files a checkout holds,
+# the pipeline run, the local actions that pin Bicep and check the runner, the Bicep settings, the git settings that decide line endings and which files a checkout holds,
 # and the validate workflow itself. Paths are repository paths with /, and they
 # match exactly as written, so the case counts on every system (the repository has these folders in lower case).
 function Test-PortabilitySensitivePath([string]$Path) {
   $p = $Path.Replace('\', '/')
   if ($p.StartsWith('scripts/', [StringComparison]::Ordinal) -or $p.StartsWith('.github/scripts/', [StringComparison]::Ordinal)) { return $true }
+  if ($p.StartsWith('.github/actions/', [StringComparison]::Ordinal)) { return $true }
   return (Test-InList @('bicepconfig.json', '.gitattributes', '.gitignore', '.github/workflows/mirror-validate.yml') $p)
 }
 
