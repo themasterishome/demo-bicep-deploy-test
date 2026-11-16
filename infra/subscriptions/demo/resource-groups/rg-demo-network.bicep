@@ -90,8 +90,8 @@ resource policyAssignment_resource_location 'Microsoft.Authorization/policyAssig
 }
 
 // The Reader role (acdd72a7-3385-48ef-bd42-f606fba81ae7) for the demo reader identity on this resource group. Reader
-// is not one of the three roles the production tier may not write, so this record deploys with the rest of the
-// group. The name is a GUID built from the group, the principal and the role, so it is the same on every deployment.
+// is on the allow-list of the deploy identity's condition, the one role the production units declare, so this record
+// deploys with the rest of the group. The name is a GUID built from the group, the principal and the role, so it is the same on every deployment.
 resource roleAssignment_reader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(resourceGroup().id, readerPrincipalId, 'acdd72a7-3385-48ef-bd42-f606fba81ae7')
   properties: {
