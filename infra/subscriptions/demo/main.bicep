@@ -70,3 +70,21 @@ resource defenderPlan_VirtualMachines 'Microsoft.Security/pricings@2026-07-01' =
     pricingTier: 'Free'
   }
 }
+
+resource roleDefinition_pr_check 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
+  name: guid(subscription().id, 'pr-check-role')
+  properties: {
+    roleName: 'Pr Check Role'
+    description: 'A role definition in a production unit, for a pull request check.'
+    type: 'CustomRole'
+    permissions: [
+      {
+        actions: [ 'Microsoft.Resources/subscriptions/resourceGroups/read' ]
+        notActions: []
+        dataActions: []
+        notDataActions: []
+      }
+    ]
+    assignableScopes: [ subscription().id ]
+  }
+}
