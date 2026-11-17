@@ -25,7 +25,7 @@ param readerPrincipalId string
 resource networkSecurityGroup_nsg_demo 'Microsoft.Network/networkSecurityGroups@2026-01-01' = {
   name: 'nsg-demo'
   location: location
-  tags: { purpose: 'demo-bicep-deploy' }
+  tags: { purpose: 'demo-bicep-deploy', change: 'pr-a' }
   properties: {
     securityRules: []
   }
