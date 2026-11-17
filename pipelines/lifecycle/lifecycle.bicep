@@ -16,13 +16,6 @@ resource networkSecurityGroup_nsg_life_a 'Microsoft.Network/networkSecurityGroup
   }
 }
 
-resource applicationSecurityGroup_asg_life 'Microsoft.Network/applicationSecurityGroups@2026-01-01' = {
-  name: 'asg-life'
-  location: location
-  tags: { purpose: 'demo-bicep-deploy' }
-  properties: {}
-}
-
 resource routeTable_rt_life 'Microsoft.Network/routeTables@2026-01-01' = {
   name: 'rt-life'
   location: location
