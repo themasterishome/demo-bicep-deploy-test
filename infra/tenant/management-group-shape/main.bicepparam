@@ -7,3 +7,4 @@ param parentName = 'mg-demo-stk'
 param childManagementGroupName = 'mg-demo-stk-child'
 param childManagementGroupDisplayName = 'Demo stack child'
 param childSubscriptionId = ''
+param declareChild = false

@@ -16,10 +16,13 @@ param childManagementGroupName string
 @description('Display name shown for the child management group.')
 param childManagementGroupDisplayName string
 
+@description('Whether the template declares the child management group. Off leaves it out of the template.')
+param declareChild bool = true
+
 @description('Subscription ID to link to the child management group. Empty links none.')
 param childSubscriptionId string = ''
 
-resource childManagementGroup 'Microsoft.Management/managementGroups@2023-04-01' = {
+resource childManagementGroup 'Microsoft.Management/managementGroups@2023-04-01' = if (declareChild) {
   scope: tenant()
   name: childManagementGroupName
   properties: {
@@ -33,7 +36,7 @@ resource childManagementGroup 'Microsoft.Management/managementGroups@2023-04-01'
 }
 
 // `parent:` places the link under the child group, and its name is the subscription ID.
-resource subscriptionLink 'Microsoft.Management/managementGroups/subscriptions@2023-04-01' = if (!empty(childSubscriptionId)) {
+resource subscriptionLink 'Microsoft.Management/managementGroups/subscriptions@2023-04-01' = if (declareChild && !empty(childSubscriptionId)) {
   parent: childManagementGroup
   name: childSubscriptionId
 }
