@@ -339,7 +339,7 @@ jobs:
           action-on-unmanage-resources: ${{ matrix.unmanage }}
           action-on-unmanage-resourcegroups: detach
           action-on-unmanage-managementgroup: detach
-          action-on-unmanage-managementgroups: detach
+          action-on-unmanage-managementgroups: delete
           deny-settings-mode: none
       - name: Summarize the stack
         # Reads the stack with the Azure CLI and writes its state and its resource counts to the job summary.
