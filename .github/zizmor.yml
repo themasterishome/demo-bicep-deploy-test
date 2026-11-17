@@ -1,0 +1,15 @@
+# Settings of the workflow audit (zizmor) in mirror-validate. The audits run with their defaults. The first rule below
+# names the actions a workflow may use, and unpinned-uses keeps its default of a full commit SHA for every one of
+# them. The local actions under .github/actions are limited by the helper's workflow rules.
+rules:
+  forbidden-uses:
+    config:
+      allow:
+        - actions/checkout
+        - actions/upload-artifact
+        - actions/download-artifact
+        - azure/login
+        - azure/bicep-deploy
+  # Style advice to write a local action as $/.github/actions/name. It is not a security finding.
+  self-repository:
+    disable: true

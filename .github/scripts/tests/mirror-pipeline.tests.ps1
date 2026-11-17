@@ -283,15 +283,13 @@ $e = @(Test-WorkflowHygiene $wf)
 Assert-Equal 0 $e.Count "the repository's workflows pass the rules ($($e -join '; '))"
 $sha = 'a' * 40
 $bad = @{
-  'x.yml' = "on:`n  pull_request_target: {}`njobs:`n  a:`n    environment: mirror-production-fdm-grc`n    steps:`n      - uses: actions/checkout@v7`n      - uses: someone/tool@$sha`n"
+  'x.yml' = "on:`n  pull_request_target: {}`njobs:`n  a:`n    environment: mirror-production-fdm-grc`n"
   'mirror-deploy-unit.yml' = "on:`n  push:`n    branches: [ master ]`n"
   'y.yml' = "on:`n  pull_request:`n    types: [ closed ]`npermissions:`n  id-token: write`n"
 }
 $e = @(Test-WorkflowHygiene $bad)
 Assert-Contains $e 'x.yml: names a mirror-production*' 'a production environment outside the deploy workflow is refused'
 Assert-Contains $e 'x.yml: uses the pull_request_target*' 'pull_request_target is refused'
-Assert-Contains $e '*actions/checkout@v7 is not pinned*' 'a tag pin is refused'
-Assert-Contains $e '*someone/tool is not one of the allowed actions*' 'an action outside the allowed list is refused'
 Assert-Contains $e 'mirror-deploy-unit.yml: the deploy workflow starts only with Run workflow*' 'a deploy workflow with a push trigger is refused'
 Assert-Contains $e 'y.yml: requests id-token*' 'id-token on a closed pull request is refused'
 $e = @(Test-WorkflowHygiene @{ 'z.yml' = "# environment: mirror-production-fdm-grc`n" })

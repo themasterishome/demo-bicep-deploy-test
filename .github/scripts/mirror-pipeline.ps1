@@ -93,9 +93,6 @@ $script:WhatIfRetention = 'PT1H'
 $script:NoStackDeletesScopes = @('tenant', 'fdm-apim')
 # The diagnostic messages of one preview that the job summary and the drift issue list.
 $script:MaxDiagnostics = 20
-# The only actions a workflow may use, each pinned to a full commit SHA. azure/bicep-deploy is Microsoft's action
-# for Bicep deployments and deployment stacks, and only the apply job of mirror-deploy-unit.yml uses it.
-$script:AllowedActions = @('actions/checkout', 'actions/upload-artifact', 'actions/download-artifact', 'azure/login', 'azure/bicep-deploy')
 # The only local actions a workflow may use, with their folders under .github/actions. Each holds run steps only.
 $script:AllowedLocalActions = @('./.github/actions/runner-check', './.github/actions/setup-bicep')
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding $false
@@ -787,15 +784,11 @@ function Test-WorkflowHygiene([hashtable]$Files) {
         if ($job -match 'id-token:[ \t]*write' -and $job -notmatch '(?m)^    environment:') { $errors += "${name}: the job $($heads[$k].Groups['job'].Value) requests id-token: write and has no environment" }
       }
     }
-    foreach ($m in [regex]::Matches($body, '(?m)^\s*(?:-\s*)?uses:\s*[''"]?([^\s''"#]+)')) {
+    # A local action must be one of the allowed two. That an action from a repository is pinned to a full commit SHA
+    # and is one of the allowed ones is checked by zizmor (.github/zizmor.yml), in the workflow-hygiene job.
+    foreach ($m in [regex]::Matches($body, '(?m)^\s*(?:-\s*)?uses:\s*[''"]?(\./[^\s''"#]+)')) {
       $ref = $m.Groups[1].Value
-      if ($ref.StartsWith('./')) {
-        if (-not (Test-InList $script:AllowedLocalActions $ref)) { $errors += "${name}: uses the local action $ref, and only $($script:AllowedLocalActions -join ' and ') are allowed" }
-        continue
-      }
-      $mm = [regex]::Match($ref, '^(?<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:/[^@]*)?@(?<sha>[^@]+)$')
-      if (-not $mm.Success -or $mm.Groups['sha'].Value -cnotmatch '^[0-9a-f]{40}$') { $errors += "${name}: $ref is not pinned to a full commit SHA"; continue }
-      if ($script:AllowedActions -notcontains $mm.Groups['action'].Value.ToLowerInvariant()) { $errors += "${name}: $($mm.Groups['action'].Value) is not one of the allowed actions ($($script:AllowedActions -join ', '))" }
+      if (-not (Test-InList $script:AllowedLocalActions $ref)) { $errors += "${name}: uses the local action $ref, and only $($script:AllowedLocalActions -join ' and ') are allowed" }
     }
   }
   return $errors
