@@ -139,7 +139,7 @@ Assert-Equal @($units.units | Where-Object { $_.kind -eq 'resourceGroup' }).Coun
 Assert-Equal @($units.units | Where-Object { $_.kind -eq 'subscription' }).Count @($allRows | Where-Object { $_.stackScope -ceq 'subscription' }).Count 'a subscription unit is a subscription stack'
 Assert-Equal @($units.units | Where-Object { $_.kind -eq 'tenant' }).Count @($allRows | Where-Object { $_.stackScope -ceq 'managementGroup' }).Count 'a tenant-kind unit is a management group stack'
 Assert-Equal $allRows.Count @($allRows | ForEach-Object { $_.stack } | Sort-Object -Unique).Count 'every stack name is different'
-Assert-Equal 0 @($allRows | Where-Object { $_.unmanage -cne 'detach' }).Count 'no unit of the repository deletes what leaves its template'
+Assert-Equal @($units.units | Where-Object { $null -ne $_.PSObject.Properties['stackDeletes'] -and $_.stackDeletes -eq $true }).Count @($allRows | Where-Object { $_.unmanage -cne 'detach' }).Count 'a unit deletes what leaves its template only when its entry has stackDeletes true'
 Assert-Equal 0 @($allRows | Where-Object { $_.stack -cne "mirror-$($_.unit)" -or $_.stack.Length -gt 90 }).Count 'a stack is named mirror-<unit>, within the 90 characters Azure allows'
 $row = Get-UnitRow $pilot $units
 Assert-Equal "pilot-empty-rg|production|$($pilot.subscription)|resourceGroup|$subId|$($pilot.resourceGroup)||detach" "$($row.unit)|$($row.tier)|$($row.scope)|$($row.stackScope)|$($row.subscriptionId)|$($row.resourceGroup)|$($row.managementGroup)|$($row.unmanage)" 'the row of a resource group unit'
@@ -150,7 +150,7 @@ $row = Get-UnitRow (Get-TestUnit 'demo-tenant-management-group') $units
 Assert-Equal "privileged|tenant|managementGroup||$($units.tenantId)" "$($row.tier)|$($row.scope)|$($row.stackScope)|$($row.subscriptionId)|$($row.managementGroup)" 'the management groups unit is a management group stack at the Tenant Root Group'
 Assert-Equal 'mg-demo' (Get-UnitRow (Get-TestUnit 'demo-tenant-governance') $units).managementGroup 'a tenant unit takes its management group from units.json'
 $delUnits = Copy-Object $units
-(Get-TestUnit 'rg-demo-routing' $delUnits) | Add-Member -NotePropertyName stackDeletes -NotePropertyValue $true
+(Get-TestUnit 'rg-demo-routing' $delUnits) | Add-Member -Force -NotePropertyName stackDeletes -NotePropertyValue $true
 Assert-Equal 'delete' (Get-UnitRow (Get-TestUnit 'rg-demo-routing' $delUnits) $delUnits).unmanage 'stackDeletes true deletes what leaves the template'
 Assert-Equal 'detach' (Get-UnitRow (Get-TestUnit 'rg-demo-network' $delUnits) $delUnits).unmanage 'and only for the unit that has it'
 (Get-TestUnit 'rg-demo-routing' $delUnits).stackDeletes = 'true'
@@ -168,7 +168,7 @@ Assert-True ((Get-ThrowText { Get-UnitRow (Get-TestUnit 'rg-demo-routing' $badUn
 $badUnits = Copy-Object $units; (Get-TestUnit 'rg-demo-routing' $badUnits).name = 'RG-DEMO'
 Assert-True ((Get-ThrowText { Get-UnitRow (Get-TestUnit 'RG-DEMO' $badUnits) $badUnits }) -like '*is not lower-case letters, digits and single hyphens*') 'a unit name with capitals is refused'
 foreach ($n in @('demo-tenant-management-group', 'demo-tenant-governance')) {
-  $badUnits = Copy-Object $units; (Get-TestUnit $n $badUnits) | Add-Member -NotePropertyName stackDeletes -NotePropertyValue $true
+  $badUnits = Copy-Object $units; (Get-TestUnit $n $badUnits) | Add-Member -Force -NotePropertyName stackDeletes -NotePropertyValue $true
   Assert-True ((Get-ThrowText { Get-UnitRow (Get-TestUnit $n $badUnits) $badUnits }) -like '*stackDeletes stays off for the units of the scope*') "stackDeletes is refused for $n, a unit of the tenant"
   (Get-TestUnit $n $badUnits).stackDeletes = $false
   Assert-Equal 'detach' (Get-UnitRow (Get-TestUnit $n $badUnits) $badUnits).unmanage "and stackDeletes false passes for $n"
@@ -182,14 +182,14 @@ Assert-Equal @($units.units | Where-Object { $_.name -like '*-deploy-excluded' }
 Assert-True ($excluded.Count -ge 1 -and -not (Test-DeployExcludedUnit $pilot)) 'and a routine unit is not one of them'
 foreach ($f in @('enabled', 'deployed', 'stackDeletes')) {
   $badUnits = Copy-Object $units; $x = Get-TestUnit $excluded[0].name $badUnits
-  if ($null -eq $x.PSObject.Properties[$f]) { $x | Add-Member -NotePropertyName $f -NotePropertyValue $true } else { $x.$f = $true }
+  if ($null -eq $x.PSObject.Properties[$f]) { $x | Add-Member -Force -NotePropertyName $f -NotePropertyValue $true } else { $x.$f = $true }
   Assert-Contains @(Test-UnitRules $badUnits) "*$($excluded[0].name): $f is true, and the unit of a deploy-excluded file is never deployed*" "a deploy-excluded unit with $f true breaks the unit rules"
 }
 $badUnits = Copy-Object $units; (Get-TestUnit 'demo-privileged' $badUnits).tier = 'Privileged'
 Assert-Contains @(Test-UnitRules $badUnits) '*demo-privileged: the tier must be privileged or left out*' 'a misspelled tier breaks the unit rules'
 $badUnits = Copy-Object $units; (Get-TestUnit 'rg-demo-routing' $badUnits).enabled = 'true'
 Assert-Contains @(Test-UnitRules $badUnits) '*rg-demo-routing: enabled must be true or false*' 'enabled as text breaks the unit rules'
-$badUnits = Copy-Object $units; (Get-TestUnit 'demo-tenant-management-group' $badUnits) | Add-Member -NotePropertyName stackDeletes -NotePropertyValue $true
+$badUnits = Copy-Object $units; (Get-TestUnit 'demo-tenant-management-group' $badUnits) | Add-Member -Force -NotePropertyName stackDeletes -NotePropertyValue $true
 Assert-Contains @(Test-UnitRules $badUnits) '*demo-tenant-management-group: stackDeletes stays off*' 'stackDeletes on a tenant unit breaks the unit rules'
 $badUnits = Copy-Object $units; (Get-TestUnit 'rg-demo-routing' $badUnits).name = 'RG-DEMO-NETWORK'
 Assert-Contains @(Test-UnitRules $badUnits) "*the unit name 'RG-DEMO-NETWORK' is used more than once*" 'two units whose names differ only in case break the unit rules'
@@ -698,11 +698,11 @@ exit $LASTEXITCODE
   # Units, for the drift check. No unit is marked deployed in the repository's file.
   Invoke-TestMode 'Units' @{ SELECT = 'deployed' } 'with no deployed unit the drift check has an empty matrix and says so' 0 @('matrix=[]', 'No unit in deploy/units.json is marked "deployed": true')
   $depUnits = Copy-Object $unitsOn
-  (@($depUnits.units) | Where-Object { $_.name -eq 'pilot-empty-rg' })[0] | Add-Member -NotePropertyName deployed -NotePropertyValue $true
-  (@($depUnits.units) | Where-Object { $_.name -eq 'rg-demo-routing' })[0] | Add-Member -NotePropertyName deployed -NotePropertyValue 'true'
-  (@($depUnits.units) | Where-Object { $_.name -eq 'rg-demo-network' })[0] | Add-Member -NotePropertyName deployed -NotePropertyValue $false
+  (@($depUnits.units) | Where-Object { $_.name -eq 'pilot-empty-rg' })[0] | Add-Member -Force -NotePropertyName deployed -NotePropertyValue $true
+  (@($depUnits.units) | Where-Object { $_.name -eq 'rg-demo-routing' })[0] | Add-Member -Force -NotePropertyName deployed -NotePropertyValue 'true'
+  (@($depUnits.units) | Where-Object { $_.name -eq 'rg-demo-network' })[0] | Add-Member -Force -NotePropertyName deployed -NotePropertyValue $false
   $exUnit = (@($depUnits.units) | Where-Object { $_.name -eq 'rg-demo-identities-deploy-excluded' })[0]
-  $exUnit.enabled = $true; $exUnit | Add-Member -NotePropertyName deployed -NotePropertyValue $true
+  $exUnit.enabled = $true; $exUnit | Add-Member -Force -NotePropertyName deployed -NotePropertyValue $true
   Write-TestFile 'deploy/units.json' (ConvertTo-Json $depUnits -Depth 20); Invoke-TestGit add -A | Out-Null; Invoke-TestGit commit -q -m c7 | Out-Null
   Invoke-TestMode 'Units' @{ SELECT = 'deployed' } 'only a unit with deployed true, as a true and not as text, is checked for drift, and never the unit of a deploy-excluded file' 0 'Units: `pilot-empty-rg`.'
   $o7 = $one.Clone(); $o7['UNIT'] = 'rg-demo-identities-deploy-excluded'
@@ -734,7 +734,7 @@ exit $LASTEXITCODE
   Invoke-TestMode 'Units' $prDoc 'a pull request that changes no unit has an empty matrix' 0 'matrix=[]'
   Invoke-TestGit checkout -q --detach $c3 | Out-Null
   $delUnits = Copy-Object $unitsOn
-  (@($delUnits.units) | Where-Object { $_.name -eq 'pilot-empty-rg' })[0] | Add-Member -NotePropertyName stackDeletes -NotePropertyValue $true
+  (@($delUnits.units) | Where-Object { $_.name -eq 'pilot-empty-rg' })[0] | Add-Member -Force -NotePropertyName stackDeletes -NotePropertyValue $true
   Write-TestFile 'deploy/units.json' (ConvertTo-Json $delUnits -Depth 20); Invoke-TestGit add -A | Out-Null; Invoke-TestGit commit -q -m b3 | Out-Null
   $bUnits = Invoke-TestGit rev-parse HEAD
   Invoke-TestGit checkout -q --detach $c3 | Out-Null
