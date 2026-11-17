@@ -1099,7 +1099,7 @@ gh workflow run mirror-deploy-unit.yml --ref master -f unit=demo-privileged -f c
 >
 > I'll approve it in `mirror-privileged-demo` as `klaudiomarashi`, with a comment that names `DEMO-0006`. The summary shows a subscription stack with 2 managed resources, the role definition `Demo Reader Plus` and the Owner assignment. There's a second half to this rule as well. A production unit that declares a role definition, or an Owner assignment, fails the `preflight` job of `mirror-validate`, so that code is refused before anyone could deploy it from the ordinary tier.
 
-### 14. Wave 3, the subscription stack (GUIDE.md section 4.3, item 9)
+### 14. Wave 3, the subscription stack (GUIDE.md section 4.6)
 
 > The subscription layer, `demo-subscription`, declares the four resource groups of the demo and the Defender plan for virtual machines. It is deployed as a subscription stack, and the deploy identity does it with the custom role Mirror Platform Deployment at the subscription. A resource group that leaves such a template is never deleted. The stack detaches it and leaves it in Azure.
 >
@@ -1147,7 +1147,7 @@ gh workflow run mirror-deploy-unit.yml --ref master -f unit=demo-subscription -f
 >
 > The stack manages the four groups themselves, and the resources inside a group belong to the group's own unit. A group is only ever detached. If we removed `rg-demo-routing` from `main.bicep`, the plan would show a detach, and the group, with everything in it, would stay.
 
-### 15. Wave 5, the management groups (GUIDE.md sections 4.6 and 4.7)
+### 15. Wave 5, the management groups (GUIDE.md section 4.7)
 
 > Not everything lives inside a subscription. Management groups sit above the subscriptions, so their units deploy as a management group stack, at the tenant level, with their own managed identity, the tenant govern identity `id-mirror-govern-tenant`.
 >
@@ -1207,7 +1207,7 @@ az stack mg show --management-group-id mg-demo --name mirror-demo-tenant-governa
 >
 > In production, there are three tenant units. Two of them deploy against the Tenant Root Group, one for the management groups and one for their role assignments, and the third deploys against the management group below it. They go through exactly this path, with the tenant govern identity, and only after the privileged team approves them.
 >
-> `demo-tenant-management-group` is the unit against the Tenant Root Group. Its first plan has to read mg-demo, which the reader can do, and it adopts the group the same way, with its own adoption file. In the project, a unit that declares a new child management group with `scope: tenant()` needs that group created by hand first, because a group that does not exist yet has no parent path for the reader's Reader role to follow, and the plan then fails with `Authorization failed for template resource ... Microsoft.Management/managementGroups/read`. GUIDE.md section 4.6 shows both outcomes.
+> `demo-tenant-management-group` is the unit against the Tenant Root Group. Its first plan has to read mg-demo, which the reader can do, and it adopts the group the same way, with its own adoption file. In the project, a unit that declares a new child management group with `scope: tenant()` needs that group created by hand first, because a group that does not exist yet has no parent path for the reader's Reader role to follow, and the plan then fails with `Authorization failed for template resource ... Microsoft.Management/managementGroups/read`. GUIDE.md section 4.7 shows both outcomes.
 >
 > If a tenant unit ever fails with `AuthorizationFailed`, the reader identity is missing Reader, or Mirror What-If Reader Tenant, on the Tenant Root Group.
 
