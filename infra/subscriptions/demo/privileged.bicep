@@ -28,7 +28,7 @@ resource roleDefinition_demo_reader_plus 'Microsoft.Authorization/roleDefinition
   name: guid(subscription().id, 'demo-reader-plus')
   properties: {
     roleName: 'Demo Reader Plus'
-    description: 'Reads resource groups. Shows a custom role in the privileged tier, written by the govern identity.'
+    description: 'Reads resource groups. Shows a custom role in the privileged tier.'
     type: 'CustomRole'
     permissions: [
       {
