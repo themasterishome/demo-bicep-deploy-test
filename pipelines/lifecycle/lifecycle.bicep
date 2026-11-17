@@ -15,13 +15,3 @@ resource networkSecurityGroup_nsg_life_a 'Microsoft.Network/networkSecurityGroup
     securityRules: []
   }
 }
-
-resource routeTable_rt_life 'Microsoft.Network/routeTables@2026-01-01' = {
-  name: 'rt-life'
-  location: location
-  tags: { purpose: 'demo-bicep-deploy' }
-  properties: {
-    disableBgpRoutePropagation: false
-    routes: []
-  }
-}
