@@ -128,6 +128,22 @@ az resource list --resource-group rg-demo-routing --subscription 77488719-1168-4
 ```
 
 ```powershell
+az stack sub list --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[].name" -o tsv
+```
+
+```powershell
+az stack group list --resource-group rg-demo-network --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[].name" -o tsv
+```
+
+```powershell
+az stack group list --resource-group rg-demo-routing --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[].name" -o tsv
+```
+
+```powershell
+az stack mg list --management-group-id mg-demo --query "[].name" -o tsv
+```
+
+```powershell
 gh variable list --repo themasterishome/demo-bicep-deploy-test
 ```
 
@@ -416,23 +432,15 @@ gh run watch RUN_ID --repo themasterishome/demo-bicep-deploy-test
 ```
 
 ```powershell
-gh api "repos/themasterishome/demo-bicep-deploy-test/actions/runs/RUN_ID/artifacts" --jq ".artifacts[] | [.id, .name] | @tsv"
+az stack group show --name mirror-pilot-empty-rg --resource-group rg-demo-pilot --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "{state:provisioningState, resources:length(resources), unmanage:actionOnUnmanage, deny:denySettings.mode, by:systemData.createdBy}" -o json
 ```
 
 ```powershell
-New-Item -ItemType Directory -Force C:\demo-setup\evidence-pilot | Out-Null
+gh run download RUN_ID --name plan-pilot-empty-rg --dir C:\demo-setup\plan-pilot --repo themasterishome/demo-bicep-deploy-test
 ```
 
 ```powershell
-cmd /c "gh api repos/themasterishome/demo-bicep-deploy-test/actions/artifacts/ARTIFACT_ID/zip > C:\demo-setup\evidence-pilot\ARTIFACT_NAME.zip"
-```
-
-```powershell
-python -I -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" C:\demo-setup\evidence-pilot\ARTIFACT_NAME.zip C:\demo-setup\evidence-pilot\ARTIFACT_NAME
-```
-
-```powershell
-Get-ChildItem -Path C:\demo-setup\evidence-pilot -Recurse -Include approval.txt, post-summary.txt | Select-Object -ExpandProperty FullName
+Get-Content deploy\adoption\rg-demo-network.md
 ```
 
 ```powershell
@@ -476,19 +484,47 @@ gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-network -f c
 ```
 
 ```powershell
-gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-network -f changeRef=DEMO-0004 -f reason="Wave 1, create the network" -f apply=true -f allowCreate="ID1,ID2,ID3,ID4,ID5,ID6,ID7,ID8,ID9" --repo themasterishome/demo-bicep-deploy-test
+gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-network -f changeRef=DEMO-0004 -f reason="Wave 1, bring the network under the stack" -f apply=true --repo themasterishome/demo-bicep-deploy-test
 ```
 
 ```powershell
-gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-routing -f changeRef=DEMO-0005 -f reason="Wave 2, read the plan" --repo themasterishome/demo-bicep-deploy-test
+gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-network -f changeRef=DEMO-0004 -f reason="Wave 1, plan after the first deployment" --repo themasterishome/demo-bicep-deploy-test
 ```
 
 ```powershell
-gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-routing -f changeRef=DEMO-0005 -f reason="Wave 2, create the routing" -f apply=true -f allowCreate="/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-routing/providers/Microsoft.Network/routeTables/rt-demo,/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-routing/providers/Microsoft.Network/applicationSecurityGroups/asg-demo,/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-routing/providers/Microsoft.Automation/automationAccounts/aa-demo-secrets,/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-routing/providers/Microsoft.Automation/automationAccounts/aa-demo-secrets/credentials/demo-cred" --repo themasterishome/demo-bicep-deploy-test
+git switch --create network-deployed
 ```
 
 ```powershell
-gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-routing -f changeRef=DEMO-0005 -f reason="Wave 2, the second deployment of the same commit" -f apply=true --repo themasterishome/demo-bicep-deploy-test
+git rm deploy\adoption\rg-demo-network.md
+```
+
+```powershell
+git commit --all --message "Mark rg-demo-network deployed and remove its adoption file"
+```
+
+```powershell
+git push -u test network-deployed
+```
+
+```powershell
+gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head network-deployed --title "Mark rg-demo-network deployed" --body "First deployment done"
+```
+
+```powershell
+gh pr merge network-deployed --squash --delete-branch --repo themasterishome/demo-bicep-deploy-test
+```
+
+```powershell
+git switch master
+```
+
+```powershell
+git pull test master
+```
+
+```powershell
+gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-routing -f changeRef=DEMO-0005 -f reason="Wave 2, bring the routing under the stack" -f apply=true --repo themasterishome/demo-bicep-deploy-test
 ```
 
 ```powershell
@@ -528,39 +564,31 @@ git pull test master
 ```
 
 ```powershell
-gh workflow run mirror-deploy-unit.yml --ref master -f unit=demo-privileged -f changeRef=DEMO-0006 -f reason="Wave 4, read the plan" --repo themasterishome/demo-bicep-deploy-test
+gh workflow run mirror-deploy-unit.yml --ref master -f unit=demo-privileged -f changeRef=DEMO-0006 -f reason="Wave 4, the privileged unit" -f apply=true --repo themasterishome/demo-bicep-deploy-test
 ```
 
 ```powershell
-gh workflow run mirror-deploy-unit.yml --ref master -f unit=demo-privileged -f changeRef=DEMO-0006 -f reason="Wave 4, the privileged unit" -f apply=true -f allowCreate="ID1,ID2" --repo themasterishome/demo-bicep-deploy-test
+git switch --create enable-subscription
 ```
 
 ```powershell
-git switch --create enable-tenant-mg
+(Get-Content deploy\units.json -Raw) -replace '(?s)("name": "demo-subscription".*?"enabled": )false', '${1}true' | Set-Content deploy\units.json -NoNewline
 ```
 
 ```powershell
-(Get-Content deploy\units.json -Raw) -replace '(?s)("name": "demo-tenant-management-group".*?"enabled": )false', '${1}true' | Set-Content deploy\units.json -NoNewline
+git commit --all --message "Enable the subscription unit"
 ```
 
 ```powershell
-git diff --stat
+git push -u test enable-subscription
 ```
 
 ```powershell
-git commit --all --message "Enable the management group unit"
+gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head enable-subscription --title "Enable the subscription unit" --body "Enable the subscription unit"
 ```
 
 ```powershell
-git push -u test enable-tenant-mg
-```
-
-```powershell
-gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head enable-tenant-mg --title "Enable the management group unit" --body "Enable the management group unit"
-```
-
-```powershell
-gh pr merge enable-tenant-mg --squash --delete-branch --repo themasterishome/demo-bicep-deploy-test
+gh pr merge enable-subscription --squash --delete-branch --repo themasterishome/demo-bicep-deploy-test
 ```
 
 ```powershell
@@ -572,7 +600,7 @@ git pull test master
 ```
 
 ```powershell
-gh workflow run mirror-deploy-unit.yml --ref master -f unit=demo-tenant-management-group -f changeRef=DEMO-0007 -f reason="Wave 5, the management group" -f apply=true --repo themasterishome/demo-bicep-deploy-test
+gh workflow run mirror-deploy-unit.yml --ref master -f unit=demo-subscription -f changeRef=DEMO-0007 -f reason="Wave 3, the subscription layer" -f apply=true --repo themasterishome/demo-bicep-deploy-test
 ```
 
 ```powershell
@@ -581,10 +609,6 @@ git switch --create enable-tenant-governance
 
 ```powershell
 (Get-Content deploy\units.json -Raw) -replace '(?s)("name": "demo-tenant-governance".*?"enabled": )false', '${1}true' | Set-Content deploy\units.json -NoNewline
-```
-
-```powershell
-git diff --stat
 ```
 
 ```powershell
@@ -612,11 +636,11 @@ git pull test master
 ```
 
 ```powershell
-gh workflow run mirror-deploy-unit.yml --ref master -f unit=demo-tenant-governance -f changeRef=DEMO-0008 -f reason="Wave 6, read the plan" --repo themasterishome/demo-bicep-deploy-test
+gh workflow run mirror-deploy-unit.yml --ref master -f unit=demo-tenant-governance -f changeRef=DEMO-0008 -f reason="Wave 5, Reader on the management group" -f apply=true --repo themasterishome/demo-bicep-deploy-test
 ```
 
 ```powershell
-gh workflow run mirror-deploy-unit.yml --ref master -f unit=demo-tenant-governance -f changeRef=DEMO-0008 -f reason="Wave 6, Reader on the management group" -f apply=true -f allowCreate=ID --repo themasterishome/demo-bicep-deploy-test
+az stack mg show --management-group-id mg-demo --name mirror-demo-tenant-governance --query "{state:provisioningState, unmanage:actionOnUnmanage, resources:resources[].id}" -o json
 ```
 
 ```powershell
@@ -636,7 +660,7 @@ gh workflow run mirror-drift.yml --ref master --repo themasterishome/demo-bicep-
 ```
 
 ```powershell
-gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-routing -f changeRef=DEMO-0010 -f reason="Undo the drift on rt-demo" -f apply=true -f allowModify=/subscriptions/77488719-1168-4d53-af9a-f5c3bc9291d7/resourceGroups/rg-demo-routing/providers/Microsoft.Network/routeTables/rt-demo --repo themasterishome/demo-bicep-deploy-test
+gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-network -f changeRef=DEMO-0010 -f reason="Undo the drift on nsg-demo" -f apply=true --repo themasterishome/demo-bicep-deploy-test
 ```
 
 ```powershell
@@ -652,6 +676,30 @@ gh variable list --repo themasterishome/demo-bicep-deploy-test
 ```
 
 ```powershell
+git switch --create network-tag
+```
+
+```powershell
+git commit --all --message "A tag on nsg-demo"
+```
+
+```powershell
+git push -u test network-tag
+```
+
+```powershell
+gh pr create --repo themasterishome/demo-bicep-deploy-test --base master --head network-tag --title "A tag on nsg-demo" --body "A tag on nsg-demo"
+```
+
+```powershell
+gh pr merge network-tag --squash --delete-branch --repo themasterishome/demo-bicep-deploy-test
+```
+
+```powershell
+gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-network -f changeRef=DEMO-0011 -f reason="A tag on nsg-demo" -f apply=true --repo themasterishome/demo-bicep-deploy-test
+```
+
+```powershell
 gh variable set MIRROR_PIPELINE_ENABLED --body false --repo themasterishome/demo-bicep-deploy-test
 ```
 
@@ -664,6 +712,14 @@ gh issue list --state open --repo themasterishome/demo-bicep-deploy-test
 ```
 
 ```powershell
+az stack sub list --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "[].name" -o tsv
+```
+
+```powershell
+az stack sub delete --name mirror-demo-subscription --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --action-on-unmanage detachAll --yes
+```
+
+```powershell
 gh auth switch --hostname github.com --user klaudiomarashi
 ```
 
@@ -672,13 +728,14 @@ az account set --subscription SUBSCRIPTION_ID
 ```
 
 ```powershell
-az deployment sub show --name mirror-UNIT-COMMIT --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query properties.error
+az stack group show --name mirror-UNIT --resource-group RESOURCE_GROUP --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "{state:provisioningState, error:error, failed:failedResources}"
 ```
 
 ```powershell
-az deployment group show --name mirror-UNIT-COMMIT --resource-group RESOURCE_GROUP --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query properties.error
+az stack sub show --name mirror-UNIT --subscription 77488719-1168-4d53-af9a-f5c3bc9291d7 --query "{state:provisioningState, error:error, failed:failedResources}"
 ```
 
 ```powershell
-az deployment mg show --name mirror-UNIT-COMMIT --management-group-id MANAGEMENT_GROUP_ID --query properties.error
+az stack mg show --name mirror-UNIT --management-group-id MANAGEMENT_GROUP_ID --query "{state:provisioningState, error:error, failed:failedResources}"
 ```
+
