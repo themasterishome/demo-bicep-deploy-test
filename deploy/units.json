@@ -127,7 +127,8 @@
       "risk": "low",
       "enabled": true,
       "notes": "A network security group, an application security group and a route table in rg-demo-lifecycle, a resource group created by hand for this unit alone. All are free. The unit shows a stack's whole life in the pipeline: a first run that only creates, an update, a resource that leaves the template and is detached, and a resource that leaves it and is deleted.",
-      "deployed": true
+      "deployed": true,
+      "stackDeletes": true
     }
   ]
 }
