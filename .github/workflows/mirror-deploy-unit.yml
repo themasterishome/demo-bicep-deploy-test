@@ -338,8 +338,8 @@ jobs:
           bicep-version: 0.49.2
           action-on-unmanage-resources: ${{ matrix.unmanage }}
           action-on-unmanage-resourcegroups: detach
-          action-on-unmanage-managementgroup: detach
-          action-on-unmanage-managementgroups: delete
+          action-on-unmanage-managementgroup: delete
+          action-on-unmanage-managementgroups: detach
           deny-settings-mode: none
       - name: Summarize the stack
         # Reads the stack with the Azure CLI and writes its state and its resource counts to the job summary.
