@@ -1,0 +1,282 @@
+{
+  "id": "/subscriptions/00000000-0000-0000-0000-000000000000/providers/Microsoft.Resources/deploymentStacksWhatIfResults/mirror-example-1",
+  "name": "mirror-example-1",
+  "type": "Microsoft.Resources/deploymentStacksWhatIfResults",
+  "properties": {
+    "actionOnUnmanage": {
+      "managementGroups": "detach",
+      "resourceGroups": "detach",
+      "resources": "detach",
+      "resourcesWithoutDeleteSupport": "fail"
+    },
+    "changes": {
+      "denySettingsChange": {
+        "after": {
+          "applyToChildScopes": false,
+          "excludedActions": [],
+          "excludedPrincipals": [],
+          "mode": "None"
+        },
+        "before": null,
+        "delta": [
+          {
+            "after": "None",
+            "before": null,
+            "changeType": "create",
+            "children": null,
+            "path": "Mode"
+          },
+          {
+            "after": "False",
+            "before": null,
+            "changeType": "create",
+            "children": null,
+            "path": "ApplyToChildScopes"
+          }
+        ]
+      },
+      "deploymentScopeChange": {
+        "after": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example-2",
+        "before": null
+      },
+      "resourceChanges": [
+        {
+          "apiVersion": null,
+          "changeCertainty": "definite",
+          "changeType": "noChange",
+          "denyStatusChange": {
+            "after": "none",
+            "before": "none"
+          },
+          "deploymentId": null,
+          "extension": null,
+          "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example-2/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-example",
+          "identifiers": null,
+          "managementStatusChange": {
+            "after": "managed",
+            "before": "notManaged"
+          },
+          "resourceConfigurationChanges": {
+            "after": {
+              "apiVersion": "2023-01-31",
+              "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example-2/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-example",
+              "location": "uksouth",
+              "name": "id-example",
+              "resourceGroup": "rg-example-2",
+              "tags": {
+                "purpose": "stackexample"
+              },
+              "type": "Microsoft.ManagedIdentity/userAssignedIdentities"
+            },
+            "before": {
+              "apiVersion": "2023-01-31",
+              "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example-2/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-example",
+              "location": "uksouth",
+              "name": "id-example",
+              "resourceGroup": "rg-example-2",
+              "tags": {
+                "purpose": "stackexample"
+              },
+              "type": "Microsoft.ManagedIdentity/userAssignedIdentities"
+            },
+            "delta": []
+          },
+          "resourceGroup": "rg-example-2",
+          "symbolicName": null,
+          "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+          "unsupportedReason": null
+        },
+        {
+          "apiVersion": null,
+          "changeCertainty": "definite",
+          "changeType": "modify",
+          "denyStatusChange": {
+            "after": "none",
+            "before": "none"
+          },
+          "deploymentId": null,
+          "extension": null,
+          "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example-2/providers/Microsoft.Network/virtualNetworks/vnet-example",
+          "identifiers": null,
+          "managementStatusChange": {
+            "after": "managed",
+            "before": "notManaged"
+          },
+          "resourceConfigurationChanges": {
+            "after": {
+              "apiVersion": "2024-05-01",
+              "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example-2/providers/Microsoft.Network/virtualNetworks/vnet-example",
+              "location": "uksouth",
+              "name": "vnet-example",
+              "properties": {
+                "addressSpace": {
+                  "addressPrefixes": [
+                    "10.250.0.0/24"
+                  ]
+                },
+                "enableDdosProtection": false,
+                "subnets": [
+                  {
+                    "name": "default",
+                    "properties": {
+                      "addressPrefix": "10.250.0.0/26",
+                      "defaultOutboundAccess": false,
+                      "privateEndpointNetworkPolicies": "Disabled",
+                      "privateLinkServiceNetworkPolicies": "Enabled"
+                    }
+                  }
+                ]
+              },
+              "resourceGroup": "rg-example-2",
+              "tags": {
+                "purpose": "stackexample",
+                "state": "declared"
+              },
+              "type": "Microsoft.Network/virtualNetworks"
+            },
+            "before": {
+              "apiVersion": "2024-05-01",
+              "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example-2/providers/Microsoft.Network/virtualNetworks/vnet-example",
+              "location": "uksouth",
+              "name": "vnet-example",
+              "properties": {
+                "addressSpace": {
+                  "addressPrefixes": [
+                    "10.250.0.0/24"
+                  ]
+                },
+                "enableDdosProtection": false,
+                "privateEndpointVNetPolicies": "Disabled",
+                "subnets": [
+                  {
+                    "name": "default",
+                    "properties": {
+                      "addressPrefix": "10.250.0.0/26",
+                      "defaultOutboundAccess": false,
+                      "privateEndpointNetworkPolicies": "Disabled",
+                      "privateLinkServiceNetworkPolicies": "Enabled"
+                    }
+                  }
+                ]
+              },
+              "resourceGroup": "rg-example-2",
+              "tags": {
+                "purpose": "stackexample",
+                "state": "declared"
+              },
+              "type": "Microsoft.Network/virtualNetworks"
+            },
+            "delta": [
+              {
+                "after": null,
+                "before": "Disabled",
+                "changeType": "delete",
+                "children": [],
+                "path": "properties.privateEndpointVNetPolicies"
+              }
+            ]
+          },
+          "resourceGroup": "rg-example-2",
+          "symbolicName": null,
+          "type": "Microsoft.Network/virtualNetworks",
+          "unsupportedReason": null
+        },
+        {
+          "apiVersion": null,
+          "changeCertainty": "definite",
+          "changeType": "noChange",
+          "denyStatusChange": {
+            "after": "none",
+            "before": "none"
+          },
+          "deploymentId": null,
+          "extension": null,
+          "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example-2/providers/Microsoft.Storage/storageAccounts/stexample1",
+          "identifiers": null,
+          "managementStatusChange": {
+            "after": "managed",
+            "before": "notManaged"
+          },
+          "resourceConfigurationChanges": {
+            "after": {
+              "apiVersion": "2023-05-01",
+              "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example-2/providers/Microsoft.Storage/storageAccounts/stexample1",
+              "kind": "StorageV2",
+              "location": "uksouth",
+              "name": "stexample1",
+              "properties": {
+                "accessTier": "Hot",
+                "allowBlobPublicAccess": false,
+                "allowCrossTenantReplication": false,
+                "encryption": {
+                  "keySource": "Microsoft.Storage"
+                },
+                "minimumTlsVersion": "TLS1_2",
+                "networkAcls": {
+                  "bypass": "None",
+                  "defaultAction": "Allow"
+                },
+                "supportsHttpsTrafficOnly": true
+              },
+              "resourceGroup": "rg-example-2",
+              "sku": {
+                "name": "Standard_LRS"
+              },
+              "tags": {
+                "purpose": "stackexample"
+              },
+              "type": "Microsoft.Storage/storageAccounts"
+            },
+            "before": {
+              "apiVersion": "2023-05-01",
+              "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example-2/providers/Microsoft.Storage/storageAccounts/stexample1",
+              "kind": "StorageV2",
+              "location": "uksouth",
+              "name": "stexample1",
+              "properties": {
+                "accessTier": "Hot",
+                "allowBlobPublicAccess": false,
+                "allowCrossTenantReplication": false,
+                "encryption": {
+                  "keySource": "Microsoft.Storage"
+                },
+                "minimumTlsVersion": "TLS1_2",
+                "networkAcls": {
+                  "bypass": "None",
+                  "defaultAction": "Allow"
+                },
+                "supportsHttpsTrafficOnly": true
+              },
+              "resourceGroup": "rg-example-2",
+              "sku": {
+                "name": "Standard_LRS"
+              },
+              "tags": {
+                "purpose": "stackexample"
+              },
+              "type": "Microsoft.Storage/storageAccounts"
+            },
+            "delta": []
+          },
+          "resourceGroup": "rg-example-2",
+          "symbolicName": null,
+          "type": "Microsoft.Storage/storageAccounts",
+          "unsupportedReason": null
+        }
+      ]
+    },
+    "denySettings": {
+      "applyToChildScopes": false,
+      "excludedActions": [],
+      "excludedPrincipals": [],
+      "mode": "none"
+    },
+    "deploymentStackLastModified": "0001-01-01T00:00:00+00:00",
+    "deploymentStackResourceId": "/subscriptions/00000000-0000-0000-0000-000000000000/providers/Microsoft.Resources/deploymentStacks/mirror-example",
+    "diagnostics": [],
+    "error": null,
+    "provisioningState": "succeeded",
+    "retentionInterval": "3:00:00",
+    "validationLevel": "ProviderNoRbac"
+  }
+}

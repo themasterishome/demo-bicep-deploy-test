@@ -1,5 +1,5 @@
 {
-  "description": "Deployment units and their order. scripts/deploy-unit.ps1 refuses anything not listed here or listed with enabled false. Every unit deploys from the pipeline. A unit marked \"tier\": \"privileged\" holds the role assignments of Owner, User Access Administrator and Role Based Access Control Administrator, the custom role definitions and the pipeline identities' own roles, and deploys through the mirror-privileged-<folder> environment with that subscription's govern identity. Every other unit is production tier and deploys through mirror-production-<folder>. A tenant-kind unit names the management group it deploys against in \"managementGroup\". Paths are relative to the repository root.",
+  "description": "Deployment units and their order. The units job of mirror-deploy-unit refuses a unit that is not listed here or is listed with enabled false, and the unit of a deploy-excluded file, which is previewed and never deployed. Every other unit deploys from the pipeline, as a deployment stack named mirror-<unit>. A resource group unit is a resource group stack, a subscription unit a subscription stack and a tenant-kind unit a management group stack. A unit marked \"tier\": \"privileged\" holds the role assignments of Owner, User Access Administrator and Role Based Access Control Administrator, the custom role definitions and the pipeline identities' own roles, and deploys through the mirror-privileged-<folder> environment with that subscription's govern identity. Every other unit is production tier and deploys through mirror-production-<folder>. A tenant-kind unit names the management group it deploys against in \"managementGroup\". A unit with \"stackDeletes\": true deletes a resource that left its template when it is deployed. Without the field, or with false, the resource is detached and stays in Azure. A resource group and a management group are always detached, and stackDeletes may not be true for a tenant-kind unit or a unit of the subscription fdm-apim. A unit gets \"deployed\": true in a code pull request after its first deployment, and the weekly drift check then previews its stack. Paths are relative to the repository root.",
   "tenantId": "d1a349ef-6ac8-4588-a88d-5dab272c700b",
   "allowedPrincipals": [
     {
@@ -100,7 +100,19 @@
       "risk": "high",
       "tier": "privileged",
       "enabled": true,
-      "notes": "One Reader role assignment made directly on the management group mg-demo. Runs after demo-tenant-management-group, which declares the group. Privileged tier: the pipeline deploys it through mirror-privileged-tenant with the tenant govern identity, at management group scope against mg-demo, and deploy-unit.ps1 runs it like any other unit (az deployment mg what-if and create). The reader previews it with Reader and Mirror What-If Reader at the Tenant Root Group."
+      "notes": "One Reader role assignment made directly on the management group mg-demo. Runs after demo-tenant-management-group, which declares the group. Privileged tier: the pipeline deploys it through mirror-privileged-tenant with the tenant govern identity, at management group scope against mg-demo, as a management group stack like every other tenant unit. The reader previews it with Reader and Mirror What-If Reader at the Tenant Root Group."
+    },
+    {
+      "name": "rg-demo-identities-deploy-excluded",
+      "kind": "resourceGroup",
+      "subscription": "demo",
+      "resourceGroup": "rg-demo-identities",
+      "template": "infra/subscriptions/demo/resource-groups/rg-demo-identities.deploy-excluded.bicep",
+      "parameters": "infra/subscriptions/demo/resource-groups/rg-demo-identities.deploy-excluded.bicepparam",
+      "wave": 7,
+      "risk": "high",
+      "enabled": false,
+      "notes": "The pipeline's own identities, their federated credentials and the secrets vault, in rg-demo-identities. The file is deploy-excluded, so this unit is previewed by pull requests and never deployed. The group is changed by hand at the setup steps. Run workflow refuses the unit."
     }
   ]
 }

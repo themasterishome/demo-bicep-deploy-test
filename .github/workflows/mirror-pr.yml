@@ -4,28 +4,35 @@
 # The preview on every pull request into master. It is read-only. The one job that signs in to Azure uses the reader
 # identity of the mirror-reader environment.
 #
-# Every pull request gets, for information, a preview of each unit whose files it changes (at most 12), judged
-# offline by deploy-unit.ps1 -WhatIfJson. A change made on purpose shows as FAIL until a deployment of the unit names it
-# in allowModify. Nothing deploys from a pull request, and the merge starts nothing either. A deployment is started
-# with Run workflow (mirror-deploy-unit), and its apply waits for the reviewers of the unit's environment. The IDs a
-# deployment needs in allowCreate and allowModify are in this preview's comment.
+# Every pull request gets, for information, a deployment stack preview of each unit whose files it changes (at most
+# 12). The preview is what a deployment of the unit would do after the merge: the resources it would create, change,
+# detach or delete. A unit whose stack does not exist yet is previewed the same way, and its resources then show as
+# coming under the stack's management. Nothing deploys from a pull request, and the merge deploys nothing either. A
+# deployment is started with Run workflow (mirror-deploy-unit), and its apply waits for the reviewers of the unit's
+# environment.
 #
-# The pr-gate job is the required status check. A pull request can edit this workflow and so make its own check
-# pass. That is why mirror-deploy-unit plans again on master and checks everything itself before anything is
-# deployed. The push ruleset on .github/** (only IT's approvers may push a change there, on any branch) stops a
-# writer from running a changed copy of this workflow at all, for example from a pull request into another branch
-# that is later retargeted to master. The edited trigger takes a new preview when the base branch changes.
+# The pr-gate job is the required status check. It fails when the units could not be listed or a preview could
+# not be taken, for example because a template is not valid. A preview that shows changes passes, because a pull
+# request is there to change something. A pull request can edit this workflow and so make its own check pass. That
+# is why mirror-deploy-unit plans again on master before anything is deployed. The push ruleset on .github/** (only
+# IT's approvers may push a change there, on any branch) stops a writer from running a changed copy of this
+# workflow at all, for example from a pull request into another branch that is later retargeted to master. The
+# edited trigger takes a new preview when the base branch changes.
 #
-# The preview is in the job summary of the run, which nobody can edit. The pull request comment carries the same
-# text and a link to the run.
+# Each preview is in the job summary of its whatif job, on the run page that the pull request's checks link to,
+# and nobody can edit it there. The artifact of the job holds the same preview as JSON and as text.
 #
 # Anyone with write access can open a pull request, and a pull request runs its own copy of this workflow, so
 # anyone with write access can use the reader identity. Give write access only to people who already hold the
 # Reader and Mirror What-If Reader roles on the 10 subscriptions and the Tenant Root Group. Anyone with read access can download the
-# previews, which hold the live settings of the estate. The whatif job runs the scripts and the gate of master's
-# tip, not the pull request's, and only the Bicep files and deploy/units.json come from the pull request. Before
-# the sign-in it refuses Bicep that reads environment variables, registry modules or files outside the
-# repository. A change to a script is checked by the preflight in mirror-validate, which holds no token.
+# previews, which hold the live settings of the estate. The whatif job runs the helper script and the local actions
+# of master's tip, not the pull request's, and only the Bicep files and deploy/units.json come from the pull
+# request. Before the sign-in it refuses Bicep that reads environment variables, registry modules or files outside
+# the repository.
+#
+# The preview runs the Azure CLI (az stack validate, az stack-whatif) and not the action azure/bicep-deploy. This
+# is not yet done because the released action (v2.5.0) sends no validation level with a stack preview, so Azure
+# refuses the reader identity, and because the action writes a preview to the log only.
 name: mirror-pr
 
 on:
@@ -43,8 +50,8 @@ concurrency:
 
 env:
   # SHA256 of bicep-win-x64.exe (a Windows runner) and of bicep-linux-x64 (a Linux runner) in the Bicep v0.49.2
-  # GitHub release. Change the three together, and the Bicep version that scripts/deploy-unit.ps1,
-  # scripts/whatif-rg-sweep.sh and scripts/whatif-sub-sweep.sh require.
+  # GitHub release. Change the three together, with the bicep-version input in mirror-deploy-unit.yml and the Bicep
+  # version that scripts/deploy-unit.ps1, scripts/whatif-rg-sweep.sh and scripts/whatif-sub-sweep.sh require.
   BICEP_VERSION: v0.49.2
   BICEP_SHA256_WINDOWS: ACFFF0453C9BCF442AA97103ACBCD845EF366634E6EA2A2BA5734514409CE9C3
   BICEP_SHA256_LINUX: 0AB9DE90C2493F206F8281BAE74F9EE2D5ED3605548DAB1ADF41FEF185E1F7C5
@@ -54,37 +61,38 @@ env:
 # runs-on, and the runner check, the step after the checkout in every job, stops the job on any other runner. The
 # runner check and the Bicep pin are the two local actions under .github/actions.
 jobs:
-  plan:
+  units:
     # No Azure. Lists the units to preview.
     if: vars.MIRROR_PIPELINE_ENABLED == 'true'
     runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
     timeout-minutes: 10
     outputs:
-      kind: ${{ steps.plan.outputs.kind }}
-      matrix: ${{ steps.plan.outputs.matrix }}
-      notes: ${{ steps.plan.outputs.notes }}
+      matrix: ${{ steps.units.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          fetch-depth: 0
+          # The run's commit is GitHub's test merge of the branch into master's tip. Its first parent, master's
+          # tip, is needed to tell what the merge would change.
+          fetch-depth: 2
           persist-credentials: false
       - name: Runner check
         uses: ./.github/actions/runner-check
-      - id: plan
+      - id: units
+        name: List the units the pull request changes
         shell: pwsh
         env:
+          SELECT: pullRequest
           BASE_REF: ${{ github.event.pull_request.base.ref }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           MERGE_SHA: ${{ github.sha }}
         run: |
-          & ./.github/scripts/mirror-pipeline.ps1 -Mode Plan
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode Units
           exit $LASTEXITCODE
 
   whatif:
     # The reader identity, read-only. One job per unit, four at a time.
-    needs: plan
-    if: vars.MIRROR_PIPELINE_ENABLED == 'true' && needs.plan.outputs.kind == 'code'
+    needs: units
+    if: vars.MIRROR_PIPELINE_ENABLED == 'true' && needs.units.outputs.matrix != '[]'
     name: whatif ${{ matrix.unit }}
     runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
     environment:
@@ -98,17 +106,15 @@ jobs:
       fail-fast: false
       max-parallel: 4
       matrix:
-        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+        include: ${{ fromJSON(needs.units.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          ref: ${{ matrix.ref }}
           persist-credentials: false
       - name: Runner check
         uses: ./.github/actions/runner-check
-      # Master's tip, the first parent of this run's test merge commit. The scripts that run with the reader token
-      # come from there, never from the branch, because the push ruleset covers .github/** only and a writer can
-      # push a changed scripts/ folder to any branch.
+      # Master's tip, the first parent of this run's test merge commit. The code that runs with the reader token
+      # comes from there, never from the branch.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -117,19 +123,15 @@ jobs:
           persist-credentials: false
           # Only what the job takes from it.
           sparse-checkout: |
-            /scripts/
             /.github/scripts/
             /.github/actions/
-            /deploy/boundaries.json
             /bicepconfig.json
           sparse-checkout-cone-mode: false
       - name: Take the scripts from master
-        # A code preview keeps the pull request's Bicep files and deploy/units.json and takes scripts/,
-        # .github/scripts/, .github/actions/, deploy/boundaries.json and bicepconfig.json from master's tip.
+        # The preview keeps the pull request's Bicep files and deploy/units.json and takes .github/scripts/,
+        # .github/actions/ and bicepconfig.json from master's tip.
         shell: pwsh
         env:
-          PREVIEW_MODE: ${{ matrix.mode }}
-          MATRIX_REF: ${{ matrix.ref }}
           MERGE_SHA: ${{ github.sha }}
         run: |
           $ws = $env:GITHUB_WORKSPACE
@@ -138,19 +140,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Write-Host "::error::the first parent of the test merge commit is not in the checkout"; exit 2 }
           $trusted = ((git -C $t rev-parse HEAD) -join '').Trim()
           $code = ((git -C $ws rev-parse HEAD) -join '').Trim()
-          if ($env:PREVIEW_MODE -cne 'code') { Write-Host "::error::unknown preview mode '$env:PREVIEW_MODE'"; exit 2 }
-          if ($env:PREVIEW_MODE -eq 'code' -and ($env:MATRIX_REF -cne $env:MERGE_SHA -or $code -cne $env:MERGE_SHA)) { Write-Host "::error::a code preview is of the test merge commit $env:MERGE_SHA, and the plan named $env:MATRIX_REF"; exit 2 }
-          if ($env:PREVIEW_MODE -eq 'code') {
-            foreach ($s in @('scripts', '.github/scripts', '.github/actions', 'deploy/boundaries.json', 'bicepconfig.json')) {
-              if (-not (Test-Path -LiteralPath (Join-Path $t $s))) { Write-Host "::error::$s is missing from master's checkout"; exit 2 }
-            }
-            foreach ($d in @('scripts', '.github/scripts', '.github/actions')) {
-              $p = Join-Path $ws $d
-              if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force }
-              Copy-Item -LiteralPath (Join-Path $t $d) -Destination $p -Recurse
-            }
-            foreach ($f in @('deploy/boundaries.json', 'bicepconfig.json')) { Copy-Item -LiteralPath (Join-Path $t $f) -Destination (Join-Path $ws $f) -Force }
+          if ($code -cne $env:MERGE_SHA) { Write-Host "::error::the preview is of the test merge commit $env:MERGE_SHA, and the checkout holds $code"; exit 2 }
+          foreach ($s in @('.github/scripts', '.github/actions', 'bicepconfig.json')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $t $s))) { Write-Host "::error::$s is missing from master's checkout"; exit 2 }
           }
+          foreach ($d in @('.github/scripts', '.github/actions')) {
+            $p = Join-Path $ws $d
+            if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force }
+            Copy-Item -LiteralPath (Join-Path $t $d) -Destination $p -Recurse
+          }
+          Copy-Item -LiteralPath (Join-Path $t 'bicepconfig.json') -Destination (Join-Path $ws 'bicepconfig.json') -Force
           Remove-Item -LiteralPath $t -Recurse -Force
           "MIRROR_TRUSTED_COMMIT=$trusted" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "MIRROR_CODE_COMMIT=$code" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -161,9 +160,8 @@ jobs:
         shell: pwsh
         env:
           UNIT: ${{ matrix.unit }}
-          PREVIEW_MODE: ${{ matrix.mode }}
         run: |
-          & ./.github/scripts/mirror-pipeline.ps1 -Mode InputCheck -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'evidence')
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode InputCheck
           exit $LASTEXITCODE
       - name: Pin and check the Bicep CLI
         uses: ./.github/actions/setup-bicep
@@ -177,38 +175,32 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           allow-no-subscriptions: true
-      - name: Dry run and gate
+      - name: Validate and preview the stack
+        # az stack validate, then az stack-whatif. It leaves one preview object at the scope of the stack. Azure
+        # deletes it after its retention of one hour, which can take some hours longer.
         shell: pwsh
         env:
           UNIT: ${{ matrix.unit }}
-          PREVIEW_MODE: ${{ matrix.mode }}
-          MIRROR_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
         run: |
-          & ./.github/scripts/mirror-pipeline.ps1 -Mode Preview -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'evidence')
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode StackWhatIf -Dir (Join-Path $env:RUNNER_TEMP 'preview')
           exit $LASTEXITCODE
-      - name: Job summary
-        if: always()
-        shell: pwsh
-        run: |
-          $f = Join-Path $env:RUNNER_TEMP 'evidence' 'verdict.md'
-          if (Test-Path -LiteralPath $f) { Get-Content -LiteralPath $f | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
         with:
-          name: dryrun-${{ matrix.unit }}
-          path: ${{ runner.temp }}/evidence
+          name: preview-${{ matrix.unit }}
+          path: ${{ runner.temp }}/preview
           overwrite: true
           # A preview is for information and is kept 14 days.
           retention-days: 14
 
   pr-gate:
-    # The required status check. No Azure.
-    needs: [ plan, whatif ]
+    # The required status check. No Azure. It passes when the units were listed and every preview was taken, or
+    # when the pull request changes no unit.
+    needs: [ units, whatif ]
     if: vars.MIRROR_PIPELINE_ENABLED == 'true' && always()
     runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
     permissions:
       contents: read
-      pull-requests: write
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -216,23 +208,17 @@ jobs:
           persist-credentials: false
       - name: Runner check
         uses: ./.github/actions/runner-check
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        if: needs.plan.outputs.kind == 'code'
-        # A preview that uploaded nothing is reported by the next step as a failure, with its reason.
-        continue-on-error: true
-        with:
-          pattern: dryrun-*
-          path: ${{ runner.temp }}/dryrun
-      - name: Post the summary and decide
+      - name: Decide
         shell: pwsh
         env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-          KIND: ${{ needs.plan.outputs.kind }}
-          MATRIX: ${{ needs.plan.outputs.matrix }}
-          NOTES: ${{ needs.plan.outputs.notes }}
-          PLAN_RESULT: ${{ needs.plan.result }}
+          UNITS_RESULT: ${{ needs.units.result }}
           WHATIF_RESULT: ${{ needs.whatif.result }}
+          MATRIX: ${{ needs.units.outputs.matrix }}
         run: |
-          & ./.github/scripts/mirror-pipeline.ps1 -Mode Report -Dir (Join-Path $env:RUNNER_TEMP 'dryrun')
-          exit $LASTEXITCODE
+          $text = if ($env:UNITS_RESULT -cne 'success') { "The units of this pull request could not be listed (result $env:UNITS_RESULT). The units job says why." }
+                  elseif ($env:MATRIX -ceq '[]') { 'This pull request changes no unit, so there is nothing to preview.' }
+                  elseif ($env:WHATIF_RESULT -cne 'success') { "At least one preview could not be taken (result $env:WHATIF_RESULT). The summary of its whatif job says why." }
+                  else { 'Every unit this pull request changes was previewed. The summary of each whatif job holds its preview.' }
+          $text | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          Write-Host $text
+          if ($env:UNITS_RESULT -cne 'success' -or ($env:MATRIX -cne '[]' -and $env:WHATIF_RESULT -cne 'success')) { exit 1 }

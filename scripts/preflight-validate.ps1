@@ -76,6 +76,10 @@
        cannot resolve take no part in the merge. The checker runs in this script's own PowerShell and reads the
        compile of step 3 (of step 2 for a unit with no parameters file), so no file is compiled twice.
 
+    7. Delegated roles. A production unit may declare only the role assignments of the roles on the list of its
+       subscription in deploy/delegated-roles.json, and no role definition. A privileged unit is not checked. The
+       check reads the compile of steps 2 and 3, so no file is compiled twice.
+
   Warnings are counted and printed per rule but do not fail the run.
 
 .PARAMETER OutDir
@@ -83,10 +87,9 @@
 
 .PARAMETER CompileCache
   Optional folder for the compile cache. It holds the output of every compile of steps 2 and 3 that passed, and
-  index.json, which lists each file a compile read with its SHA256. The validate workflow passes it, so its check of
-  the pipeline units (.github/scripts/mirror-pipeline.ps1 -Mode PipelineScope, with MIRROR_COMPILE_CACHE set to the
-  folder) reads these compiles instead of compiling every unit again. An entry is used only while every file it
-  lists is unchanged. Without this parameter the cache lives in a temporary folder for step 5 and is removed at the end.
+  index.json, which lists each file a compile read with its SHA256. Steps 5 and 7 read these compiles, so no file is
+  compiled twice. Pass a folder to keep the compiles after the run. Without this parameter the cache lives in a
+  temporary folder and is removed at the end.
 
 .PARAMETER SkipDuplicates
   Skip step 5 (the duplicate check of every unit).
@@ -1150,10 +1153,465 @@ if (-not $SkipDuplicates) {
   if ($csvTemp) { Remove-Item -LiteralPath $csvTemp -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
+# 7. Delegated roles. A production unit may declare only the role assignments of the roles on the list of its
+# subscription in deploy/delegated-roles.json. The deploy identity of a subscription holds Role Based Access Control
+# Administrator under a condition that allows writing and deleting the assignments of those roles and no others, so a
+# unit that declares another role stops with an authorization error halfway through its deployment. The check reads
+# the compile of steps 2 and 3 of every unit that is not privileged, walks the nested deployments, leaves out a
+# resource whose condition is false for the unit's own parameters (a module a switch turns off adds no role), and
+# reads the role of every role assignment. A condition the check cannot evaluate counts as true, and a role it cannot
+# read fails the run. A role on a list that no production unit of the subscription declares is reported and does not
+# fail the run.
+$roleSource = @'
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Text.RegularExpressions;
+
+namespace PreflightRoles
+{
+    // Reads the role assignments of one compiled template and of every template nested in it. Found holds one
+    // entry per role assignment that is not switched off: the role definition GUID in lower case, where it was found
+    // (the names of the nested deployments and of the resource) and "sure" or "maybe". A role assignment behind a
+    // condition that cannot be evaluated is "maybe". Problems holds what could not be read.
+    public sealed class RoleWalker
+    {
+        private sealed class Unk { }
+        private static readonly object Unknown = new Unk();
+        private static readonly Regex RoleGuid = new Regex(@"(?:^|/)roleDefinitions/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$", RegexOptions.IgnoreCase);
+        private static readonly Regex BareGuid = new Regex(@"^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$");
+
+        public readonly List<string[]> Found = new List<string[]>();
+        public readonly List<string> Problems = new List<string>();
+        public int Declarations;
+
+        // The parameters of a template: the default values, then the values the parameters file gives.
+        private static Dictionary<string, object> TopParameters(IDictionary tpl, object parametersJson)
+        {
+            Dictionary<string, object> p = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            IDictionary declared = Get(tpl, "parameters") as IDictionary;
+            if (declared != null)
+            {
+                foreach (DictionaryEntry de in declared)
+                {
+                    IDictionary d = de.Value as IDictionary;
+                    p[(string)de.Key] = (d != null && d.Contains("defaultValue")) ? Eval(d["defaultValue"], p, tpl, 0) : Unknown;
+                }
+            }
+            IDictionary given = Get(parametersJson as IDictionary, "parameters") as IDictionary;
+            if (given != null)
+            {
+                foreach (DictionaryEntry de in given)
+                {
+                    IDictionary v = de.Value as IDictionary;
+                    p[(string)de.Key] = (v != null && v.Contains("value")) ? Eval(v["value"], p, tpl, 0) : Unknown;
+                }
+            }
+            return p;
+        }
+
+        public void Run(object template, object parametersJson)
+        {
+            IDictionary t = template as IDictionary;
+            if (t == null) { Problems.Add("the compiled template is not a JSON object"); return; }
+            Walk(Get(t, "resources"), t, TopParameters(t, parametersJson), "", false, 0);
+        }
+
+        private static object Get(IDictionary d, string key)
+        {
+            if (d == null || !d.Contains(key)) { return null; }
+            return d[key];
+        }
+
+        private void Walk(object resources, IDictionary tpl, Dictionary<string, object> p, string where, bool maybe, int depth)
+        {
+            if (resources == null) { return; }
+            if (depth > 30) { Problems.Add("the nested deployments below " + where + " are more than 30 levels deep"); return; }
+            IEnumerable items = null;
+            IDictionary asDict = resources as IDictionary;
+            if (asDict != null) { items = asDict.Values; }
+            else { items = resources as IEnumerable; }
+            if (items == null) { return; }
+            foreach (object o in items)
+            {
+                IDictionary r = o as IDictionary;
+                if (r == null) { continue; }
+                bool m2 = maybe;
+                if (r.Contains("condition"))
+                {
+                    object c = Eval(r["condition"], p, tpl, 0);
+                    if (c is bool) { if (!(bool)c) { continue; } }
+                    else { m2 = true; }
+                }
+                string type = Get(r, "type") as string;
+                string name = Get(r, "name") as string;
+                string label = name != null ? name : (type != null ? type : "?");
+                IDictionary copyOf = Get(r, "copy") as IDictionary;
+                string loopName = Get(copyOf, "name") as string;
+                if (loopName != null) { label = loopName; }
+                if (label.Length > 80) { label = label.Substring(0, 80); }
+                string here = where.Length > 0 ? where + " > " + label : label;
+                if (type != null && type.Equals("Microsoft.Resources/deployments", StringComparison.OrdinalIgnoreCase))
+                {
+                    IDictionary props = Get(r, "properties") as IDictionary;
+                    IDictionary inner = Get(props, "template") as IDictionary;
+                    if (inner == null) { Problems.Add("the deployment " + here + " has no template of its own, so its role assignments cannot be read"); continue; }
+                    IDictionary eeo = Get(props, "expressionEvaluationOptions") as IDictionary;
+                    string scope = Get(eeo, "scope") as string;
+                    if (scope == null || !scope.Equals("inner", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Problems.Add("the deployment " + here + " evaluates its expressions in the scope of its parent, which this check does not read");
+                        continue;
+                    }
+                    Dictionary<string, object> ip = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+                    IDictionary declared = Get(inner, "parameters") as IDictionary;
+                    IDictionary given = Get(props, "parameters") as IDictionary;
+                    if (declared != null)
+                    {
+                        foreach (DictionaryEntry de in declared)
+                        {
+                            string k = (string)de.Key;
+                            IDictionary g = (given != null && given.Contains(k)) ? given[k] as IDictionary : null;
+                            IDictionary d = de.Value as IDictionary;
+                            if (g != null) { ip[k] = g.Contains("value") ? Eval(g["value"], p, tpl, 0) : Unknown; }
+                            else { ip[k] = (d != null && d.Contains("defaultValue")) ? Eval(d["defaultValue"], ip, inner, 0) : Unknown; }
+                        }
+                    }
+                    Walk(Get(inner, "resources"), inner, ip, here, m2, depth + 1);
+                    continue;
+                }
+                if (type != null && (type.Equals("Microsoft.Authorization/roleAssignments", StringComparison.OrdinalIgnoreCase)
+                    || type.EndsWith("/providers/roleAssignments", StringComparison.OrdinalIgnoreCase)))
+                {
+                    IDictionary props = Get(r, "properties") as IDictionary;
+                    // A loop (a copy element) declares one role assignment for each of its items, and the role of each
+                    // is read with the index of that item.
+                    bool looped = r.Contains("copy");
+                    int count = 1;
+                    if (looped)
+                    {
+                        IDictionary cp = r["copy"] as IDictionary;
+                        object cnt = (cp != null && cp.Contains("count")) ? Eval(cp["count"], p, tpl, 0) : null;
+                        if (cnt is double) { count = (int)(double)cnt; }
+                        else { Problems.Add("the loop of the role assignment " + here + " has an item count this check cannot read"); count = 0; }
+                    }
+                    for (int ix = 0; ix < count; ix++)
+                    {
+                        Declarations++;
+                        string at = looped ? here + "[" + ix.ToString(CultureInfo.InvariantCulture) + "]" : here;
+                        string sv = Eval(Get(props, "roleDefinitionId"), p, tpl, 0, looped ? ix : -1) as string;
+                        Match m = sv != null ? RoleGuid.Match(sv) : null;
+                        if (m == null || !m.Success) { m = sv != null ? BareGuid.Match(sv) : null; }
+                        if (m == null || !m.Success) { Problems.Add("the role of the role assignment " + at + " cannot be read from its roleDefinitionId"); }
+                        else { Found.Add(new string[] { m.Groups[1].Value.ToLowerInvariant(), at, m2 ? "maybe" : "sure" }); }
+                    }
+                }
+                // A role definition changes what a role allows, so only a privileged unit declares one.
+                if (type != null && !r.Contains("existing") && (type.Equals("Microsoft.Authorization/roleDefinitions", StringComparison.OrdinalIgnoreCase)
+                    || type.EndsWith("/providers/roleDefinitions", StringComparison.OrdinalIgnoreCase)))
+                {
+                    Problems.Add("declares the role definition " + here + ". A role definition belongs to the privileged tier, because the deploy identity of a production unit cannot write one and the apply of the unit would stop with an authorization error. Move it to the privileged unit of the subscription");
+                }
+                Walk(Get(r, "resources"), tpl, p, here, m2, depth + 1);
+            }
+        }
+
+        // The value of a template expression, or Unknown. Only what the compiled templates use is read: parameters(),
+        // variables(), or(), and(), not(), equals(), if(), true(), false(), length(), copyIndex() inside a loop, a
+        // property or an index after a call (variables('x')[copyIndex()].y) and the resource ID functions of a role
+        // definition. A literal is its own value. The index is that of the loop item being read, or -1 outside a loop.
+        private static object Eval(object e, Dictionary<string, object> p, IDictionary tpl, int depth)
+        {
+            return Eval(e, p, tpl, depth, -1);
+        }
+
+        private static object Eval(object e, Dictionary<string, object> p, IDictionary tpl, int depth, int index)
+        {
+            string s = e as string;
+            if (s == null) { return e; }
+            if (s.StartsWith("[[", StringComparison.Ordinal)) { return s.Substring(1); }
+            if (!(s.StartsWith("[", StringComparison.Ordinal) && s.EndsWith("]", StringComparison.Ordinal))) { return s; }
+            if (depth > 20) { return Unknown; }
+            Parser ps = new Parser(s.Substring(1, s.Length - 2), p, tpl, depth, index);
+            object v = ps.Expression();
+            ps.SkipWhite();
+            if (ps.Bad || !ps.AtEnd) { return Unknown; }
+            return v;
+        }
+
+        private sealed class Parser
+        {
+            private readonly string t;
+            private int i;
+            private readonly Dictionary<string, object> p;
+            private readonly IDictionary tpl;
+            private readonly int depth;
+            private readonly int index;
+            public bool Bad;
+
+            public Parser(string text, Dictionary<string, object> parameters, IDictionary template, int d, int loopIndex) { t = text; p = parameters; tpl = template; depth = d; index = loopIndex; }
+            public bool AtEnd { get { return i >= t.Length; } }
+            public void SkipWhite() { while (i < t.Length && char.IsWhiteSpace(t[i])) { i++; } }
+
+            public object Expression()
+            {
+                SkipWhite();
+                if (i >= t.Length) { Bad = true; return Unknown; }
+                char c = t[i];
+                if (c == '\'')
+                {
+                    System.Text.StringBuilder sb = new System.Text.StringBuilder();
+                    i++;
+                    while (i < t.Length)
+                    {
+                        if (t[i] == '\'')
+                        {
+                            if (i + 1 < t.Length && t[i + 1] == '\'') { sb.Append('\''); i += 2; continue; }
+                            i++;
+                            return sb.ToString();
+                        }
+                        sb.Append(t[i]);
+                        i++;
+                    }
+                    Bad = true;
+                    return Unknown;
+                }
+                if (char.IsDigit(c) || c == '-')
+                {
+                    int start = i;
+                    i++;
+                    while (i < t.Length && (char.IsDigit(t[i]) || t[i] == '.')) { i++; }
+                    double d;
+                    if (double.TryParse(t.Substring(start, i - start), NumberStyles.Float, CultureInfo.InvariantCulture, out d)) { return d; }
+                    Bad = true;
+                    return Unknown;
+                }
+                if (char.IsLetter(c))
+                {
+                    int start = i;
+                    while (i < t.Length && (char.IsLetterOrDigit(t[i]) || t[i] == '_')) { i++; }
+                    string fn = t.Substring(start, i - start);
+                    SkipWhite();
+                    if (i >= t.Length || t[i] != '(') { Bad = true; return Unknown; }
+                    i++;
+                    List<object> args = new List<object>();
+                    SkipWhite();
+                    if (i < t.Length && t[i] == ')') { i++; }
+                    else
+                    {
+                        while (true)
+                        {
+                            args.Add(Expression());
+                            if (Bad) { return Unknown; }
+                            SkipWhite();
+                            if (i < t.Length && t[i] == ',') { i++; continue; }
+                            if (i < t.Length && t[i] == ')') { i++; break; }
+                            Bad = true;
+                            return Unknown;
+                        }
+                    }
+                    object v = Call(fn, args);
+                    // A property or an index after a call: variables('x')[copyIndex()].y. A value that is itself an
+                    // expression is read again, with the same loop index.
+                    while (true)
+                    {
+                        SkipWhite();
+                        if (i < t.Length && t[i] == '.')
+                        {
+                            i++;
+                            int ps = i;
+                            while (i < t.Length && (char.IsLetterOrDigit(t[i]) || t[i] == '_')) { i++; }
+                            if (i == ps) { Bad = true; return Unknown; }
+                            IDictionary od = v as IDictionary;
+                            string key = t.Substring(ps, i - ps);
+                            v = (od != null && od.Contains(key)) ? Eval(od[key], p, tpl, depth + 1, index) : Unknown;
+                        }
+                        else if (i < t.Length && t[i] == '[')
+                        {
+                            i++;
+                            object ix = Expression();
+                            if (Bad) { return Unknown; }
+                            SkipWhite();
+                            if (i >= t.Length || t[i] != ']') { Bad = true; return Unknown; }
+                            i++;
+                            IList ol = v as IList;
+                            if (ol != null && ix is double && (double)ix >= 0 && (double)ix < ol.Count) { v = Eval(ol[(int)(double)ix], p, tpl, depth + 1, index); }
+                            else { v = Unknown; }
+                        }
+                        else { break; }
+                    }
+                    return v;
+                }
+                Bad = true;
+                return Unknown;
+            }
+
+            private object Call(string fn, List<object> a)
+            {
+                switch (fn.ToLowerInvariant())
+                {
+                    case "parameters":
+                        {
+                            object v;
+                            if (a.Count == 1 && a[0] is string && p.TryGetValue((string)a[0], out v)) { return v; }
+                            return Unknown;
+                        }
+                    case "variables":
+                        {
+                            IDictionary vars = Get(tpl, "variables") as IDictionary;
+                            if (a.Count == 1 && a[0] is string && vars != null && vars.Contains((string)a[0])) { return Eval(vars[(string)a[0]], p, tpl, depth + 1); }
+                            return Unknown;
+                        }
+                    case "true": return true;
+                    case "false": return false;
+                    case "copyindex":
+                        if (index < 0) { return Unknown; }
+                        if (a.Count == 0) { return (double)index; }
+                        if (a.Count == 1 && a[0] is double) { return (double)index + (double)a[0]; }
+                        if (a.Count == 1 && a[0] is string) { return (double)index; }
+                        return Unknown;
+                    case "length":
+                        {
+                            if (a.Count != 1) { return Unknown; }
+                            ICollection coll = a[0] as ICollection;
+                            if (coll != null) { return (double)coll.Count; }
+                            string str = a[0] as string;
+                            if (str != null) { return (double)str.Length; }
+                            return Unknown;
+                        }
+                    case "not":
+                        if (a.Count == 1 && a[0] is bool) { return !(bool)a[0]; }
+                        return Unknown;
+                    case "or":
+                    case "and":
+                        {
+                            bool isOr = fn.Equals("or", StringComparison.OrdinalIgnoreCase);
+                            bool unknown = false;
+                            foreach (object x in a)
+                            {
+                                if (!(x is bool)) { unknown = true; continue; }
+                                if ((bool)x == isOr) { return isOr; }
+                            }
+                            if (unknown || a.Count == 0) { return Unknown; }
+                            return !isOr;
+                        }
+                    case "equals":
+                        {
+                            if (a.Count != 2 || a[0] == Unknown || a[1] == Unknown) { return Unknown; }
+                            string s0 = a[0] as string, s1 = a[1] as string;
+                            if (s0 != null && s1 != null) { return s0.Equals(s1, StringComparison.OrdinalIgnoreCase); }
+                            if (a[0] == null || a[1] == null) { return Unknown; }
+                            return a[0].Equals(a[1]);
+                        }
+                    case "if":
+                        if (a.Count == 3 && a[0] is bool) { return (bool)a[0] ? a[1] : a[2]; }
+                        return Unknown;
+                    case "subscriptionresourceid":
+                    case "tenantresourceid":
+                    case "extensionresourceid":
+                    case "resourceid":
+                        for (int k = 0; k + 1 < a.Count; k++)
+                        {
+                            string type = a[k] as string;
+                            string name = a[k + 1] as string;
+                            if (type != null && name != null && type.Equals("Microsoft.Authorization/roleDefinitions", StringComparison.OrdinalIgnoreCase)) { return "/providers/Microsoft.Authorization/roleDefinitions/" + name; }
+                        }
+                        return Unknown;
+                    default:
+                        return Unknown;
+                }
+            }
+        }
+    }
+}
+'@
+
+Write-Host 'Checking the roles of the production units against deploy/delegated-roles.json'
+$roleStart = $failures.Count
+$roleUnits = 0; $roleAssign = 0; $roleDistinct = 0; $roleStale = 0
+$drPath = [IO.Path]::Combine($repo, 'deploy', 'delegated-roles.json')
+$drLists = @{}
+$drNames = @{}
+$privilegedRoles = @{ '8e3af657-a8ff-443c-a75c-2fe8c4bcb635' = 'Owner'; '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9' = 'User Access Administrator'; 'f58310d9-a9f6-439a-9e8d-f62e7b41a168' = 'Role Based Access Control Administrator' }
+$drOk = $false
+try {
+  $drDoc = Get-Content -Raw -LiteralPath $drPath | ConvertFrom-Json
+  foreach ($sp in @($drDoc.PSObject.Properties)) {
+    if ($null -eq $u -or $null -eq $u.subscriptions.PSObject.Properties[$sp.Name]) { $failures.Add("delegated roles: deploy/delegated-roles.json has a list for '$($sp.Name)', which is not a subscription in deploy/units.json"); continue }
+    $set = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($e in @($sp.Value)) {
+      $eid = [string]$e.id
+      if ($eid -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') { $failures.Add("delegated roles: deploy/delegated-roles.json, list of $($sp.Name), has an entry whose id is not a GUID: '$eid'"); continue }
+      if (-not ([string]$e.name).Trim()) { $failures.Add("delegated roles: deploy/delegated-roles.json, list of $($sp.Name), has no name for $eid"); continue }
+      if ($privilegedRoles.ContainsKey($eid.ToLowerInvariant())) { $failures.Add("delegated roles: deploy/delegated-roles.json, list of $($sp.Name), holds $($privilegedRoles[$eid.ToLowerInvariant()]) ($eid). The roles that can grant access belong to the privileged tier and never on the list of a deploy identity"); continue }
+      if (-not $set.Add($eid)) { $failures.Add("delegated roles: deploy/delegated-roles.json, list of $($sp.Name), lists $eid twice"); continue }
+      $drNames[$eid.ToLowerInvariant()] = [string]$e.name
+    }
+    $drLists[$sp.Name] = $set
+  }
+  $drOk = $true
+} catch { $failures.Add("delegated roles: deploy/delegated-roles.json cannot be read. $($_.Exception.Message)") }
+if ($drOk -and $null -ne $u) {
+  if (-not ('PreflightRoles.RoleWalker' -as [type])) { Add-Type -TypeDefinition $roleSource -Language CSharp }
+  $drSeen = @{}
+  $drAll = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+  foreach ($unit in $units) {
+    if ($unit.kind -eq 'tenant' -or -not $unit.subscription) { continue }
+    if ($null -ne $unit.PSObject.Properties['tier'] -and $unit.tier -ceq 'privileged') { continue }
+    $folder = [string]$unit.subscription
+    $tplPath = Get-RepoPath $unit.template
+    $parPath = $null; if ($unit.parameters) { $parPath = Get-RepoPath $unit.parameters }
+    # The compile of the parameters file when it was kept, else the template's own compile with its default values.
+    $cacheFile = $null; $withParams = $false
+    if ($parPath -and $cacheFiles.ContainsKey($parPath)) { $cacheFile = $cacheFiles[$parPath]; $withParams = $true }
+    elseif ($cacheFiles.ContainsKey($tplPath)) {
+      $cacheFile = $cacheFiles[$tplPath]
+      if ($parPath) { Write-Host "  delegated roles: $($unit.name) read with the default parameter values, because its parameters file was not built" -ForegroundColor Yellow }
+    }
+    if (-not $cacheFile) { $failures.Add("delegated roles: $($unit.name) has no compile to read, so its role assignments are not checked"); continue }
+    $roleUnits++
+    try {
+      $doc = [PreflightValidate.Json]::Parse([IO.File]::ReadAllText($cacheFile))
+      if ($withParams) { $tplObj = [PreflightValidate.Json]::Parse([string]$doc['templateJson']); $parObj = [PreflightValidate.Json]::Parse([string]$doc['parametersJson']) }
+      else { $tplObj = $doc; $parObj = $null }
+      $walker = New-Object PreflightRoles.RoleWalker
+      $walker.Run($tplObj, $parObj)
+    } catch { $failures.Add("delegated roles: $($unit.name) cannot be read. $(Get-InnerMessage $_)"); continue }
+    $roleAssign += $walker.Declarations
+    foreach ($pr in @($walker.Problems)) { $failures.Add("delegated roles: $($unit.name): $pr") }
+    $reported = @{}
+    foreach ($f in @($walker.Found)) {
+      $guid = [string]$f[0]
+      [void]$drAll.Add($guid)
+      if (-not $drSeen.ContainsKey($folder)) { $drSeen[$folder] = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase) }
+      [void]$drSeen[$folder].Add($guid)
+      if ($drLists.ContainsKey($folder) -and $drLists[$folder].Contains($guid)) { continue }
+      if ($reported.ContainsKey($guid)) { continue }
+      $reported[$guid] = $true
+      $rname = if ($drNames.ContainsKey($guid)) { $drNames[$guid] } else { 'a role on no list' }
+      $how = if ($f[2] -eq 'maybe') { ' behind a condition this check cannot evaluate' } else { '' }
+      $listNote = if ($drLists.ContainsKey($folder)) { "the list of $folder" } else { "any list, because deploy/delegated-roles.json has none for $folder" }
+      $failures.Add("delegated roles: unit $($unit.name) (subscription $folder) declares a role assignment of $guid ($rname)$how at $($f[1]), and that role is not on $listNote in deploy/delegated-roles.json. Add the role to that list in a reviewed change, and replace the condition of the subscription's deploy identity as steps.md step 24 says, or the apply of the unit stops with an authorization error")
+    }
+  }
+  $roleDistinct = $drAll.Count
+  foreach ($folder in @($drLists.Keys | Sort-Object)) {
+    foreach ($guid in @($drLists[$folder] | Sort-Object)) {
+      if ($drSeen.ContainsKey($folder) -and $drSeen[$folder].Contains($guid)) { continue }
+      $roleStale++
+      Write-Host "  delegated roles: $guid ($($drNames[$guid.ToLowerInvariant()])) is on the list of $folder, but no production unit of that subscription declares it. Remove it from the list, and from the identity's condition when it is next replaced" -ForegroundColor Yellow
+    }
+  }
+  Write-Host "  $roleUnits production units read, $roleAssign role assignments declared, $roleDistinct distinct roles, $roleStale list entries no unit declares"
+}
+Write-Host "  $($failures.Count - $roleStart) failure(s)"
+
 Write-Host ''
 Write-Host 'Summary:'
 Write-Host "  $($units.Count) units, $($entries.Count) entry points compiled, $($params.Count) parameters files built ($paramsSkipped skipped for a secure input), in one Bicep process"
 Write-Host "  layout: $layoutFailures failure(s)"
+Write-Host "  delegated roles: $roleUnits production units read, $roleAssign role assignments, $roleDistinct distinct roles against deploy/delegated-roles.json, $roleStale list entries no unit declares"
 if ($SkipDuplicates) { Write-Host '  duplicates: skipped' }
 else { Write-Host "  duplicates: $dupRuns checker runs ($dupSkipped skipped for a secure input, $dupFromCache read the compile of steps 2 and 3), $crossCount declarations merged ($crossUnresolved unresolved left out), $crossKeys declared by more than one unit" }
 if ($cacheTemp) { Remove-Item -LiteralPath $cacheTemp -Recurse -Force -ErrorAction SilentlyContinue }

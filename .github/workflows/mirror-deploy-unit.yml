@@ -1,52 +1,69 @@
 # Every job of this workflow is skipped, so no runner starts, until IT sets the repository variable
 # MIRROR_PIPELINE_ENABLED to true after the setup in PIPELINE.md section 3.
 #
-# Deploys the units the pipeline may deploy, in two steps that belong to one run. The plan signs in with the reader
-# identity, takes the dry run and passes it through the gate. The apply deploys, and it starts only after the
-# required reviewers of the unit's GitHub environment have read the plan and approved it. A reviewer is never the
-# person who started the run, because every mirror-production and mirror-privileged environment has "Prevent self-review"
-# on.
+# Deploys one unit of deploy/units.json as a deployment stack, in a plan and an apply that are jobs of one run.
+# The plan signs in with the reader identity and previews the stack. The apply creates or updates the stack with
+# Microsoft's action azure/bicep-deploy, and it starts only after the required reviewers of the unit's GitHub
+# environment have read the plan on the run page and approved it. A reviewer is never the person who started the
+# run, because every mirror-production and mirror-privileged environment has "Prevent self-review" on.
 #
-# It starts only with Run workflow (workflow_dispatch) on master. A merge into master starts nothing, because the
+# It starts only with Run workflow (workflow_dispatch) on master. A merge into master never starts it, because the
 # pull request's preview already shows what the merge would change, and every deployment needs a change ticket, a
-# reason and a reviewer, which only Run workflow carries. Run workflow names one unit, the change ticket, the reason
-# and, when the gate needs them, the options acknowledgeReview, allowCreate, allowModify and allowHeld. Leave apply
-# off for a plan only. With apply on and a plan that passes the gate, the apply waits for the reviewers.
+# reason and a reviewer, which only Run workflow carries. Run workflow names one unit, the change ticket and the
+# reason. Leave apply off for a plan only. With apply on, the apply waits for the reviewers.
 #
-#   select   No Azure. Checks the inputs of Run workflow and names the unit to plan.
-#   plan     The reader identity (environment mirror-reader-dispatch, master only). One job for each unit. It runs
-#            scripts/deploy-unit.ps1 as a dry run with the options, and writes the plan as the job summary and as
-#            an artifact.
-#   collect  No Azure. Reads the plans and lists the units whose apply waits for a reviewer.
-#   apply    The subscription's deploy identity, through the mirror-production-<subscription folder> environment,
-#            which only the master branch may use and which holds the required reviewers. It runs the units of
-#            the production tier. After the approval it
-#            checks that master is still at the planned commit, that the plan is recent and that a fresh preview
-#            shows the same records, then runs scripts/deploy-unit.ps1 -DryRun:$false -Approve with the options of
-#            the plan. That step is the gate. It repeats every check on a fresh preview, holds the resources named
-#            in allowModify to exactly the property changes the plan showed, deploys, and takes the second check. It
-#            is the one step a unit replaces when it stops using the gate.
-#   apply-privileged  The same steps for the units of the privileged tier (the Owner-class role assignments, the
-#            role definitions of each subscription, and the three tenant units). It signs in with the privileged
-#            identity of that subscription, or the tenant one, through the mirror-privileged-<subscription folder>
-#            or mirror-privileged-tenant environment, whose reviewers are the privileged approvers team.
+#   units    No Azure. Reads the unit from deploy/units.json and writes the row the other jobs use: the scope, the
+#            name and the files of its stack. A unit that is not enabled is refused, and so is the unit of a
+#            deploy-excluded file, which is never deployed.
+#   plan     The reader identity (environment mirror-reader-dispatch, master only). It validates the stack and
+#            previews it with the Azure CLI (az stack validate, az stack-whatif), and writes the preview to the
+#            job summary and to an artifact. When the file deploy/adoption/<unit>.md exists, the summary also
+#            carries it. That file explains the differences a unit's first preview lists before its stack has a
+#            baseline, and it is deleted after the unit's first deployment. A first run that brings existing
+#            resources under the stack fails its plan when the file is missing, says it is not evidence, or was
+#            written from another version of the unit's template or parameters file.
+#   apply    The deploy identity of the unit's subscription, through the environment mirror-production-<subscription
+#            folder>, or the govern identity through mirror-privileged-<subscription folder> or
+#            mirror-privileged-tenant for a unit of the privileged tier. Only master may use these environments, and
+#            they hold the required reviewers. After the approval the job first checks that the plan is still
+#            current, which means that master's tip is still the commit of the run and that the plan is not
+#            older than 24 hours (the repository variable MIRROR_MAX_PLAN_AGE_HOURS changes the number). An approval that comes after a
+#            later merge, or too late, deploys nothing, and the deployment is started again. Then the job creates
+#            or updates the stack mirror-<unit> with azure/bicep-deploy from the same commit as the plan, because
+#            both are jobs of the same run.
 #
-# A re-run never deploys, because a retry has no reviewed plan. A production deploy identity holds Contributor,
-# Role Based Access Control Administrator limited by a condition that excludes Owner, User Access Administrator and
-# Role Based Access Control Administrator, Resource Policy Contributor and the custom role Mirror Lock Writer on its
-# own subscription, plus a narrow role where a unit needs one (peering on a remote network, a Key Vault secret read
-# for a deployment, a container write). Azure refuses it an Owner-class assignment, so those and the role
-# definitions are in separate units of the privileged tier, deployed by the privileged identity of the subscription
-# or of the tenant. The preflight in mirror-validate fails a production unit that declares one.
+# The stack of a unit:
+#   - A resource group unit is a resource group stack, a subscription unit a subscription stack, and a tenant-kind
+#     unit a management group stack at the management group the unit names.
+#   - No deny settings (deny-settings-mode: none).
+#   - A resource that left the template is detached, which leaves it in Azure. A unit with "stackDeletes": true in
+#     deploy/units.json deletes it instead. The plan shows each one as detach or delete before anybody approves.
+#     A resource group and a management group are always detached, never deleted. The tenant units and the units
+#     of fdm-apim may not have stackDeletes.
+#   - A deployment writes the whole template again, so it also takes back a change made by hand to any resource the
+#     stack manages. The plan lists each such change as a modify.
+#
+# The plan runs the Azure CLI and not the action. This is not yet done because the released action (v2.5.0) sends no
+# validation level with a stack validation or a stack preview, so Azure checks write rights and refuses the reader
+# identity, and because the action writes a preview to the log only, where the approver of the run does not read
+# it. The next release of the action carries the validation level. The CLI commands take the same template, the
+# same parameters and the same stack settings as the action in the apply job.
+#
+# A re-run never deploys, because the apply runs only on the first attempt of a run. A production deploy identity
+# holds Contributor, Role Based Access Control Administrator limited by a condition that excludes Owner, User Access
+# Administrator and Role Based Access Control Administrator, Resource Policy Contributor and the custom role Mirror
+# Lock Writer on its own subscription, plus a narrow role where a unit needs one (peering on a remote network, a
+# Key Vault secret read for a deployment, a container write). Azure refuses it an Owner-class assignment, so those
+# and the role definitions are in separate units of the privileged tier, deployed by the govern identity of the
+# subscription or of the tenant. The preflight in mirror-validate fails a production unit that declares a role
+# assignment of a role that is not on the list of its subscription.
 # Neither identity has a secret, and its federated credential trusts only its own environment, which only master
 # may use (PIPELINE.md section 1.5).
 #
 # Variables per environment (none is secret): AZURE_CLIENT_ID, the client ID of that environment's identity, and
-# AZURE_TENANT_ID. The client ID is not in deploy/units.json. The steps that run scripts/deploy-unit.ps1 pass it as
-# MIRROR_CLIENT_ID, which the script accepts as the signed-in identity of this job. One federated credential per
-# environment. Its subject is copied from the subject a first run of the repository presents, not typed from a
-# pattern, because a repository created after July 2026 carries the owner and repository IDs in it. Optional
-# repository variable: MIRROR_MAX_PLAN_AGE_HOURS (24), the longest a plan may wait for its apply.
+# AZURE_TENANT_ID. One federated credential per environment. Its subject is copied from the subject a first run of
+# the repository presents, not typed from a pattern, because a repository created after July 2026 carries the
+# owner and repository IDs in it.
 name: mirror-deploy-unit
 run-name: ${{ format('Deploy {0} ({1})', inputs.unit, inputs.changeRef) }}
 
@@ -70,34 +87,14 @@ on:
         required: false
         type: boolean
         default: false
-      acknowledgeReview:
-        description: Accept the review items (review boundaries and review records) after reading them in a plan
-        required: false
-        type: boolean
-        default: false
-      allowCreate:
-        description: Resource IDs that may show as Create, separated by commas
-        required: false
-        type: string
-        default: ''
-      allowModify:
-        description: Resource IDs whose changes the plan shows and the deployment may write, separated by commas
-        required: false
-        type: string
-        default: ''
-      allowHeld:
-        description: Held resource IDs to lift the hold for, separated by commas
-        required: false
-        type: string
-        default: ''
 
 permissions:
   contents: read
 
 env:
   # SHA256 of bicep-win-x64.exe (a Windows runner) and of bicep-linux-x64 (a Linux runner) in the Bicep v0.49.2
-  # GitHub release. Change the three together, and the Bicep version that scripts/deploy-unit.ps1,
-  # scripts/whatif-rg-sweep.sh and scripts/whatif-sub-sweep.sh require.
+  # GitHub release. Change the three together, with the bicep-version input of the apply job below and the Bicep
+  # version that scripts/deploy-unit.ps1, scripts/whatif-rg-sweep.sh and scripts/whatif-sub-sweep.sh require.
   BICEP_VERSION: v0.49.2
   BICEP_SHA256_WINDOWS: ACFFF0453C9BCF442AA97103ACBCD845EF366634E6EA2A2BA5734514409CE9C3
   BICEP_SHA256_LINUX: 0AB9DE90C2493F206F8281BAE74F9EE2D5ED3605548DAB1ADF41FEF185E1F7C5
@@ -107,42 +104,36 @@ env:
 # runs-on, and the runner check, the step after the checkout in every job, stops the job on any other runner. The
 # runner check and the Bicep pin are the two local actions under .github/actions.
 jobs:
-  select:
+  units:
     if: vars.MIRROR_PIPELINE_ENABLED == 'true'
     runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
     permissions:
       contents: read
-    timeout-minutes: 15
+    timeout-minutes: 10
     outputs:
-      matrix: ${{ steps.select.outputs.matrix }}
+      matrix: ${{ steps.units.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          fetch-depth: 0
           persist-credentials: false
       - name: Runner check
         uses: ./.github/actions/runner-check
-      - id: select
-        name: Pick the units
+      - id: units
+        name: Read the unit
         shell: pwsh
         env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT_NAME: ${{ github.event_name }}
+          SELECT: unit
           UNIT: ${{ inputs.unit }}
           CHANGE_REF: ${{ inputs.changeRef }}
           REASON: ${{ inputs.reason }}
-          APPLY: ${{ inputs.apply }}
-          ACK: ${{ inputs.acknowledgeReview }}
-          ALLOW_CREATE: ${{ inputs.allowCreate }}
-          ALLOW_MODIFY: ${{ inputs.allowModify }}
-          ALLOW_HELD: ${{ inputs.allowHeld }}
+          STARTED_BY: ${{ github.actor }}
         run: |
-          & ./.github/scripts/mirror-pipeline.ps1 -Mode Select
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode Units
           exit $LASTEXITCODE
 
   plan:
-    needs: select
-    if: vars.MIRROR_PIPELINE_ENABLED == 'true' && needs.select.outputs.matrix != '[]'
+    needs: units
+    if: vars.MIRROR_PIPELINE_ENABLED == 'true' && needs.units.outputs.matrix != '[]'
     name: plan ${{ matrix.unit }}
     runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
     # The environment's branch rule (master only) makes GitHub refuse the job on any other branch, and the reader
@@ -154,11 +145,13 @@ jobs:
       contents: read
       id-token: write
     timeout-minutes: 120
+    outputs:
+      # The time the preview was taken. A run plans one unit, so the matrix has one row and this is its value.
+      planned: ${{ steps.preview.outputs.taken }}
     strategy:
       fail-fast: false
-      max-parallel: 4
       matrix:
-        include: ${{ fromJSON(needs.select.outputs.matrix) }}
+        include: ${{ fromJSON(needs.units.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -186,67 +179,72 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           allow-no-subscriptions: true
-      - name: Plan (dry run and gate)
+      - id: preview
+        name: Validate and preview the stack
+        # az stack validate, then az stack-whatif. The preview is the plan the reviewers of the apply read. It
+        # leaves one preview object at the scope of the stack. Azure deletes it after its retention of one hour,
+        # which can take some hours longer.
         shell: pwsh
         env:
-          GH_TOKEN: ${{ github.token }}
           UNIT: ${{ matrix.unit }}
-          TRIGGER: ${{ matrix.trigger }}
-          STARTED_BY: ${{ matrix.startedBy }}
-          CHANGE_REF: ${{ matrix.changeRef }}
-          REASON: ${{ matrix.reason }}
-          APPLY: ${{ matrix.apply }}
-          OPTIONS: ${{ matrix.options }}
-          MIRROR_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
         run: |
-          & ./.github/scripts/mirror-pipeline.ps1 -Mode DeployPlan -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'plan')
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode StackWhatIf -Dir (Join-Path $env:RUNNER_TEMP 'plan')
           exit $LASTEXITCODE
+      - name: Adoption evidence of a first run
+        # deploy/adoption/<unit>.md explains the differences the first preview of a unit lists before its stack
+        # has a baseline. It is in the repository only until the unit's first deployment. A first run that brings
+        # existing resources under the stack needs that evidence, so the plan fails when the file is missing, when
+        # it says it is not evidence, and when the SHA256 it names for the unit's template or parameters file is
+        # not the SHA256 of the file in this commit (line endings left out). A first run that only creates
+        # resources, and every later run, passes without the file.
+        shell: pwsh
+        env:
+          UNIT: ${{ matrix.unit }}
+          TEMPLATE: ${{ matrix.template }}
+          PARAMETERS: ${{ matrix.parameters }}
+        run: |
+          $verdict = Get-Content -Raw -LiteralPath (Join-Path (Join-Path $env:RUNNER_TEMP 'plan') 'whatif-result.json') -Encoding utf8 | ConvertFrom-Json
+          $needed = ($verdict.firstRun -eq $true -and [int]$verdict.adopted -gt 0)
+          $file = Join-Path (Join-Path 'deploy' 'adoption') "$env:UNIT.md"
+          $problems = @()
+          if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+            if ($needed) { $problems += "the file deploy/adoption/$env:UNIT.md is missing" } else { Write-Host "No adoption evidence file for $env:UNIT, and this run needs none."; exit 0 }
+          } else {
+            $text = [IO.File]::ReadAllText($file)
+            @('', '---', '', "## Adoption evidence for the first run of $env:UNIT", '', "From the file deploy/adoption/$env:UNIT.md of this commit.", '', $text) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            if ($text -match 'This file cannot be relied on' -or $text -match 'this file is not evidence yet') { $problems += "the file deploy/adoption/$env:UNIT.md says it is not evidence" }
+            foreach ($path in @($env:TEMPLATE, $env:PARAMETERS) | Where-Object { $_ }) {
+              $m = [regex]::Match($text, '(?m)^- `' + [regex]::Escape($path) + '` SHA256 `([0-9a-f]{64})`\s*$')
+              $bytes = [Text.UTF8Encoding]::new($false).GetBytes([IO.File]::ReadAllText($path).Replace("`r`n", "`n"))
+              $now = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).Replace('-', '').ToLowerInvariant()
+              if (-not $m.Success) { $problems += "the file deploy/adoption/$env:UNIT.md names no SHA256 for $path" }
+              elseif ($m.Groups[1].Value -cne $now) { $problems += "the evidence was written from another version of $path (SHA256 $($m.Groups[1].Value) in the file, $now in this commit)" }
+            }
+          }
+          if ($problems.Count -eq 0) { Write-Host "The adoption evidence of $env:UNIT is in the job summary."; exit 0 }
+          $say = "Adoption evidence of ${env:UNIT}: $($problems -join '. ')."
+          if (-not $needed) { Write-Host "::warning::$say This run brings no existing resource under a new stack, so the plan goes on."; exit 0 }
+          @('', "**The plan fails. This is the first run of $env:UNIT and it brings $($verdict.adopted) existing resource(s) under the stack, so it needs adoption evidence. $say** Take a read-only preview of the unit, write the file again with adoption/adoption.py and start the deployment again.", '') | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          Write-Host "::error::$say"
+          exit 1
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
         with:
-          name: reviewed-plan-${{ matrix.unit }}
+          name: plan-${{ matrix.unit }}
           path: ${{ runner.temp }}/plan
-
-  collect:
-    needs: [ select, plan ]
-    if: vars.MIRROR_PIPELINE_ENABLED == 'true' && always() && needs.select.result == 'success' && needs.select.outputs.matrix != '[]'
-    runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
-    permissions:
-      contents: read
-    timeout-minutes: 10
-    outputs:
-      applyMatrix: ${{ steps.collect.outputs.applyMatrix }}
-      privilegedMatrix: ${{ steps.collect.outputs.privilegedMatrix }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Runner check
-        uses: ./.github/actions/runner-check
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        continue-on-error: true
-        with:
-          pattern: reviewed-plan-*
-          path: ${{ runner.temp }}/plans
-      - id: collect
-        name: List the units that wait for a reviewer
-        shell: pwsh
-        env:
-          MATRIX: ${{ needs.select.outputs.matrix }}
-        run: |
-          & ./.github/scripts/mirror-pipeline.ps1 -Mode Collect -Dir (Join-Path $env:RUNNER_TEMP 'plans')
-          exit $LASTEXITCODE
 
   apply:
-    needs: collect
-    # A re-run of this job alone would reuse the earlier plan, so the first attempt is required here as well.
-    if: vars.MIRROR_PIPELINE_ENABLED == 'true' && needs.collect.result == 'success' && needs.collect.outputs.applyMatrix != '[]' && github.run_attempt == '1'
+    needs: [ units, plan ]
+    # The first attempt only. A re-run of this job alone would deploy without a fresh plan.
+    if: vars.MIRROR_PIPELINE_ENABLED == 'true' && inputs.apply && needs.plan.result == 'success' && github.run_attempt == '1'
     name: apply ${{ matrix.unit }}
     runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
-    # The job waits here for the required reviewers of the environment, and the deploy identity cannot sign in until
-    # one of them who did not start the run approves.
-    environment: mirror-production-${{ matrix.scope }}
+    # The job waits here for the required reviewers of the environment, and the identity cannot sign in until one
+    # of them who did not start the run approves. The tier is production or privileged and the scope is the
+    # subscription folder of the unit or tenant, both written by the units job from deploy/units.json.
+    environment: mirror-${{ matrix.tier }}-${{ matrix.scope }}
     permissions:
+      # contents: read also lets the job read master's tip for the check of the plan.
       contents: read
       id-token: write
     timeout-minutes: 240
@@ -260,42 +258,45 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.collect.outputs.applyMatrix) }}
+        include: ${{ fromJSON(needs.units.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - name: Runner check
         uses: ./.github/actions/runner-check
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        with:
-          name: reviewed-plan-${{ matrix.unit }}
-          path: ${{ runner.temp }}/plan
-      - name: Check the reviewed plan
+      - name: Check the plan is still current
+        # The job starts here only after a reviewer approved, which can be days after the plan. A deployment
+        # writes the whole template of this run's commit, so an approval that comes after a later merge would
+        # write older code over a newer deployment, and no plan of this run would show it. The step stops the job
+        # when master's tip is no longer the commit of this run, and when the plan is older than 24 hours, or the
+        # whole number of hours in the repository variable MIRROR_MAX_PLAN_AGE_HOURS (1 to 720). Nothing is
+        # written to Azure before it. The deployment is then started again with Run workflow.
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          UNIT: ${{ matrix.unit }}
-          TIER: production
-          MIRROR_MAX_PLAN_AGE_HOURS: ${{ vars.MIRROR_MAX_PLAN_AGE_HOURS }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_COMMIT: ${{ github.sha }}
+          PLANNED: ${{ needs.plan.outputs.planned }}
+          MAX_HOURS: ${{ vars.MIRROR_MAX_PLAN_AGE_HOURS }}
         run: |
-          & ./.github/scripts/mirror-pipeline.ps1 -Mode CheckApply -Dir (Join-Path $env:RUNNER_TEMP 'plan')
-          exit $LASTEXITCODE
-      - name: Pin and check the Bicep CLI
-        uses: ./.github/actions/setup-bicep
-      - name: Tool versions
-        shell: pwsh
-        run: |
-          az version -o json
-          az bicep version
+          $max = 24
+          if ($env:MAX_HOURS -match '^[0-9]{1,3}\z' -and [int]$env:MAX_HOURS -ge 1 -and [int]$env:MAX_HOURS -le 720) { $max = [int]$env:MAX_HOURS }
+          if ($env:PLANNED -notmatch '^[0-9]{9,11}\z') { Write-Host "::error::the plan job gave no time for its preview, so the age of the plan is not known. Start the deployment again"; exit 1 }
+          $hours = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [long]$env:PLANNED) / 3600
+          if ($hours -gt $max) { Write-Host ("::error::the plan is {0:N1} hours old, and the limit is {1} hours. Azure may have changed since, so start the deployment again" -f $hours, $max); exit 1 }
+          $tip = [string](& gh api "repos/$env:REPOSITORY/git/ref/heads/master" --jq '.object.sha')
+          if ($LASTEXITCODE -ne 0 -or $tip -notmatch '^[0-9a-f]{40}\z') { Write-Host "::error::the tip of master could not be read, so the plan cannot be checked. Start the deployment again"; exit 1 }
+          if ($tip -cne $env:RUN_COMMIT) { Write-Host "::error::master is at $tip and this plan was taken on $env:RUN_COMMIT. A merge came after the plan, so this run would deploy older code. Start the deployment again"; exit 1 }
+          Write-Host ("The plan is {0:N1} hours old (limit {1}) and master is still at {2}." -f $hours, $max, $tip)
       - name: Check the environment has a client ID
-        # azure/login signs in with the client ID of this environment, and the gate accepts exactly that identity.
-        # With no variable on the environment, the repository or the organization, the sign-in would fail later with
-        # a less clear message. The step cannot tell a repository or organization value from the environment's own,
-        # so the variable is set on the environments only.
+        # azure/login signs in with the client ID of this environment. With no variable on the environment, the
+        # repository or the organization, the sign-in would fail later with a less clear message. The step cannot
+        # tell a repository or organization value from the environment's own, so the variable is set on the
+        # environments only.
         shell: pwsh
         env:
-          ENVIRONMENT_NAME: mirror-production-${{ matrix.scope }}
+          ENVIRONMENT_NAME: mirror-${{ matrix.tier }}-${{ matrix.scope }}
           CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
         run: |
           $guid = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z'
@@ -309,212 +310,44 @@ jobs:
           }
           Write-Host "The environment $env:ENVIRONMENT_NAME has an AZURE_CLIENT_ID."
       - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906  # v3.1.0
-        # The sign-in lasts the whole job, because the Azure CLI cannot renew a federated sign-in, and a user-assigned
-        # managed identity's token lasts about 24 hours (an app registration's about one hour).
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           allow-no-subscriptions: true
-      - name: Compare the fresh preview with the reviewed plan
-        # There is a gap between the plan and the approval, and a short one between this preview and the gate's own.
-        # The fresh preview must show the same records as the plan, so nothing the reviewer did not read deploys.
-        shell: pwsh
-        env:
-          UNIT: ${{ matrix.unit }}
-          MIRROR_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-        run: |
-          & ./.github/scripts/mirror-pipeline.ps1 -Mode ComparePlan -Dir (Join-Path $env:RUNNER_TEMP 'plan') -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'evidence' 'compare')
-          exit $LASTEXITCODE
-      # ---------------------------------------------------------------------------------------------------------
-      # THE GATE STEP. scripts/deploy-unit.ps1 repeats every check, deploys and takes the second check. When a
-      # unit stops using the gate, this one step is replaced by plain preview, deploy and second-check steps.
-      # Every step before and after it stays.
-      # ---------------------------------------------------------------------------------------------------------
-      - name: Gate, deploy and second check (deploy-unit.ps1)
-        shell: pwsh
-        env:
-          UNIT: ${{ matrix.unit }}
-          MIRROR_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-        run: |
-          $exitFile = Join-Path $env:RUNNER_TEMP 'gate-exit.txt'
-          # The arguments are built first. If they cannot be built, nothing has signed in to a deployment (exit 2).
-          try {
-            . ./.github/scripts/mirror-pipeline.ps1
-            $reviewed = Get-ReviewedPlan (Join-Path $env:RUNNER_TEMP 'plan')
-            $gateArgs = Get-GateArguments (Get-DeployOptions $reviewed.plan.options) (Join-Path $env:RUNNER_TEMP 'evidence') (Join-Path $env:RUNNER_TEMP 'plan') -Deploy
-          } catch {
-            Write-Host "::error::the gate arguments could not be built, so nothing was deployed: $(($_.Exception.Message) -replace '[\r\n\u0085\u2028\u2029]+', ' | ')"
-            Set-Content -LiteralPath $exitFile -Value 2
-            exit 2
-          }
-          # 'started' stays in the file if the job is cancelled or times out while deploy-unit.ps1 runs, so the
-          # summary says a deployment may still be running. The exit code replaces it when the script returns,
-          # and 'error' when the script stops with an error instead of an exit code.
-          Set-Content -LiteralPath $exitFile -Value 'started'
-          $code = 'error'
-          try {
-            & ./scripts/deploy-unit.ps1 -Unit $env:UNIT @gateArgs
-            $code = $LASTEXITCODE
-          } catch {
-            Write-Host "::error::the gate step stopped with an error: $(($_.Exception.Message) -replace '[\r\n\u0085\u2028\u2029]+', ' | ')"
-          } finally {
-            Set-Content -LiteralPath $exitFile -Value $code
-          }
-          if ("$code" -eq 'error') { exit 3 }
-          exit $code
-      - name: Record the deployment and summarize
+      - name: Create or update the deployment stack
+        # The one step that writes to Azure. The action compiles the unit's parameters file with the pinned Bicep
+        # version and creates the stack, or updates it when it exists. An input that does not belong to the scope
+        # of the unit is empty, and the action reads an empty input as not given.
+        # The action's own description names the management group input action-on-unmanage-managementgroup, and
+        # its code at this release reads action-on-unmanage-managementgroups. Both are set, so a management group
+        # is detached whichever name a release reads. GitHub warns about the input the description does not
+        # name, and the warning changes nothing.
+        id: stack
+        uses: azure/bicep-deploy@c66bb161da87636b24a64aa8e0a427645d846c57  # v2.5.0
+        with:
+          type: deploymentStack
+          operation: create
+          name: ${{ matrix.stack }}
+          scope: ${{ matrix.stackScope }}
+          location: ${{ matrix.location }}
+          subscription-id: ${{ matrix.subscriptionId }}
+          resource-group-name: ${{ matrix.resourceGroup }}
+          management-group-id: ${{ matrix.managementGroup }}
+          template-file: ${{ matrix.template }}
+          parameters-file: ${{ matrix.parameters }}
+          bicep-version: 0.49.2
+          action-on-unmanage-resources: ${{ matrix.unmanage }}
+          action-on-unmanage-resourcegroups: detach
+          action-on-unmanage-managementgroup: detach
+          action-on-unmanage-managementgroups: detach
+          deny-settings-mode: none
+      - name: Summarize the stack
+        # Reads the stack with the Azure CLI and writes its state and its resource counts to the job summary.
         if: always()
         shell: pwsh
         env:
           UNIT: ${{ matrix.unit }}
-          STARTED_BY: ${{ github.actor }}
+          OUTCOME: ${{ steps.stack.outcome }}
         run: |
-          $env:GATE_EXIT_FILE = Join-Path $env:RUNNER_TEMP 'gate-exit.txt'
-          & ./.github/scripts/mirror-pipeline.ps1 -Mode DeploySummary -Dir (Join-Path $env:RUNNER_TEMP 'plan') -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'evidence')
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode StackSummary
           exit $LASTEXITCODE
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
-        if: always()
-        with:
-          name: evidence-deploy-${{ matrix.unit }}
-          path: ${{ runner.temp }}/evidence
-
-  apply-privileged:
-    needs: collect
-    # A re-run of this job alone would reuse the earlier plan, so the first attempt is required here as well.
-    if: vars.MIRROR_PIPELINE_ENABLED == 'true' && needs.collect.result == 'success' && needs.collect.outputs.privilegedMatrix != '[]' && github.run_attempt == '1'
-    name: apply privileged ${{ matrix.unit }}
-    runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
-    # The job waits here for the required reviewers of the environment (the privileged approvers team), and the
-    # privileged identity cannot sign in until one of them who did not start the run approves.
-    environment: mirror-privileged-${{ matrix.scope }}
-    permissions:
-      contents: read
-      id-token: write
-    timeout-minutes: 240
-    concurrency:
-      # One deployment per subscription at a time, for the units of both tiers, so two units that write the same
-      # resources never run together. The three tenant units share the group of the tenant scope. queue: max
-      # keeps a later run waiting instead of cancelling the pending one.
-      group: mirror-scope-${{ matrix.scope }}
-      cancel-in-progress: false
-      queue: max
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.collect.outputs.privilegedMatrix) }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Runner check
-        uses: ./.github/actions/runner-check
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        with:
-          name: reviewed-plan-${{ matrix.unit }}
-          path: ${{ runner.temp }}/plan
-      - name: Check the reviewed plan
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          UNIT: ${{ matrix.unit }}
-          TIER: privileged
-          MIRROR_MAX_PLAN_AGE_HOURS: ${{ vars.MIRROR_MAX_PLAN_AGE_HOURS }}
-        run: |
-          & ./.github/scripts/mirror-pipeline.ps1 -Mode CheckApply -Dir (Join-Path $env:RUNNER_TEMP 'plan')
-          exit $LASTEXITCODE
-      - name: Pin and check the Bicep CLI
-        uses: ./.github/actions/setup-bicep
-      - name: Tool versions
-        shell: pwsh
-        run: |
-          az version -o json
-          az bicep version
-      - name: Check the environment has a client ID
-        # azure/login signs in with the client ID of this environment, and the gate accepts exactly that identity.
-        # With no variable on the environment, the repository or the organization, the sign-in would fail later with
-        # a less clear message. The step cannot tell a repository or organization value from the environment's own,
-        # so the variable is set on the environments only.
-        shell: pwsh
-        env:
-          ENVIRONMENT_NAME: mirror-privileged-${{ matrix.scope }}
-          CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-        run: |
-          $guid = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z'
-          if ([string]::IsNullOrWhiteSpace($env:CLIENT_ID)) {
-            Write-Error "the environment $env:ENVIRONMENT_NAME has no AZURE_CLIENT_ID variable, so the apply cannot sign in. Set it as PIPELINE.md step 3.18 says and run the workflow again"
-            exit 1
-          }
-          if ($env:CLIENT_ID -notmatch $guid) {
-            Write-Error "the AZURE_CLIENT_ID variable of the environment $env:ENVIRONMENT_NAME is not a client ID. It must be the GUID alone, with no spaces or other text. Correct it as PIPELINE.md step 3.18 says and run the workflow again"
-            exit 1
-          }
-          Write-Host "The environment $env:ENVIRONMENT_NAME has an AZURE_CLIENT_ID."
-      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906  # v3.1.0
-        # The sign-in lasts the whole job, because the Azure CLI cannot renew a federated sign-in, and a user-assigned
-        # managed identity's token lasts about 24 hours (an app registration's about one hour).
-        with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          allow-no-subscriptions: true
-      - name: Compare the fresh preview with the reviewed plan
-        # There is a gap between the plan and the approval, and a short one between this preview and the gate's own.
-        # The fresh preview must show the same records as the plan, so nothing the reviewer did not read deploys.
-        shell: pwsh
-        env:
-          UNIT: ${{ matrix.unit }}
-          MIRROR_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-        run: |
-          & ./.github/scripts/mirror-pipeline.ps1 -Mode ComparePlan -Dir (Join-Path $env:RUNNER_TEMP 'plan') -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'evidence' 'compare')
-          exit $LASTEXITCODE
-      # ---------------------------------------------------------------------------------------------------------
-      # THE GATE STEP. scripts/deploy-unit.ps1 repeats every check, deploys and takes the second check. When a
-      # unit stops using the gate, this one step is replaced by plain preview, deploy and second-check steps.
-      # Every step before and after it stays.
-      # ---------------------------------------------------------------------------------------------------------
-      - name: Gate, deploy and second check (deploy-unit.ps1)
-        shell: pwsh
-        env:
-          UNIT: ${{ matrix.unit }}
-          MIRROR_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-        run: |
-          $exitFile = Join-Path $env:RUNNER_TEMP 'gate-exit.txt'
-          # The arguments are built first. If they cannot be built, nothing has signed in to a deployment (exit 2).
-          try {
-            . ./.github/scripts/mirror-pipeline.ps1
-            $reviewed = Get-ReviewedPlan (Join-Path $env:RUNNER_TEMP 'plan')
-            $gateArgs = Get-GateArguments (Get-DeployOptions $reviewed.plan.options) (Join-Path $env:RUNNER_TEMP 'evidence') (Join-Path $env:RUNNER_TEMP 'plan') -Deploy
-          } catch {
-            Write-Host "::error::the gate arguments could not be built, so nothing was deployed: $(($_.Exception.Message) -replace '[\r\n\u0085\u2028\u2029]+', ' | ')"
-            Set-Content -LiteralPath $exitFile -Value 2
-            exit 2
-          }
-          # 'started' stays in the file if the job is cancelled or times out while deploy-unit.ps1 runs, so the
-          # summary says a deployment may still be running. The exit code replaces it when the script returns,
-          # and 'error' when the script stops with an error instead of an exit code.
-          Set-Content -LiteralPath $exitFile -Value 'started'
-          $code = 'error'
-          try {
-            & ./scripts/deploy-unit.ps1 -Unit $env:UNIT @gateArgs
-            $code = $LASTEXITCODE
-          } catch {
-            Write-Host "::error::the gate step stopped with an error: $(($_.Exception.Message) -replace '[\r\n\u0085\u2028\u2029]+', ' | ')"
-          } finally {
-            Set-Content -LiteralPath $exitFile -Value $code
-          }
-          if ("$code" -eq 'error') { exit 3 }
-          exit $code
-      - name: Record the deployment and summarize
-        if: always()
-        shell: pwsh
-        env:
-          UNIT: ${{ matrix.unit }}
-          STARTED_BY: ${{ github.actor }}
-        run: |
-          $env:GATE_EXIT_FILE = Join-Path $env:RUNNER_TEMP 'gate-exit.txt'
-          & ./.github/scripts/mirror-pipeline.ps1 -Mode DeploySummary -Dir (Join-Path $env:RUNNER_TEMP 'plan') -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'evidence')
-          exit $LASTEXITCODE
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
-        if: always()
-        with:
-          name: evidence-deploy-${{ matrix.unit }}
-          path: ${{ runner.temp }}/evidence

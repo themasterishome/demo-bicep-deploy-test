@@ -2,12 +2,15 @@
 # MIRROR_PIPELINE_ENABLED to true after the setup in PIPELINE.md section 3.
 #
 # Offline checks on every push to master, every pull request into master and every Run workflow: secret scan,
-# workflow lint, the workflow rules, the check that no production unit declares a role definition or an Owner, User
-# Access Administrator or Role Based Access Control Administrator assignment, and the preflight (compile, lint,
-# parameter files, file layout, duplicate declarations, deployment unit files). No Azure login, no Azure calls.
+# workflow lint, the workflow rules with the rules of deploy/units.json, and the preflight (compile, lint,
+# parameter files, file layout, duplicate declarations, deployment unit files, the delegated roles). No Azure
+# login, no Azure calls.
 #
-# The preflight compiles every Bicep file once and keeps the compiled output in a cache folder. The check of the
-# production units reads that cache, and compiles a unit again only when one of its files differs from the cache.
+# The preflight is the check that keeps privileged access out of the production units. It fails a production unit
+# that declares a role assignment of a role that is not on the list of its subscription in
+# deploy/delegated-roles.json, or one whose role it cannot read, and it fails a list that holds Owner, User Access
+# Administrator or Role Based Access Control Administrator. It reads a role assignment declared in a loop. It also
+# fails a production unit that declares a role definition, which no role of a deploy identity can write.
 #
 # The jobs secret-scan, actionlint, workflow-hygiene, portability and preflight are required status checks in the
 # branch ruleset, together with pr-gate of mirror-pr. The workflow has no path filter, because a required check that
@@ -122,7 +125,9 @@ jobs:
   workflow-hygiene:
     # A deploy token goes to any job that names a production environment from master, so only the deploy workflow
     # may name one, no workflow uses a trigger that runs pull request code with master's rights, and every action
-    # is an allowed one pinned to a full commit SHA. The rules are in .github/scripts/mirror-pipeline.ps1. They
+    # is an allowed one pinned to a full commit SHA. The same step reads deploy/units.json. Every unit must give
+    # a stack row, the unit of a deploy-excluded file may be neither enabled nor marked deployed, and stackDeletes
+    # stays off for the tenant units and the units of fdm-apim. The rules are in .github/scripts/mirror-pipeline.ps1. They
     # are text matches that catch mistakes, and on a pull request they run the pull request's own copy. The
     # controls are the production environments' branch policy (master only), the code owners' review and the push
     # ruleset on .github/**.
@@ -135,7 +140,7 @@ jobs:
           persist-credentials: false
       - name: Runner check
         uses: ./.github/actions/runner-check
-      - name: Workflow rules
+      - name: Workflow rules and unit rules
         shell: pwsh
         run: |
           & ./.github/scripts/mirror-pipeline.ps1 -Mode Hygiene
@@ -149,12 +154,12 @@ jobs:
   portability:
     # The checks on the other runner image, ubuntu-24.04 while the other jobs use windows-2025 and windows-2025
     # when they use ubuntu-24.04. It always parses every script (bash -n for the .sh files), applies the workflow
-    # rules and runs the helper tests, which also run scripts/deploy-unit.ps1 -WhatIfJson on a saved what-if. The
+    # rules and runs the helper tests, with a stand-in for the Azure CLI that answers from files. The
     # step "Decide the scope" then reads the change. For a Run workflow, a change to the scripts, to bicepconfig.json,
     # .gitattributes, .gitignore or this workflow, a change that adds a name that differs only in case from another
     # path, and when the changed files cannot be read, the job also runs what the preflight job runs:
-    # the pinned Bicep CLI, scripts/preflight-validate.ps1 and the check of the pipeline units from its compile
-    # cache. Any other change compiles the same on both systems, so the preflight job covers it. A required status
+    # the pinned Bicep CLI and scripts/preflight-validate.ps1. Any other change compiles the same on both systems,
+    # so the preflight job covers it. A required status
     # check. It has no needs, and its only job condition is the pipeline switch, so it never stays pending. No Azure
     # login, no Azure calls.
     if: vars.MIRROR_PIPELINE_ENABLED == 'true'
@@ -198,7 +203,7 @@ jobs:
           Write-Host "$($ps.Count) PowerShell and $($sh.Count) shell script(s) parsed, $failed error(s), PowerShell $($PSVersionTable.PSVersion) on $($PSVersionTable.OS)"
           if ($failed -gt 0) { exit 1 }
           exit 0
-      - name: Workflow rules
+      - name: Workflow rules and unit rules
         shell: pwsh
         run: |
           & ./.github/scripts/mirror-pipeline.ps1 -Mode Hygiene
@@ -216,17 +221,7 @@ jobs:
         id: preflight
         if: ${{ steps.scope.outputs.full == 'true' }}
         shell: pwsh
-        run: ./scripts/preflight-validate.ps1 -OutDir (Join-Path $env:RUNNER_TEMP 'build-logs') -CompileCache (Join-Path $env:RUNNER_TEMP 'compiled')
-      - name: Production units hold no role definition and no Owner, User Access Administrator or Role Based Access Control Administrator assignment
-        # Reads the compile cache of the preflight step, and compiles a unit again only when a file of it differs.
-        # It runs after the preflight even when the preflight failed, but only with the checked Bicep CLI.
-        if: ${{ !cancelled() && steps.bicep.outcome == 'success' }}
-        shell: pwsh
-        env:
-          MIRROR_COMPILE_CACHE: ${{ runner.temp }}/compiled
-        run: |
-          & ./.github/scripts/mirror-pipeline.ps1 -Mode PipelineScope
-          exit $LASTEXITCODE
+        run: ./scripts/preflight-validate.ps1 -OutDir (Join-Path $env:RUNNER_TEMP 'build-logs')
       - name: Job summary
         if: always()
         shell: pwsh
@@ -264,23 +259,7 @@ jobs:
       - name: Preflight
         id: preflight
         shell: pwsh
-        run: ./scripts/preflight-validate.ps1 -OutDir (Join-Path $env:RUNNER_TEMP 'build-logs') -CompileCache (Join-Path $env:RUNNER_TEMP 'compiled')
-      - name: Production units hold no role definition and no Owner, User Access Administrator or Role Based Access Control Administrator assignment
-        # Reads the compile cache the preflight wrote, and compiles a unit again only when a file of it differs.
-        # Fails when a production unit declares a role definition, a role assignment of Owner, User Access
-        # Administrator or Role Based Access Control Administrator, or a role assignment whose role it cannot read
-        # from the compiled template. A production deploy identity cannot write those, so they sit in a unit of the
-        # privileged tier. It also fails on a data-access grant (a Key Vault access policy, a Cosmos DB data-plane
-        # role assignment, a SQL administrator) that is not in the helper's list of known grants, because
-        # Contributor can write those. It runs after the preflight even when the preflight failed, but only with the
-        # checked Bicep CLI.
-        if: ${{ !cancelled() && steps.bicep.outcome == 'success' }}
-        shell: pwsh
-        env:
-          MIRROR_COMPILE_CACHE: ${{ runner.temp }}/compiled
-        run: |
-          & ./.github/scripts/mirror-pipeline.ps1 -Mode PipelineScope
-          exit $LASTEXITCODE
+        run: ./scripts/preflight-validate.ps1 -OutDir (Join-Path $env:RUNNER_TEMP 'build-logs')
       - name: Job summary
         if: always()
         shell: pwsh

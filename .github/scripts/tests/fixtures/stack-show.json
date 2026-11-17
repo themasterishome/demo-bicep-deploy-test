@@ -1,0 +1,43 @@
+{
+  "id": "/subscriptions/00000000-0000-0000-0000-000000000000/providers/Microsoft.Resources/deploymentStacks/mirror-example",
+  "name": "mirror-example",
+  "type": "Microsoft.Resources/deploymentStacks",
+  "actionOnUnmanage": {
+    "managementGroups": "detach",
+    "resourceGroups": "detach",
+    "resources": "delete",
+    "resourcesWithoutDeleteSupport": "fail"
+  },
+  "denySettings": {
+    "applyToChildScopes": false,
+    "excludedActions": [],
+    "excludedPrincipals": [],
+    "mode": "none"
+  },
+  "provisioningState": "succeeded",
+  "resources": [
+    {
+      "apiVersion": null,
+      "denyStatus": "none",
+      "extension": null,
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example-1/providers/Microsoft.Storage/storageAccounts/stexample1",
+      "identifiers": null,
+      "resourceGroup": "rg-example-1",
+      "status": "managed",
+      "type": null
+    }
+  ],
+  "detachedResources": [],
+  "deletedResources": [
+    {
+      "apiVersion": null,
+      "extension": null,
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example-1/providers/Microsoft.Network/virtualNetworks/vnet-example",
+      "identifiers": null,
+      "resourceGroup": "rg-example-1",
+      "type": null
+    }
+  ],
+  "failedResources": [],
+  "deploymentScope": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-example-1"
+}

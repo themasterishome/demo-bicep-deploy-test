@@ -1,22 +1,36 @@
 # Every job of this workflow is skipped, so no runner starts, until IT sets the repository variable
 # MIRROR_PIPELINE_ENABLED to true after the setup in PIPELINE.md section 3.
 #
-# Read-only drift sweep. It starts with Run workflow at any time, and every Monday at 05:00 UTC once IT sets the
+# Read-only drift check. It starts with Run workflow at any time, and every Monday at 05:00 UTC once IT sets the
 # repository variable MIRROR_DRIFT_SCHEDULE_ENABLED to true. Until then the weekly start skips every job. It never
-# deploys. The drift job previews every enabled unit with the reader identity and fails when a unit shows drift or
-# cannot be checked. The report job then keeps one GitHub issue up to date (.github/scripts/mirror-pipeline.ps1,
-# -Mode DriftReport). It opens the issue when a run finds drift or cannot check a unit, adds a comment when the
-# findings change, and closes it when a run finds every unit clean. Everyone who watches the repository is notified.
-# The summary is also in the run's job summary. While every unit in deploy/units.json is disabled the sweep has
-# nothing to check, so it fails with that message and the report opens the issue.
-# It uses the mirror-reader-dispatch environment, with the same reader identity as the pull request previews. Its
-# variables are AZURE_CLIENT_ID of the reader identity (Reader plus the "Mirror What-If Reader" custom role on all 10
-# subscriptions) and AZURE_TENANT_ID. deployment: false keeps these runs out of the environment's deployment history.
-# The environment allows only the branch master, and the reader identity's credential for it trusts only that
-# environment. GitHub refuses the job when the run is started on any other branch, so an older copy of this file
-# on another branch cannot sign in either. A branch's Bicep files are previewed through its pull request (mirror-pr,
-# in the mirror-reader environment). The job still takes the scripts from master's tip and refuses Bicep that reads
-# environment variables, registry modules or files outside the repository.
+# deploys.
+#
+#   units    No Azure. Lists the units of deploy/units.json that are marked "deployed": true, the units whose
+#            deployment stack exists. A unit gets that mark in a code pull request after its first deployment.
+#            While no unit has it, the run ends here and says so in its summary.
+#   drift    The reader identity, one job for each unit, four at a time. It previews the unit's stack with the
+#            Azure CLI (az stack validate, az stack-whatif) from the code of master. After a stack's first
+#            deployment Azure keeps a baseline for it, so the preview leaves out the differences that are not
+#            changes and lists what was changed outside the code since. The job fails when the unit shows a
+#            change or cannot be checked, and its summary holds the preview. A preview that carries a diagnostic
+#            message of Azure counts as not checked, because Azure could not evaluate a part of the stack.
+#   report   No Azure. Keeps one GitHub issue up to date (.github/scripts/mirror-pipeline.ps1, -Mode DriftReport).
+#            It opens the issue when a run finds drift or cannot check a unit, adds a comment when the findings
+#            change, and closes it when a run finds every unit clean. Everyone who watches the repository is
+#            notified.
+#
+# A stack preview covers the resources the stack manages. A resource that somebody added by hand beside them is
+# not listed. The read-only sweep scripts under scripts/ still show those.
+#
+# The drift job uses the mirror-reader-dispatch environment, with the same reader identity as the pull request
+# previews. Its variables are AZURE_CLIENT_ID of the reader identity (Reader plus the "Mirror What-If Reader" custom
+# role on all 10 subscriptions and the Tenant Root Group) and AZURE_TENANT_ID. deployment: false keeps these runs
+# out of the environment's deployment history. The environment allows only the branch master, and the reader
+# identity's credential for it trusts only that environment. GitHub refuses the job when the run is started on any
+# other branch, so an older copy of this file on another branch cannot sign in either. A branch's Bicep files are
+# previewed through its pull request (mirror-pr, in the mirror-reader environment). The job still takes the helper
+# script and the local actions from master's tip and refuses Bicep that reads environment variables, registry
+# modules or files outside the repository.
 name: mirror-drift
 
 on:
@@ -32,8 +46,8 @@ permissions:
 
 env:
   # SHA256 of bicep-win-x64.exe (a Windows runner) and of bicep-linux-x64 (a Linux runner) in the Bicep v0.49.2
-  # GitHub release. Change the three together, and the Bicep version that scripts/deploy-unit.ps1,
-  # scripts/whatif-rg-sweep.sh and scripts/whatif-sub-sweep.sh require.
+  # GitHub release. Change the three together, with the bicep-version input in mirror-deploy-unit.yml and the Bicep
+  # version that scripts/deploy-unit.ps1, scripts/whatif-rg-sweep.sh and scripts/whatif-sub-sweep.sh require.
   BICEP_VERSION: v0.49.2
   BICEP_SHA256_WINDOWS: ACFFF0453C9BCF442AA97103ACBCD845EF366634E6EA2A2BA5734514409CE9C3
   BICEP_SHA256_LINUX: 0AB9DE90C2493F206F8281BAE74F9EE2D5ED3605548DAB1ADF41FEF185E1F7C5
@@ -47,8 +61,33 @@ concurrency:
 # runs-on, and the runner check, the step after the checkout in every job, stops the job on any other runner. The
 # runner check and the Bicep pin are the two local actions under .github/actions.
 jobs:
-  drift:
+  units:
     if: vars.MIRROR_PIPELINE_ENABLED == 'true' && (github.event_name != 'schedule' || vars.MIRROR_DRIFT_SCHEDULE_ENABLED == 'true')
+    runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.units.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Runner check
+        uses: ./.github/actions/runner-check
+      - id: units
+        name: List the deployed units
+        shell: pwsh
+        env:
+          SELECT: deployed
+        run: |
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode Units
+          exit $LASTEXITCODE
+
+  drift:
+    needs: units
+    if: vars.MIRROR_PIPELINE_ENABLED == 'true' && needs.units.outputs.matrix != '[]'
+    name: drift ${{ matrix.unit }}
     runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
     environment:
       name: mirror-reader-dispatch
@@ -56,16 +95,20 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    timeout-minutes: 240
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include: ${{ fromJSON(needs.units.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - name: Runner check
         uses: ./.github/actions/runner-check
-      # Master. The scripts that run with the reader token come from master, never from the branch the run was
-      # started on, because the push ruleset covers .github/** only and a writer can push a changed scripts/
-      # folder to any branch.
+      # Master. The code that runs with the reader token comes from master, never from the branch the run was
+      # started on.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: master
@@ -73,17 +116,15 @@ jobs:
           persist-credentials: false
           # Only what the job takes from it.
           sparse-checkout: |
-            /scripts/
             /.github/scripts/
             /.github/actions/
-            /deploy/boundaries.json
             /bicepconfig.json
           sparse-checkout-cone-mode: false
       - name: Take the scripts from master
         # The run's commit is master's tip when the run started, so the job keeps its checkout as it is. If master
         # moved after that, or the environment's branch rule is ever loosened, the job keeps the run's Bicep files
-        # and deploy/units.json and takes scripts/, .github/scripts/, .github/actions/, deploy/boundaries.json and
-        # bicepconfig.json from master's tip.
+        # and deploy/units.json and takes .github/scripts/, .github/actions/ and bicepconfig.json from master's
+        # tip.
         shell: pwsh
         run: |
           $ws = $env:GITHUB_WORKSPACE
@@ -91,24 +132,26 @@ jobs:
           $trusted = ((git -C $t rev-parse HEAD) -join '').Trim()
           $code = ((git -C $ws rev-parse HEAD) -join '').Trim()
           if ($code -cne $trusted) {
-            foreach ($s in @('scripts', '.github/scripts', '.github/actions', 'deploy/boundaries.json', 'bicepconfig.json')) {
+            foreach ($s in @('.github/scripts', '.github/actions', 'bicepconfig.json')) {
               if (-not (Test-Path -LiteralPath (Join-Path $t $s))) { Write-Host "::error::$s is missing from master's checkout"; exit 2 }
             }
-            foreach ($d in @('scripts', '.github/scripts', '.github/actions')) {
+            foreach ($d in @('.github/scripts', '.github/actions')) {
               $p = Join-Path $ws $d
               if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force }
               Copy-Item -LiteralPath (Join-Path $t $d) -Destination $p -Recurse
             }
-            foreach ($f in @('deploy/boundaries.json', 'bicepconfig.json')) { Copy-Item -LiteralPath (Join-Path $t $f) -Destination (Join-Path $ws $f) -Force }
+            Copy-Item -LiteralPath (Join-Path $t 'bicepconfig.json') -Destination (Join-Path $ws 'bicepconfig.json') -Force
           }
           Remove-Item -LiteralPath $t -Recurse -Force
           "MIRROR_TRUSTED_COMMIT=$trusted" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "MIRROR_CODE_COMMIT=$code" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Scripts from master's commit $trusted. Bicep files from $code."
       - name: Check the Bicep inputs
-        # Before the sign-in, for every enabled unit. Bicep from a branch may not read environment variables,
-        # registry modules or files outside the repository, because the job holds the reader token.
+        # Before the sign-in. Bicep from a branch may not read environment variables, registry modules or files
+        # outside the repository, because the job holds the reader token.
         shell: pwsh
+        env:
+          UNIT: ${{ matrix.unit }}
         run: |
           & ./.github/scripts/mirror-pipeline.ps1 -Mode InputCheck
           exit $LASTEXITCODE
@@ -124,56 +167,31 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           allow-no-subscriptions: true
-      - name: Drift sweep (read-only)
+      - name: Preview the stack (read-only)
+        # az stack validate, then az stack-whatif. The step fails when the preview shows a change, and when
+        # Azure added a diagnostic message to it, because such a preview is not a full check of the unit. It
+        # leaves one preview object at the scope of the stack. Azure deletes it after its retention of one hour,
+        # which can take some hours longer.
         shell: pwsh
         env:
-          CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          MIRROR_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          UNIT: ${{ matrix.unit }}
+          FAIL_ON_CHANGES: 'true'
         run: |
-          # The Azure CLI cannot renew a federated sign-in. For an app registration it ends after about an
-          # hour, and a sweep of every enabled unit can take longer. So every az call of the sweep goes through
-          # the function below. Once the last sign-in is 30 minutes old, it signs in again with a fresh token
-          # from this job's OpenID Connect provider (the exchange azure/login makes) before it runs the call.
-          # If that sign-in fails, the call still runs and its unit is reported as not checked.
-          $global:AzExe = (Get-Command az -CommandType Application | Select-Object -First 1).Source
-          $global:LastSignIn = Get-Date
-          function global:az {
-            $ErrorActionPreference = 'Continue'
-            if (((Get-Date) - $global:LastSignIn).TotalMinutes -ge 30) {
-              try {
-                $req = "$($env:ACTIONS_ID_TOKEN_REQUEST_URL)&audience=$([uri]::EscapeDataString('api://AzureADTokenExchange'))"
-                $tok = (Invoke-RestMethod -Uri $req -Headers @{ Authorization = "bearer $($env:ACTIONS_ID_TOKEN_REQUEST_TOKEN)" }).value
-                Write-Host "::add-mask::$tok"
-                $o = & $global:AzExe login --service-principal -u $env:CLIENT_ID --tenant $env:TENANT_ID --federated-token $tok --allow-no-subscriptions -o none 2>&1
-                if ($LASTEXITCODE -eq 0) { $global:LastSignIn = Get-Date; Write-Host 'Signed in again' }
-                else { Write-Host "Signing in again failed: $(@($o) | Select-Object -Last 1)" }
-              } catch { Write-Host "Signing in again failed: $_" }
-            }
-            & $global:AzExe @args
-          }
-          $drift = Join-Path $env:RUNNER_TEMP 'drift'
-          & ./scripts/preflight-drift.ps1 -EvidenceRoot $drift
-          $code = $LASTEXITCODE
-          $summary = Join-Path $drift 'drift-summary.txt'
-          if (Test-Path -LiteralPath $summary) {
-            '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-            Get-Content -LiteralPath $summary | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-            '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-          }
-          exit $code
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode StackWhatIf -Dir (Join-Path $env:RUNNER_TEMP 'drift')
+          exit $LASTEXITCODE
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
         with:
-          name: drift
+          name: drift-${{ matrix.unit }}
           path: ${{ runner.temp }}/drift
 
   report:
-    # No Azure. Reads the drift job's summary and keeps the one drift issue up to date. It runs after the drift job
-    # whatever its result, unless the run was cancelled or the drift job was skipped, and only on master, the one
-    # branch the drift job may sign in from.
-    needs: drift
-    if: vars.MIRROR_PIPELINE_ENABLED == 'true' && (!cancelled() && needs.drift.result != 'skipped' && github.ref == 'refs/heads/master')
+    # No Azure. Reads the results of the drift jobs and keeps the one drift issue up to date. It runs after the
+    # drift jobs whatever their result, and also when the units job failed, so a run that could check nothing
+    # still reaches the issue. It does not run when the run was cancelled, when there was no unit to check, or
+    # on a branch other than master, the one branch the drift job may sign in from.
+    needs: [ units, drift ]
+    if: vars.MIRROR_PIPELINE_ENABLED == 'true' && (!cancelled() && github.ref == 'refs/heads/master' && (needs.drift.result != 'skipped' || needs.units.result == 'failure'))
     runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
     permissions:
       contents: read
@@ -186,16 +204,18 @@ jobs:
       - name: Runner check
         uses: ./.github/actions/runner-check
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        # A drift job that stopped before its upload leaves no artifact. The report then says so in the issue.
+        # A drift job that stopped before its upload leaves no artifact. The report then names its unit in the
+        # issue as not checked.
         continue-on-error: true
         with:
-          name: drift
+          pattern: drift-*
           path: ${{ runner.temp }}/drift
       - name: Report the drift in the drift issue
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           DRIFT_RESULT: ${{ needs.drift.result }}
+          MATRIX: ${{ needs.units.outputs.matrix }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           & ./.github/scripts/mirror-pipeline.ps1 -Mode DriftReport -Dir (Join-Path $env:RUNNER_TEMP 'drift')

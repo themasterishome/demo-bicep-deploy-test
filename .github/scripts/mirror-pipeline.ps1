@@ -1,26 +1,21 @@
 <#
 .SYNOPSIS
-  The pipeline's own checks around scripts/deploy-unit.ps1: the plan and the checks before a deployment, the preview
-  on a pull request, and the summaries. Every workflow under .github/workflows calls this one file.
+  The pipeline's own code around the official deployment action: the repository checks of mirror-validate, the
+  list of units a workflow works on, the deployment stack preview of one unit, and the drift issue.
 
 .DESCRIPTION
-  A deployment from the pipeline is a plan followed by an apply, both jobs of one run of mirror-deploy-unit. The run
-  starts only with Run workflow on master. The plan signs in with the
-  reader identity and runs the dry run and the gate. The apply waits for the required reviewers of the unit's
-  mirror-production or mirror-privileged environment, who did not start the run, and then deploys exactly what the plan showed. The
-  workflows call this script in one of these modes:
+  A deployment from the pipeline is a plan followed by an apply, both jobs of one run of mirror-deploy-unit on one
+  commit of master. The plan signs in with the reader identity and previews the unit's deployment stack. The apply
+  waits for the required reviewers of the unit's mirror-production or mirror-privileged environment and then
+  creates or updates the stack with the action azure/bicep-deploy. This script holds only what that action and
+  GitHub do not do themselves. The workflows call it in one of these modes:
 
     Hygiene        mirror-validate. Catches workflow files that could hand a deploy token to code nobody reviewed
                    (a check for mistakes, the controls are GitHub settings), and a job without the pipeline switch
                    (the repository variable MIRROR_PIPELINE_ENABLED). It also reads the two local actions under
-                   .github/actions
-    PipelineScope  mirror-validate. Reads every unit as Azure receives it (through its parameters file), from the
-                   compile cache of the preflight when its files are unchanged, else by compiling it. Fails
-                   when a production unit declares a role definition, a role assignment of Owner, User Access
-                   Administrator or Role Based Access Control Administrator, or a role assignment whose role the
-                   compiled template does not show, because a production deploy identity cannot write those and
-                   they belong in a privileged unit. Also fails when any unit declares a data-access grant not in
-                   the list of known grants
+                   .github/actions, and it reads every unit of deploy/units.json. Each unit must give a stack
+                   row, the unit of a deploy-excluded file may be neither enabled nor marked deployed, and
+                   stackDeletes stays off where it is not allowed. Nothing is compiled
     PortabilityScope
                    mirror-validate, portability job. Decides whether the job runs the full preflight on its runner
                    image. It does when the event is Run workflow or any event but a push or a pull request, when the
@@ -30,34 +25,31 @@
     InputCheck     mirror-pr, mirror-deploy-unit and mirror-drift, before the sign-in to Azure. Reads every Bicep
                    file of the checkout and refuses one that reads an environment variable, a registry module or a
                    file outside the repository, or uses a form this check does not read
-    Plan           mirror-pr. A code pull request. Lists the units to preview
-    Preview        mirror-pr. A plain what-if of one unit of the pull request's Bicep, judged offline by master's
-                   deploy-unit.ps1 -WhatIfJson, because the job takes the scripts from master's tip
-    Report         mirror-pr. One pull request comment with every verdict. Decides the required check
-    Select         mirror-deploy-unit. Checks the inputs of Run workflow and names the one unit to plan. Any other
-                   event is refused
-    DeployPlan     mirror-deploy-unit, plan job. The dry run and the gate of one unit with its options. Writes the
-                   verdict, the job summary and the reviewed plan
-    Collect        mirror-deploy-unit. Reads the reviewed plans and lists the units whose apply waits for a reviewer,
-                   one list for the production tier and one for the privileged tier
-    CheckApply     mirror-deploy-unit, apply and apply-privileged jobs, after the approval. First attempt, master
-                   still at the planned commit, the plan recent, the unit still enabled, still of the tier of the
-                   job and still able to run in the pipeline
-    ComparePlan    mirror-deploy-unit, apply and apply-privileged jobs. A fresh dry run shows the same records as the reviewed plan, apart
-                   from the resources the options name
-    DeploySummary  mirror-deploy-unit. Writes pipeline-deployment.json in the evidence and the job summary
-    DriftReport    mirror-drift, report job. Opens, updates or closes the one drift issue from the drift job's summary.
-                   No Azure
+    Units          mirror-deploy-unit, mirror-pr and mirror-drift, first job. Reads deploy/units.json and writes
+                   the job matrix, one row for each unit with the scope, the name and the files of its deployment
+                   stack. SELECT says which units: unit (the one named in UNIT, which must be enabled and may not
+                   be the unit of a deploy-excluded file), deployed
+                   (every unit marked "deployed": true) or pullRequest (the units whose files the pull request
+                   changes)
+    StackWhatIf    mirror-deploy-unit (plan job), mirror-pr and mirror-drift. Validates the deployment stack of
+                   the unit in UNIT and previews it with the Azure CLI (az stack validate, az stack-whatif), at the
+                   validation level a reader identity can run. Writes the preview to the job summary and to the
+                   folder -Dir. Fails when the preview cannot be taken, and also when FAIL_ON_CHANGES is true
+                   (the drift check) and the preview shows a change or carries a diagnostic message of Azure
+    StackSummary   mirror-deploy-unit, apply job. Reads the stack after the action created or updated it and writes
+                   its state and its resource counts to the job summary
+    DriftReport    mirror-drift, report job. Opens, updates or closes the one drift issue from the results of the
+                   drift jobs. No Azure
 
-  The plan belongs to one commit of master, the commit the run started on. The apply refuses when master has moved
-  since, so nothing deploys from a plan of other code. A reviewer approves the plan that the run shows, with the
-  options it names, and the apply takes those options from the plan and never from anything typed again.
+  The plan and the apply are jobs of the same run, so the apply deploys the commit the plan previewed, and GitHub
+  holds the apply until a reviewer of the environment approves it on the run page, where the plan's summary is.
 
-  With no -Mode the script only defines its functions, so a workflow step or the tests can dot-source it.
-  Every unit runs in the pipeline. A unit has a tier in deploy/units.json. A unit with no tier is production, and
-  its deploy identity cannot write an Owner-class role assignment or a role definition. The privileged tier holds
-  those, deployed by a separate identity through a separate environment with its own approvers. Tenant-kind units
-  are privileged and deploy at management group scope.
+  With no -Mode the script only defines its functions, so the tests can dot-source it.
+  A unit has a tier in deploy/units.json. A unit with no tier is production, and its deploy identity cannot write
+  an Owner-class role assignment or a role definition. The privileged tier holds those, deployed by a separate
+  identity through a separate environment with its own approvers. Tenant-kind units are privileged and deploy at
+  management group scope. The preflight (scripts/preflight-validate.ps1, the delegated roles) fails a production
+  unit that declares a role assignment of a role that is not on the list of its subscription.
 
   Values reach the script through environment variables that the workflow sets with env:, never through text
   pasted into the command line.
@@ -68,11 +60,9 @@
 #>
 [CmdletBinding()]
 param(
-  [ValidateSet('', 'Hygiene', 'PipelineScope', 'PortabilityScope', 'InputCheck', 'Plan', 'Preview', 'Report', 'Select', 'DeployPlan',
-               'Collect', 'CheckApply', 'ComparePlan', 'DeploySummary', 'DriftReport')]
+  [ValidateSet('', 'Hygiene', 'PortabilityScope', 'InputCheck', 'Units', 'StackWhatIf', 'StackSummary', 'DriftReport')]
   [string]$Mode = '',
-  [string]$Dir,
-  [string]$EvidenceRoot
+  [string]$Dir
 )
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
@@ -82,28 +72,30 @@ $ErrorActionPreference = 'Stop'
 # Actions > Variables). The workflows pass them in through env:.
 # ---------------------------------------------------------------------------------------------------------------
 $script:RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-# Files that change the judgement of every unit. A change there needs a sweep, not a preview of one unit.
-$script:GlobalFiles = @('bicepconfig.json', 'deploy/boundaries.json', 'scripts/deploy-unit.ps1')
-# The longest a reviewed plan may wait before the apply, in hours. MIRROR_MAX_PLAN_AGE_HOURS overrides it.
-$script:DefaultMaxPlanAgeHours = 24
-# Resource types that grant access to data through the resource's own settings. Contributor can write them, so a
-# pipeline unit may declare only the ones in $script:KnownDataGrants, each as "<unit>|<type> (<name in the
-# compiled template>)".
-# A new one goes into this list after IT reviews it as an access change.
-$script:DataGrantTypes = @('Microsoft.KeyVault/vaults/accessPolicies', 'Microsoft.DocumentDB/databaseAccounts/*RoleAssignments',
-  'Microsoft.DocumentDB/databaseAccounts/*RoleDefinitions', 'Microsoft.DocumentDB/databaseAccounts/*UserDefinitions',
-  'Microsoft.Sql/servers/administrators', 'Microsoft.Sql/servers/azureADOnlyAuthentications',
-  'Microsoft.Sql/managedInstances/administrators', 'Microsoft.DBforPostgreSQL/flexibleServers/administrators',
-  'Microsoft.DBforMySQL/flexibleServers/administrators', 'Microsoft.Synapse/workspaces/administrators',
-  'Microsoft.Kusto/clusters/principalAssignments', 'Microsoft.Kusto/clusters/databases/principalAssignments')
-$script:KnownDataGrants = @()
+# Files that every unit is compiled with. A change there needs a preview of every unit, not of one.
+$script:GlobalFiles = @('bicepconfig.json')
 $script:MaxPreviewUnits = 12
-$script:CommentMarker = '<!-- mirror-pr -->'
-# The account that writes as the workflow's own token. Only its comments are the pipeline's own.
+# The account that writes as the workflow's own token. Only its issues are the pipeline's own.
 $script:BotLogin = 'github-actions[bot]'
-$script:MaxSummaryChars = 60000
-# The only actions a workflow may use, each pinned to a full commit SHA.
-$script:AllowedActions = @('actions/checkout', 'actions/upload-artifact', 'actions/download-artifact', 'azure/login')
+# The longest preview text a job summary shows. GitHub accepts 1 MiB for the summary of one step. The whole text is
+# in the artifact of the job.
+$script:MaxSummaryChars = 400000
+# The findings of one unit that the drift issue lists. The artifact of the unit's job holds all of them.
+$script:MaxFindingsPerUnit = 40
+# Every deployment stack of the pipeline is named mirror-<unit>, and its previews are kept for the shortest time
+# Azure accepts, one hour. Azure deletes a preview after that time. The removal is not immediate and can follow
+# some hours later.
+$script:StackPrefix = 'mirror-'
+$script:WhatIfRetention = 'PT1H'
+# The scopes whose units never delete what leaves the template: the tenant units, whose templates place
+# subscriptions under management groups, and the subscription of the API Management platform. A line leaves this
+# list in a reviewed change when IT agrees that a unit of the scope may delete.
+$script:NoStackDeletesScopes = @('tenant', 'fdm-apim')
+# The diagnostic messages of one preview that the job summary and the drift issue list.
+$script:MaxDiagnostics = 20
+# The only actions a workflow may use, each pinned to a full commit SHA. azure/bicep-deploy is Microsoft's action
+# for Bicep deployments and deployment stacks, and only the apply job of mirror-deploy-unit.yml uses it.
+$script:AllowedActions = @('actions/checkout', 'actions/upload-artifact', 'actions/download-artifact', 'azure/login', 'azure/bicep-deploy')
 # The only local actions a workflow may use, with their folders under .github/actions. Each holds run steps only.
 $script:AllowedLocalActions = @('./.github/actions/runner-check', './.github/actions/setup-bicep')
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding $false
@@ -137,7 +129,7 @@ $script:PathCompare = if ($script:Sep -eq '\') { [StringComparison]::OrdinalIgno
 # Small helpers
 # ---------------------------------------------------------------------------------------------------------------
 
-# Strict mode throws on a missing property. JSON from git, GitHub and the gate omits fields freely.
+# Strict mode throws on a missing property. JSON from git, GitHub and Azure omits fields freely.
 function Get-Prop($obj, [string]$name) {
   if ($null -eq $obj) { return $null }
   if ($obj -is [System.Collections.IDictionary]) { if ($obj.Contains($name)) { return $obj[$name] } else { return $null } }
@@ -156,24 +148,10 @@ function Test-InList($List, [string]$Item) {
   return $false
 }
 
-# The distinct texts of a list, in ordinal order.
-function Get-OrdinalSet($Items) {
-  $set = New-Object 'System.Collections.Generic.SortedSet[string]' ([StringComparer]::Ordinal)
-  foreach ($i in @($Items)) { if ($null -ne $i) { [void]$set.Add([string]$i) } }
-  return [string[]]@($set)
-}
-
 function Get-EnvValue([string]$Name, [string]$Default = '') {
   $v = [Environment]::GetEnvironmentVariable($Name)
   if ([string]::IsNullOrWhiteSpace($v)) { return $Default }
   return $v.Trim()
-}
-
-function Get-EnvInt([string]$Name, [int]$Default) {
-  $v = Get-EnvValue $Name
-  $n = 0
-  if ($v -and [int]::TryParse($v, [ref]$n) -and $n -gt 0) { return $n }
-  return $Default
 }
 
 # A repository path as git and deploy/units.json write it (forward slashes), in the form of the running system.
@@ -278,10 +256,6 @@ function Test-GitCommit([string]$Commit) {
   return ((Invoke-Git @('cat-file', '-e', "$Commit^{commit}") -AllowFailure).Code -eq 0)
 }
 
-function Test-GitAncestor([string]$Ancestor, [string]$Descendant) {
-  return ((Invoke-Git @('merge-base', '--is-ancestor', $Ancestor, $Descendant) -AllowFailure).Code -eq 0)
-}
-
 # Files that differ between two commits, as objects with Status (A, M, D, T) and Path. Renames are listed as a
 # delete and an add, so a renamed file reads as a deleted one. -ThreeDot compares with the merge base,
 # as a pull request does.
@@ -319,10 +293,6 @@ function ConvertFrom-NameStatus([string[]]$Lines) {
   }
 }
 
-# The roles whose assignment only a privileged unit may declare: Owner, User Access Administrator and Role Based
-# Access Control Administrator.
-$script:PrivilegedRoleIds = @('8e3af657-a8ff-443c-a75c-2fe8c4bcb635', '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9', 'f58310d9-a9f6-439a-9e8d-f62e7b41a168')
-
 # The tier of a unit: 'production' when deploy/units.json gives it none, 'privileged' when it says so, and always
 # 'privileged' for a tenant-kind unit. Any other value gives $null, so a misspelled tier is refused by the callers
 # and never falls back to production.
@@ -340,405 +310,27 @@ function Get-UnitScope($UnitDef) {
   return [string](Get-Prop $UnitDef 'subscription')
 }
 
-# The GitHub environment of a unit: mirror-<tier>-<scope>, or $null when the tier is not one the pipeline knows.
-function Get-UnitEnvironment($UnitDef) {
-  $tier = Get-UnitTier $UnitDef
-  if ($null -eq $tier) { return $null }
-  return "mirror-$tier-$(Get-UnitScope $UnitDef)"
-}
-
-# Why a unit cannot be previewed, or $null. What-if cannot read a resource name with a # in it, so a unit that holds
-# such a resource, named <something>-hash-excluded, never passes the gate.
-function Get-UnrunnableReason($UnitDef) {
-  $n = [string](Get-Prop $UnitDef 'name')
-  if ($n -like '*-hash-excluded') { return 'a resource name with a # in it, which what-if cannot preview' }
-  return $null
-}
-
-# The beginning of every resource ID a unit may name in allowCreate, allowModify and allowHeld, or $null when the
-# subscription of the unit is not in the list. A tenant-kind unit works at management group scope, and the groups it
-# declares sit beside its own, so the prefix is every management group.
-function Get-UnitIdPrefix($UnitDef, $UnitsDoc) {
-  if ([string](Get-Prop $UnitDef 'kind') -ceq 'tenant') { return '/providers/Microsoft.Management/managementGroups/' }
-  $subId = [string](Get-Prop (Get-Prop $UnitsDoc 'subscriptions') ([string](Get-Prop $UnitDef 'subscription')))
-  if (-not $subId) { return $null }
-  if ([string](Get-Prop $UnitDef 'kind') -ceq 'resourceGroup') { return "/subscriptions/$subId/resourceGroups/$(Get-Prop $UnitDef 'resourceGroup')/" }
-  return "/subscriptions/$subId/"
-}
-
-# One of the 10 subscription units (a subscription folder's main.bicep), the part of a subscription that is not
-# privileged.
-function Test-SubscriptionMainUnit($UnitDef) {
-  return ([string](Get-Prop $UnitDef 'kind') -eq 'subscription' -and
-          ([string](Get-Prop $UnitDef 'template')).Replace('\', '/') -match '^infra/subscriptions/[^/]+/main\.bicep$')
-}
-
 function Find-UnitDef($UnitsDoc, [string]$Name) {
   $m = @(@(Get-Prop $UnitsDoc 'units') | Where-Object { Test-Same ([string](Get-Prop $_ 'name')) $Name })
   if ($m.Count -ne 1) { return $null }
   return $m[0]
 }
 
-# The same type and name rules as deploy-unit.ps1, so an allowHeld ID is checked the way the gate checks it.
-function Get-ResourceType([string]$Id) {
-  $i = $Id.ToLowerInvariant().LastIndexOf('/providers/')
-  if ($i -lt 0) {
-    if ($Id -match '(?i)^/subscriptions/[^/]+/resourceGroups/[^/]+$') { return 'Microsoft.Resources/resourceGroups' }
-    return 'unknown'
-  }
-  $parts = $Id.Substring($i + 11).Split('/')
-  $t = @($parts[0])
-  for ($k = 1; $k -lt $parts.Count; $k += 2) { $t += $parts[$k] }
-  return ($t -join '/')
-}
-
-function Get-ResourceNameChain([string]$Id) {
-  $i = $Id.ToLowerInvariant().LastIndexOf('/providers/')
-  if ($i -lt 0) { return ($Id.Split('/')[-1]) }
-  $parts = $Id.Substring($i + 11).Split('/')
-  $n = @()
-  for ($k = 2; $k -lt $parts.Count; $k += 2) { $n += $parts[$k] }
-  return ($n -join '/')
-}
-
-function Find-Hold($Holds, [string]$Id) {
-  $type = Get-ResourceType $Id
-  $chain = Get-ResourceNameChain $Id
-  foreach ($h in @($Holds)) {
-    if ($null -eq $h) { continue }
-    $idp = Get-Prop $h 'idPattern'
-    if ($idp) { if ([regex]::IsMatch($Id, $idp)) { return $h } else { continue } }
-    if ([string](Get-Prop $h 'type') -eq $type -and [regex]::IsMatch("/$chain", [string](Get-Prop $h 'namePattern'))) { return $h }
-  }
-  return $null
-}
-
-function Test-IdList($Value, [string]$Field, [string]$Prefix) {
-  $errors = @()
-  if ($null -eq $Value -or -not ($Value -is [System.Array])) { return @("$Field must be a list of resource IDs (use [] for none)") }
-  $seen = @{}
-  foreach ($id in $Value) {
-    if (-not ($id -is [string]) -or [string]::IsNullOrWhiteSpace($id)) { $errors += "$Field holds an entry that is not a resource ID"; continue }
-    # \p{C} holds the control and the invisible format characters (a zero-width space among them), and the class
-    # after it every space but the plain one. The soft hyphen is named too, because .NET Framework, which Windows
-    # PowerShell 5.1 runs on, classes it as a dash and not as a format character.
-    if (-not (Test-Same $id $id.Trim()) -or $id -match '\p{C}|[\p{Z}-[\x20]]|\u00AD' -or $id.EndsWith('/')) { $errors += "$Field entry '$id' has spaces at its ends, a control or invisible character, or a trailing slash"; continue }
-    if (-not $id.StartsWith($Prefix, [StringComparison]::OrdinalIgnoreCase) -or $id.Length -le $Prefix.Length) { $errors += "$Field entry '$id' is not inside the unit's scope ($Prefix...)"; continue }
-    $k = $id.ToLowerInvariant()
-    if ($seen.ContainsKey($k)) { $errors += "$Field lists '$id' twice" }
-    $seen[$k] = $true
-  }
-  return $errors
-}
-
-# The arguments for scripts/deploy-unit.ps1, for splatting. -Deploy builds the deploy run: -DryRun:$false
-# -Approve and, with allowModify, -ApprovedChanges pointing at the folder of the reviewed plan. Without
-# -Deploy it is the dry run with the same options, which is what the reviewer reads.
-function Get-GateArguments($Options, [string]$EvidenceRoot, [string]$ApprovedDir, [switch]$Deploy) {
-  $o = Get-DeployOptions $Options
-  $a = @{ EvidenceRoot = $EvidenceRoot }
-  if ($o.acknowledgeReview) { $a.AcknowledgeReview = $true }
-  if ($o.allowCreate.Count -gt 0) { $a.AllowCreate = $o.allowCreate }
-  if ($o.allowHeld.Count -gt 0) { $a.AllowHeld = $o.allowHeld }
-  if ($o.allowModify.Count -gt 0) { $a.AllowModify = $o.allowModify }
-  if ($Deploy) {
-    $a.DryRun = $false
-    $a.Approve = $true
-    if ($o.allowModify.Count -gt 0) {
-      $gates = @(Get-ChildItem -LiteralPath $ApprovedDir -Recurse -Filter 'pre-gate.json' -File -ErrorAction SilentlyContinue)
-      if ($gates.Count -ne 1) { throw "expected one pre-gate.json in the approved dry run under $ApprovedDir, found $($gates.Count)" }
-      $a.ApprovedChanges = $gates[0].DirectoryName
-    }
-  }
-  return $a
-}
-
-# The header of a pre-summary.txt (the lines before the first blank line), read the way deploy-unit.ps1 reads
-# it for -ApprovedChanges, where the first line of a key counts. AllowModify carries an optional note after two
-# spaces, and AllowHeld has two spaces after its colon.
-function Read-DryRunHeader([string[]]$Lines) {
-  $fields = @{}
-  $create = @(); $modify = @(); $held = @()
-  foreach ($l in @($Lines)) {
-    if ($l -eq '') { break }
-    if ($l -match '^AllowModify: (.+?)(  \(no Modify record for it in this preview\))?$') { $modify += $Matches[1]; continue }
-    if ($l -match '^AllowCreate: (.+)$') { $create += $Matches[1]; continue }
-    if ($l -match '^AllowHeld:  (.+)$') { $held += $Matches[1]; continue }
-    if ($l -match '^(\w+):\s+(.*)$' -and -not $fields.ContainsKey($Matches[1])) { $fields[$Matches[1]] = $Matches[2].Trim() }
-  }
-  return [pscustomobject]@{ fields = $fields; allowCreate = $create; allowModify = $modify; allowHeld = $held }
-}
-
-function Test-SameIdSet([string[]]$A, [string[]]$B) {
-  $x = @(Get-OrdinalSet @(@($A) | Where-Object { $_ } | ForEach-Object { $_.ToLowerInvariant() }))
-  $y = @(Get-OrdinalSet @(@($B) | Where-Object { $_ } | ForEach-Object { $_.ToLowerInvariant() }))
-  return (Test-Same ($x -join "`n") ($y -join "`n"))
-}
-
-# Can a person approve this dry run? Its gate passed, or it stopped for review only because the resources named in
-# allowModify would change (a dry run never writes them). A review boundary or a review record still waiting for
-# acknowledgeReview, a failed record or a problem with the preview makes it not approvable.
-function Test-Approvable($Gate) {
-  $reasons = @()
-  $overall = [string](Get-Prop $Gate 'overall')
-  foreach ($p in @(Get-Prop $Gate 'problems')) { if ($p) { $reasons += "problem with the preview: $p" } }
-  $failed = 0; [void][int]::TryParse([string](Get-Prop $Gate 'failed'), [ref]$failed)
-  if ($failed -gt 0) { $reasons += "$failed record(s) fail the gate" }
-  if (-not (Test-InList @('pass', 'review', 'fail') $overall)) { $reasons += "the gate result '$overall' is not one the pipeline knows" }
-  elseif ($overall -eq 'fail' -and $failed -eq 0 -and $reasons.Count -eq 0) { $reasons += 'the gate failed' }
-  foreach ($d in @(Get-Prop $Gate 'decisions')) {
-    if ($null -eq $d -or [string](Get-Prop $d 'verdict') -ne 'review') { continue }
-    $id = [string](Get-Prop $d 'resourceId')
-    $notes = @(@(Get-Prop $d 'notes') | ForEach-Object { [string]$_ })
-    $why = $false
-    if (@($notes | Where-Object { $_ -like 'review boundary *' -and $_ -notlike 'review boundary accepted:*' }).Count -gt 0) { $reasons += "review boundary waiting for acknowledgeReview: $id"; $why = $true }
-    if (@($notes | Where-Object { $_ -like 'review record: *' }).Count -gt 0) { $reasons += "review record waiting for acknowledgeReview: $id"; $why = $true }
-    if (-not $why -and @($notes | Where-Object { $_ -like '*; would be allowed with -AllowModify' }).Count -eq 0) { $reasons += "review verdict with no reason the pipeline knows: $id" }
-  }
-  return [pscustomobject]@{ ok = ($reasons.Count -eq 0); reasons = $reasons }
-}
-
-# The review items a run accepted with -AcknowledgeReview: review boundaries (resource and property) and review
-# records (resource and record type).
-function Get-AcceptedReviewItems($Gate) {
-  $items = @()
-  foreach ($d in @(Get-Prop $Gate 'decisions')) {
-    if ($null -eq $d) { continue }
-    foreach ($n in @(Get-Prop $d 'notes')) {
-      $m = [regex]::Match([string]$n, '^review boundary accepted: (.+)$')
-      if ($m.Success) { $items += ('boundary | {0} | {1}' -f ([string](Get-Prop $d 'resourceId')).ToLowerInvariant(), $m.Groups[1].Value) }
-    }
-  }
-  foreach ($r in @(Get-Prop $Gate 'reviewRecords')) {
-    if ($null -eq $r) { continue }
-    if ([string](Get-Prop $r 'status') -eq 'acknowledged with -AcknowledgeReview') {
-      $items += ('record | {0} | {1}' -f ([string](Get-Prop $r 'resourceId')).ToLowerInvariant(), [string](Get-Prop $r 'changeType'))
-    }
-  }
-  return @(Get-OrdinalSet $items)
-}
-
-# Review items accepted now that the approved dry run did not show.
-function Compare-ReviewItems($ApprovedGate, $NowGate) {
-  $want = @(Get-AcceptedReviewItems $ApprovedGate)
-  $have = @(Get-AcceptedReviewItems $NowGate)
-  return @($have | Where-Object { -not (Test-InList $want $_) })
-}
-
 # ---------------------------------------------------------------------------------------------------------------
-# The deployment request: what Run workflow asks for, and what the plan and the apply check again.
+# Bicep files: the files a unit is compiled from, and the inputs a branch's Bicep may not use.
 # ---------------------------------------------------------------------------------------------------------------
-
-# The option fields of a request, with the ID lists as string arrays.
-function Get-DeployOptions($Request) {
-  return [pscustomobject]@{
-    acknowledgeReview = [bool](Get-Prop $Request 'acknowledgeReview')
-    allowCreate = [string[]]@(@(Get-Prop $Request 'allowCreate') | Where-Object { $_ })
-    allowModify = [string[]]@(@(Get-Prop $Request 'allowModify') | Where-Object { $_ })
-    allowHeld = [string[]]@(@(Get-Prop $Request 'allowHeld') | Where-Object { $_ })
-  }
-}
-
-# Checks a deployment request against deploy/units.json and deploy/boundaries.json as the run's commit holds them.
-# $Request has unit, changeRef, reason, acknowledgeReview, allowCreate, allowModify and allowHeld. Returns the unit's
-# definition and the list of what is wrong (empty when the request is good).
-function Test-DeployRequest($Request, $UnitsDoc, $BoundariesDoc) {
-  $errors = @()
-  $unitDef = $null
-  $unitName = [string](Get-Prop $Request 'unit')
-  # A unit name is lower-case letters, digits and single hyphens, so a name with an invisible character never
-  # reaches the lookup or the workflow outputs.
-  if ($unitName -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*\z') { $errors += 'unit must be a unit name from deploy/units.json (lower-case letters, digits and hyphens)' }
-  else {
-    $unitDef = Find-UnitDef $UnitsDoc $unitName
-    if ($null -eq $unitDef) { $errors += "unit '$unitName' is not in deploy/units.json at this commit" }
-    else {
-      $unrunnable = Get-UnrunnableReason $unitDef
-      if ($unrunnable) { $errors += "unit '$unitName' cannot run in the pipeline: $unrunnable" }
-      if ($null -eq (Get-UnitTier $unitDef)) { $errors += "unit '$unitName' has the tier '$(Get-Prop $unitDef 'tier')' in deploy/units.json, which is neither absent (production) nor privileged" }
-      if (-not [bool](Get-Prop $unitDef 'enabled')) { $errors += "unit '$unitName' is disabled in deploy/units.json at this commit. Enable it in a code pull request first" }
-      $kind = [string](Get-Prop $unitDef 'kind')
-      if ($kind -ceq 'tenant') {
-        if (Get-Prop $unitDef 'subscription') { $errors += "unit '$unitName' is a tenant-kind unit and must have no subscription in deploy/units.json" }
-        $mg = Get-Prop $unitDef 'managementGroup'
-        if (-not ($mg -is [string]) -or $mg -cnotmatch '^[A-Za-z0-9._()-]{1,90}$') { $errors += "unit '$unitName' is a tenant-kind unit and must name its managementGroup in deploy/units.json" }
-      } elseif ($kind -ceq 'resourceGroup' -or $kind -ceq 'subscription') {
-        $sub = [string](Get-Prop $unitDef 'subscription')
-        if (-not (Get-Prop (Get-Prop $UnitsDoc 'subscriptions') $sub)) { $errors += "unit '$unitName' names subscription '$sub', which is not in the subscriptions list" }
-        if ($null -ne (Get-Prop $unitDef 'managementGroup')) { $errors += "unit '$unitName' names a managementGroup, and only a tenant-kind unit may" }
-      } else { $errors += "unit '$unitName' has the kind '$kind', which is not resourceGroup, subscription or tenant" }
-      if ($null -ne (Get-Prop $unitDef 'parameterOverrides')) { $errors += "unit '$unitName' has parameterOverrides, which the pipeline does not preview" }
-    }
-  }
-  $ref = Get-Prop $Request 'changeRef'
-  if (-not ($ref -is [string]) -or $ref -cnotmatch '^[A-Za-z0-9._/-]{3,64}$') { $errors += 'changeRef must be the change ticket number: 3 to 64 letters, digits or . _ / -' }
-  $reason = Get-Prop $Request 'reason'
-  if (-not ($reason -is [string]) -or -not $reason.Trim()) { $errors += 'reason must say what this deployment is for' }
-  elseif ($reason.Length -gt 500) { $errors += 'reason is longer than 500 characters' }
-  if (-not ((Get-Prop $Request 'acknowledgeReview') -is [bool])) { $errors += 'acknowledgeReview must be true or false' }
-
-  $prefix = $null
-  if ($null -ne $unitDef) { $prefix = Get-UnitIdPrefix $unitDef $UnitsDoc }
-  if ($null -ne $unitDef -and $prefix) {
-    # Read through PSObject, not Get-Prop, because a function return would unroll a list of one into a plain string.
-    foreach ($f in @('allowCreate', 'allowModify', 'allowHeld')) {
-      $p = $Request.PSObject.Properties[$f]
-      $val = $null
-      if ($null -ne $p) { $val = $p.Value }
-      $errors += @(Test-IdList $val $f $prefix)
-    }
-    $held = $Request.PSObject.Properties['allowHeld']
-    if ($null -ne $held -and $held.Value -is [System.Array]) {
-      foreach ($id in @($held.Value)) {
-        if ($id -is [string] -and $id -and $null -eq (Find-Hold (Get-Prop $BoundariesDoc 'holds') $id)) { $errors += "allowHeld entry '$id' matches no hold in deploy/boundaries.json" }
-      }
-    }
-  }
-  return [pscustomobject]@{ unitDef = $unitDef; errors = [string[]]$errors }
-}
-
-# True when the gate holds an effective change: a Create, Delete or Deploy record, or a Modify with at least one
-# changed property that is neither NoEffect nor covered by an inert boundary. A Modify that passes the gate without
-# any option holds only such properties, so it is no effective change. A Modify that does not pass, or one whose
-# changed properties the gate lists and name another reason, is one. When the gate lists no records, only its
-# counts are read, and a Modify count then counts as a change.
-function Test-HasChanges($Gate) {
-  $c = Get-Prop $Gate 'counts'
-  if ($null -eq $c) { return $false }
-  foreach ($k in @('Create', 'Delete', 'Deploy')) {
-    $v = Get-Prop $c $k
-    if ($null -ne $v -and [int]$v -gt 0) { return $true }
-  }
-  $m = Get-Prop $c 'Modify'
-  if ($null -eq $m -or [int]$m -le 0) { return $false }
-  $decisions = @(@(Get-Prop $Gate 'decisions') | Where-Object { $null -ne $_ })
-  if ($decisions.Count -eq 0) { return $true }
-  foreach ($d in $decisions) {
-    if ([string](Get-Prop $d 'changeType') -cne 'Modify') { continue }
-    if ([string](Get-Prop $d 'verdict') -cne 'pass') { return $true }
-    foreach ($r in @(@(Get-Prop $d 'propertyChanges') | Where-Object { $null -ne $_ })) {
-      $why = [string](Get-Prop $r 'decision')
-      if (-not ($why.StartsWith('no effect', [StringComparison]::Ordinal) -or $why -ceq 'listed boundary')) { return $true }
-    }
-  }
-  return $false
-}
-
-# The most hours a reviewed plan may wait before the apply.
-function Get-MaxPlanAgeHours { return (Get-EnvInt 'MIRROR_MAX_PLAN_AGE_HOURS' $script:DefaultMaxPlanAgeHours) }
-
-# The plan is recent enough for its apply. $Planned is the time the plan wrote.
-function Test-PlanAge([string]$Planned, [DateTimeOffset]$Now, [int]$MaxHours) {
-  $r = [DateTimeOffset]::MinValue
-  if (-not [DateTimeOffset]::TryParse($Planned, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$r)) {
-    return @('the plan has no readable time')
-  }
-  $age = ($Now - $r).TotalHours
-  if ($age -lt -0.1) { return @('the plan time is in the future') }
-  if ($age -gt $MaxHours) { return @(("the plan is {0:N1} hours old, and the limit is {1} hours (the repository variable MIRROR_MAX_PLAN_AGE_HOURS). Start the deployment again" -f $age, $MaxHours)) }
-  return @()
-}
-
-# The reviewed plan is a dry run of this unit at this commit from a clean tree, its gate ended PASS or REVIEW, and
-# it was taken with exactly the options of the run.
-function Test-PlanMatches($Header, $Options, [string]$Unit, [string]$Commit) {
-  $errors = @()
-  $f = $Header.fields
-  if (-not (Test-Same ([string]$f['Unit']) $Unit)) { $errors += "the plan is of unit '$($f['Unit'])', the run deploys '$Unit'" }
-  if ($Commit -cnotmatch '^[0-9a-f]{40}$') { $errors += "the commit '$Commit' is not a full commit ID" }
-  elseif (-not (Test-Same ([string]$f['Commit']) $Commit)) { $errors += "the plan was taken at '$($f['Commit'])', but this run is at $Commit. A plan taken from a tree with uncommitted changes never matches" }
-  if (-not (Test-Same ([string]$f['Mode']) 'dry run')) { $errors += "the plan's mode is '$($f['Mode'])', not 'dry run'" }
-  if (-not (Test-InList @('PASS', 'REVIEW') ([string]$f['Gate']))) { $errors += "the plan's gate ended '$($f['Gate'])'. Only PASS or REVIEW can be deployed" }
-  if (-not (Test-SameIdSet $Header.allowCreate $Options.allowCreate)) { $errors += 'the plan was taken with another allowCreate list than the options of the run' }
-  if (-not (Test-SameIdSet $Header.allowModify $Options.allowModify)) { $errors += 'the plan was taken with another allowModify list than the options of the run' }
-  if (-not (Test-SameIdSet $Header.allowHeld $Options.allowHeld)) { $errors += 'the plan was taken with another allowHeld list than the options of the run' }
-  return $errors
-}
-
-# The records of a gate result as "<resource ID in lower case> | <change type> | <verdict>", apart from the resources
-# the options name, whose records the options are there to accept.
-function Get-PlanRecords($Gate, $Options) {
-  $named = @(@($Options.allowCreate) + @($Options.allowModify) + @($Options.allowHeld) | Where-Object { $_ } | ForEach-Object { $_.ToLowerInvariant() })
-  $items = @()
-  foreach ($d in @(Get-Prop $Gate 'decisions')) {
-    if ($null -eq $d) { continue }
-    $id = ([string](Get-Prop $d 'resourceId')).ToLowerInvariant()
-    if (Test-InList $named $id) { continue }
-    $items += ('{0} | {1} | {2}' -f $id, [string](Get-Prop $d 'changeType'), [string](Get-Prop $d 'verdict'))
-  }
-  return @(Get-OrdinalSet $items)
-}
-
-# What differs between the reviewed plan and a fresh dry run. Records only the fresh run shows, records only the plan
-# showed, and review items accepted now that the plan did not show.
-function Compare-PlanRecords($PlanGate, $FreshGate, $Options) {
-  $p = @(Get-PlanRecords $PlanGate $Options)
-  $f = @(Get-PlanRecords $FreshGate $Options)
-  $out = @()
-  foreach ($x in $f) { if (-not (Test-InList $p $x)) { $out += "new since the plan: $x" } }
-  foreach ($x in $p) { if (-not (Test-InList $f $x)) { $out += "gone since the plan: $x" } }
-  foreach ($x in @(Compare-ReviewItems $PlanGate $FreshGate)) { $out += "review item the plan did not show: $x" }
-  return $out
-}
-
-# Which option would accept each record that stops the gate, as lines for the job summary and the Run workflow
-# command that starts the same unit with those options. accepted is false when a record stops the gate and no
-# option can accept it.
-function Get-ExceptionHints($Gate, [string]$Unit) {
-  $create = @(); $modify = @(); $held = @(); $ack = $false; $other = @(); $lines = @()
-  foreach ($d in @(Get-Prop $Gate 'decisions')) {
-    if ($null -eq $d) { continue }
-    $v = [string](Get-Prop $d 'verdict')
-    if ($v -ne 'fail' -and $v -ne 'review') { continue }
-    $id = [string](Get-Prop $d 'resourceId'); $ct = [string](Get-Prop $d 'changeType')
-    $notes = @(@(Get-Prop $d 'notes') | ForEach-Object { [string]$_ })
-    if (@($notes | Where-Object { $_ -like 'outside the unit scope*' -or $_ -like 'change type * is never allowed' -or $_ -like 'Key Vault access policy delta*' }).Count -gt 0) { $other += $id; $lines += "- $id ($ct) stops the gate, and no option accepts it." }
-    elseif (@($notes | Where-Object { $_ -like 'held:*' }).Count -gt 0) { $held += $id; $lines += "- $id is held. The option allowHeld lifts the hold for one run." }
-    elseif ($v -eq 'fail' -and $ct -eq 'Create') { $create += $id; $lines += "- $id would be created. The option allowCreate accepts a new resource." }
-    elseif ($v -eq 'fail' -and $ct -eq 'Modify') { $modify += $id; $lines += "- $id would change. The option allowModify accepts the change the plan shows." }
-    elseif ($v -eq 'review') { $ack = $true; $lines += "- $id needs a person to read it. The option acknowledgeReview accepts the review items after that." }
-    else { $other += $id; $lines += "- $id ($ct) stops the gate, and no option accepts it." }
-  }
-  $cmd = "gh workflow run mirror-deploy-unit --ref master -f unit=$Unit -f changeRef=<ticket> -f reason=""<why>"" -f apply=true"
-  if ($ack) { $cmd += ' -f acknowledgeReview=true' }
-  if ($create.Count -gt 0) { $cmd += " -f allowCreate=$($create -join ',')" }
-  if ($modify.Count -gt 0) { $cmd += " -f allowModify=$($modify -join ',')" }
-  if ($held.Count -gt 0) { $cmd += " -f allowHeld=$($held -join ',')" }
-  return [pscustomobject]@{ lines = [string[]]$lines; command = $cmd; accepted = ($other.Count -eq 0 -and $lines.Count -gt 0) }
-}
-
-# The markdown of one plan, for the job summary: who and what at the top, then the verdict and the records.
-function Format-PlanMarkdown($Plan, $Verdict) {
-  $o = $Plan.options
-  $opts = @()
-  if ($o.acknowledgeReview) { $opts += 'acknowledgeReview' }
-  foreach ($k in @('allowCreate', 'allowModify', 'allowHeld')) { if (@($o.$k).Count -gt 0) { $opts += "$k ($(@($o.$k).Count))" } }
-  $lines = @("## Plan for $($Plan.unit)", '',
-    "- Scope: $($Plan.scope), tier $($Plan.tier), environment $($Plan.environment)",
-    "- Commit: $($Plan.commit), the tip of master when this run started",
-    "- Started by: $($Plan.startedBy), $($Plan.trigger)",
-    "- Change ticket: $($Plan.changeRef)",
-    "- Reason: $(ConvertTo-CodeSpan $Plan.reason)",
-    "- Options in force: $(if ($opts.Count -gt 0) { $opts -join ', ' } else { 'none' })")
-  foreach ($k in @('allowCreate', 'allowModify', 'allowHeld')) { foreach ($id in @($o.$k)) { $lines += "  - ${k}: $id" } }
-  $lines += @('', (Format-VerdictMarkdown $Verdict))
-  return ($lines -join "`n")
-}
 
 # Bicep text with its comments (// and /* */) turned into spaces. Line breaks stay, so a position still has its
 # line number. Strings stay, with the expressions inside ${...}, and a multi-line string ('''...''') stays as it
 # is. A multi-line string ends at the first three quotes and takes any quotes right after them, as Bicep reads it,
 # so '''x'''' is the text x'. Comments are read the way Bicep reads them, so a comment marker inside a string is text, and code after a
-# block comment on the same line is code. BlankCommentsAndMultiLineStrings also turns the inside of each
-# multi-line string into spaces, for a search that must find only statements, such as the using line of a
-# .bicepparam file. The input check keeps multi-line strings, because it refuses one where a path is expected.
+# block comment on the same line is code. A multi-line string stays, because the input check refuses one where a
+# path is expected.
 if (-not ('MirrorPipeline.BicepText' -as [type])) {
   Add-Type -Language CSharp -TypeDefinition @'
 namespace MirrorPipeline {
   public static class BicepText {
-    public static string BlankComments(string t) { return Blank(t, false); }
-    public static string BlankCommentsAndMultiLineStrings(string t) { return Blank(t, true); }
-    static string Blank(string t, bool blankMultiLine) {
+    public static string BlankComments(string t) {
       System.Text.StringBuilder sb = new System.Text.StringBuilder(t.Length);
       // -1 marks a single-quoted string, 0 or more an expression inside ${...} with that many open braces.
       System.Collections.Generic.List<int> stack = new System.Collections.Generic.List<int>();
@@ -757,9 +349,7 @@ namespace MirrorPipeline {
             int stop = e < 0 ? n : e + 3;
             // Bicep keeps any quote right after the closing three in the string, so '''x'''' is the text x'.
             if (e >= 0) { while (stop < n && t[stop] == '\'') { stop++; } }
-            if (!blankMultiLine) { sb.Append(t, i, stop - i); i = stop; continue; }
-            for (; i < stop; i++) { char d = t[i]; sb.Append(d == '\n' || d == '\r' ? d : ' '); }
-            continue;
+            sb.Append(t, i, stop - i); i = stop; continue;
           }
           stack.Add(-1); sb.Append(c); i++; continue;
         }
@@ -835,21 +425,22 @@ function Get-UnitFiles($UnitsDoc, [string]$Root) {
 }
 
 # The units a code change touches. Returns the units to preview (at most $script:MaxPreviewUnits) and
-# notes for the pull request comment. A change to a file
-# that judges every unit (bicepconfig.json in any folder, deploy/boundaries.json, scripts/deploy-unit.ps1)
-# previews nothing, because such a change needs a sweep. Bicep reads the bicepconfig.json nearest to each file, so
-# one in a subfolder judges every file below it.
+# notes for the job summary. A change to a file that every unit is compiled with (bicepconfig.json in any folder)
+# previews nothing, because such a change needs a preview of every unit. Bicep reads the bicepconfig.json nearest
+# to each file, so one in a subfolder applies to every file below it.
+# No standard tool names the deployments a changed Bicep file belongs to without compiling every unit, so the
+# units come from the references the files hold (module, using, the load functions).
 function Resolve-AffectedUnits([string[]]$ChangedPaths, $UnitsDoc, $UnitFiles, [string[]]$ChangedUnitEntries = @()) {
   $preview = New-Object System.Collections.Generic.List[string]
   $notes = New-Object System.Collections.Generic.List[string]
-  $sweep = $false
+  $all = $false
   $hits = New-Object 'System.Collections.Generic.HashSet[string]'
   foreach ($p in @($ChangedPaths)) {
     if (-not $p) { continue }
     $lp = $p.Replace('\', '/').ToLowerInvariant()
     if ($script:GlobalFiles -contains $lp -or $lp.EndsWith('/bicepconfig.json')) {
-      $sweep = $true
-      $notes.Add("$p changed. It judges every unit, so no single preview covers it. Run a read-only sweep of the enabled units before this is merged.")
+      $all = $true
+      $notes.Add("$p changed. Every unit is compiled with it, so no single preview covers it. Preview the units by hand before this is merged.")
       continue
     }
     $found = $false
@@ -863,17 +454,14 @@ function Resolve-AffectedUnits([string[]]$ChangedPaths, $UnitsDoc, $UnitFiles, [
   foreach ($u in @(Get-Prop $UnitsDoc 'units')) {
     $n = [string]$u.name
     if (-not $hits.Contains($n)) { continue }
-    $why = Get-UnrunnableReason $u
-    if ($why) { $notes.Add("$n cannot be previewed or deployed in the pipeline: $why."); continue }
-    if ($null -ne (Get-Prop $u 'parameterOverrides')) { $notes.Add("$n has parameterOverrides and is not previewed here."); continue }
     $preview.Add($n)
   }
-  if ($sweep -and $preview.Count -gt 0) { $preview.Clear() }
+  if ($all -and $preview.Count -gt 0) { $preview.Clear() }
   if ($preview.Count -gt $script:MaxPreviewUnits) {
-    $notes.Add("$($preview.Count) units are affected, more than the $($script:MaxPreviewUnits) a pull request previews. Run a read-only sweep instead.")
+    $notes.Add("$($preview.Count) units are affected, more than the $($script:MaxPreviewUnits) a pull request previews. Preview the units by hand instead.")
     $preview.Clear()
   }
-  return [pscustomobject]@{ preview = [string[]]$preview.ToArray(); notes = [string[]]$notes.ToArray(); sweep = $sweep }
+  return [pscustomobject]@{ preview = [string[]]$preview.ToArray(); notes = [string[]]$notes.ToArray(); all = $all }
 }
 
 # Unit entries that differ between two copies of deploy/units.json (added or changed), so enabling a unit
@@ -887,98 +475,6 @@ function Get-ChangedUnitEntries($OldDoc, $NewDoc) {
     if (-not $old.ContainsKey($n) -or -not (Test-Same $old[$n] (ConvertTo-CompactJson $u))) { $changed += $n }
   }
   return $changed
-}
-
-# The what-if a code pull request takes for one unit, with the same scope and file arguments deploy-unit.ps1
-# uses, at the validation level a reader identity can run.
-function Get-WhatIfArguments($UnitDef, $UnitsDoc, [string]$Root) {
-  $name = ('whatif-{0}-{1}' -f $UnitDef.name, [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) -replace '[^A-Za-z0-9._()-]', '-'
-  if ($name.Length -gt 64) { $name = $name.Substring(0, 64) }
-  $loc = [string](Get-Prop $UnitsDoc 'deploymentLocation')
-  if ([string]$UnitDef.kind -eq 'tenant') { $a = @('deployment', 'mg', 'what-if', '--management-group-id', [string](Get-Prop $UnitDef 'managementGroup'), '--location', $loc) }
-  else {
-    $subId = [string](Get-Prop (Get-Prop $UnitsDoc 'subscriptions') ([string]$UnitDef.subscription))
-    if ([string]$UnitDef.kind -eq 'resourceGroup') { $a = @('deployment', 'group', 'what-if', '--subscription', $subId, '--resource-group', [string]$UnitDef.resourceGroup) }
-    else { $a = @('deployment', 'sub', 'what-if', '--subscription', $subId, '--location', $loc) }
-  }
-  $a += @('--name', $name)
-  $prm = Get-Prop $UnitDef 'parameters'
-  if ($prm) { $a += @('--parameters', (Join-RepoPath $Root ([string]$prm))) }
-  else { $a += @('--template-file', (Join-RepoPath $Root ([string]$UnitDef.template))) }
-  $a += @('--result-format', 'FullResourcePayloads', '--validation-level', 'ProviderNoRbac', '--no-pretty-print', '-o', 'json')
-  return $a
-}
-
-# The Microsoft.Authorization resources a compiled template writes: role assignments, role definitions, policy
-# definitions, assignments and exemptions, and locks. Nested deployments (Bicep modules) are searched too. An
-# existing reference writes nothing and is left out. A resource behind a condition counts, because the condition
-# can be switched on. Returns one line per resource.
-function Find-AuthorizationResources($Template, [string]$Path = '') {
-  return @(Find-TemplateResources $Template @('Microsoft.Authorization/*') $Path)
-}
-
-# The privileged authorization a compiled template writes: a role definition, and a role assignment of Owner, User
-# Access Administrator or Role Based Access Control Administrator. A role assignment whose role the compiled
-# template does not show as a GUID (a parameter, say) counts too, because the check cannot tell which role it is.
-# Policy, exemptions, locks and the other role assignments pass. Returns one line per resource.
-function Find-PrivilegedAuthorization($Template, [string]$Path = '') {
-  $describe = {
-    param($Resource)
-    $type = [string](Get-Prop $Resource 'type')
-    if ($type -ieq 'Microsoft.Authorization/roleDefinitions') { return 'a role definition' }
-    $rid = Get-Prop (Get-Prop $Resource 'properties') 'roleDefinitionId'
-    if (-not ($rid -is [string])) { return 'the role cannot be read from the compiled template' }
-    $ids = @([regex]::Matches($rid, '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}') | ForEach-Object { $_.Value.ToLowerInvariant() })
-    if ($ids.Count -eq 0) { return 'the role cannot be read from the compiled template' }
-    foreach ($id in $ids) { if ($script:PrivilegedRoleIds -contains $id) { return "the role $id is Owner, User Access Administrator or Role Based Access Control Administrator" } }
-    return ''
-  }
-  return @(Find-TemplateResources $Template @('Microsoft.Authorization/roleDefinitions', 'Microsoft.Authorization/roleAssignments') $Path $describe)
-}
-
-# The data-access grants a compiled template writes ($script:DataGrantTypes), found the same way.
-function Find-DataAccessGrants($Template, [string]$Path = '') {
-  return @(Find-TemplateResources $Template $script:DataGrantTypes $Path)
-}
-
-# The resources of a compiled template whose type matches one of $Types (wildcards allowed), as
-# "<module > ><type> (<symbolic name or name>)". With $Describe, a block that takes the resource and returns the
-# reason it counts, or an empty string when it does not, only those resources are returned, each with its reason.
-function Find-TemplateResources($Template, [string[]]$Types, [string]$Path = '', [scriptblock]$Describe = $null) {
-  $hits = @()
-  # The property is read here and not through Get-Prop, because a function hands back a list of one as the item
-  # itself, and a template with one resource would then look like a template keyed by symbolic name.
-  $res = $null
-  if ($Template -is [System.Collections.IDictionary]) { if ($Template.Contains('resources')) { $res = $Template['resources'] } }
-  elseif ($null -ne $Template) { $rp = $Template.PSObject.Properties['resources']; if ($null -ne $rp) { $res = $rp.Value } }
-  if ($null -eq $res) { return $hits }
-  # A template in language version 2.0 keys its resources by symbolic name, an older one lists them.
-  $items = @()
-  if ($res -is [System.Collections.IList]) { $items = @($res | ForEach-Object { [pscustomobject]@{ key = ''; value = $_ } }) }
-  elseif ($res -is [System.Collections.IDictionary]) { $items = @($res.Keys | ForEach-Object { [pscustomobject]@{ key = [string]$_; value = $res[$_] } }) }
-  else { $items = @($res.PSObject.Properties | ForEach-Object { [pscustomobject]@{ key = $_.Name; value = $_.Value } }) }
-  foreach ($i in $items) {
-    $r = $i.value
-    if ($null -eq $r -or $r -is [string] -or $r -is [ValueType]) { continue }
-    if ([bool](Get-Prop $r 'existing')) { continue }
-    $type = [string](Get-Prop $r 'type')
-    $label = if ($i.key) { $i.key } else { [string](Get-Prop $r 'name') }
-    if ($label.Length -gt 100) { $label = $label.Substring(0, 100) + '...' }
-    if (@($Types | Where-Object { $type -like $_ }).Count -gt 0) {
-      # With a describing block, only a resource it gives a reason for is a hit.
-      if ($null -eq $Describe) { $hits += "$Path$type ($label)" }
-      else {
-        $why = [string](& $Describe $r)
-        if ($why) { $hits += "$Path$type ($label): $why" }
-      }
-    }
-    if ($null -ne (Get-Prop $r 'resources')) { $hits += @(Find-TemplateResources $r $Types $Path $Describe) }
-    if ($type -ieq 'Microsoft.Resources/deployments') {
-      $inner = Get-Prop (Get-Prop $r 'properties') 'template'
-      if ($null -ne $inner) { $hits += @(Find-TemplateResources $inner $Types "$Path$label > " $Describe) }
-    }
-  }
-  return $hits
 }
 
 # Inputs in Bicep files that could carry the job's sign-in or other runner files into a preview. A job that holds
@@ -1154,7 +650,7 @@ function Test-WorkflowHygiene([hashtable]$Files) {
       $errors += "${name}: names a mirror-production or mirror-privileged environment, and only mirror-deploy-unit.yml may"
     }
     # An environment name built from an expression could name a production environment without saying so.
-    if (-not $deployWorkflow -and $body -match '(?m)^\s*environment:\s*(\$\{\{|\{[^}]*\$\{\{)|(?m)^\s*environment:\s*\n\s+name:\s*[''"]?\$\{\{') {
+    if (-not $deployWorkflow -and $body -match '(?m)^\s*environment:[^\n]*\$\{\{|(?m)^\s*environment:\s*\n\s+name:[^\n]*\$\{\{') {
       $errors += "${name}: builds an environment name from an expression, and only mirror-deploy-unit.yml may"
     }
     foreach ($t in @('pull_request_target', 'workflow_run', 'repository_dispatch')) {
@@ -1162,6 +658,10 @@ function Test-WorkflowHygiene([hashtable]$Files) {
     }
     if ($body -match '(?<![A-Za-z0-9_])pull_request(?![A-Za-z0-9_])' -and $body -match '(?<![A-Za-z0-9_-])closed(?![A-Za-z0-9_-])' -and $body -match 'id-token:\s*write') {
       $errors += "${name}: requests id-token: write in a workflow that runs when a pull request is closed"
+    }
+    # Only the deploy workflow uses the action that writes to Azure.
+    if (-not $deployWorkflow -and $body -match '(?i)azure/bicep-deploy@') {
+      $errors += "${name}: uses azure/bicep-deploy, and only the apply job of mirror-deploy-unit.yml may"
     }
     # The jobs that sign in with the reader identity and run Bicep check the Bicep inputs first. The jobs that run a
     # branch's Bicep (mirror-pr, mirror-drift) also take master's scripts first. The plan job of the deploy workflow
@@ -1240,22 +740,40 @@ function Test-WorkflowHygiene([hashtable]$Files) {
           }
         }
       }
-      # The apply and the apply-privileged jobs are the only jobs in a production or a privileged environment. They
-      # wait for the plan jobs through the collect job, and the environment is built from the matrix value the
-      # collect job wrote and nothing else.
+      # The apply job is the only job in a production or a privileged environment, and the only one that uses the
+      # deployment action. It waits for the plan job, runs only on the first attempt of a run, because a re-run of
+      # the apply alone would deploy without a fresh plan, and its environment is built from the two matrix values
+      # the units job wrote (the tier and the scope of the unit) and nothing else. Before it signs in it checks
+      # that the plan is still current (master's tip is the commit of the run, and the plan is not too old),
+      # because the approval can come days after the plan. It never applies deny settings, and it never deletes a
+      # resource group or a management group.
       if ($jobsAt.Success) {
+        $sawApply = $false
         foreach ($k in 0..($heads.Count - 1)) {
           $to = if ($k + 1 -lt $heads.Count) { $heads[$k + 1].Index } else { $jobText.Length }
           $job = $jobText.Substring($heads[$k].Index, $to - $heads[$k].Index)
           $jn = $heads[$k].Groups['job'].Value
           if ($jn -ceq 'apply') {
-            if ($job -notmatch '(?m)^    environment:[ \t]*mirror-production-\$\{\{ matrix\.scope \}\}[ \t]*$') { $errors += "${name}: the apply job must have environment: mirror-production-`${{ matrix.scope }} and no other environment" }
-            if ($job -notmatch '(?m)^    needs:.*collect') { $errors += "${name}: the apply job must need the collect job" }
-          } elseif ($jn -ceq 'apply-privileged') {
-            if ($job -notmatch '(?m)^    environment:[ \t]*mirror-privileged-\$\{\{ matrix\.scope \}\}[ \t]*$') { $errors += "${name}: the apply-privileged job must have environment: mirror-privileged-`${{ matrix.scope }} and no other environment" }
-            if ($job -notmatch '(?m)^    needs:.*collect') { $errors += "${name}: the apply-privileged job must need the collect job" }
-          } elseif ($job -match 'mirror-(production|privileged)-') { $errors += "${name}: the job $jn names a mirror-production or mirror-privileged environment, and only the apply and apply-privileged jobs may" }
+            $sawApply = $true
+            if ($job -notmatch '(?m)^    environment:[ \t]*mirror-\$\{\{ matrix\.tier \}\}-\$\{\{ matrix\.scope \}\}[ \t]*$') { $errors += "${name}: the apply job must have environment: mirror-`${{ matrix.tier }}-`${{ matrix.scope }} and no other environment" }
+            if ($job -notmatch '(?m)^    needs:.*plan') { $errors += "${name}: the apply job must need the plan job" }
+            if ($job -notmatch "(?m)^    if:[^\n]*github\.run_attempt == '1'") { $errors += "${name}: the apply job must run only on the first attempt of a run (github.run_attempt == '1' in its condition)" }
+            $current = $job.IndexOf('- name: Check the plan is still current', [StringComparison]::Ordinal)
+            $signIn = $job.IndexOf('azure/login@', [StringComparison]::Ordinal)
+            if ($current -lt 0 -or ($signIn -ge 0 -and $current -gt $signIn) -or $job -notmatch 'git/ref/heads/master' -or $job -notmatch 'github\.sha' -or $job -notmatch 'needs\.plan\.outputs\.planned') {
+              $errors += "${name}: the apply job must check that the plan is still current before the Azure sign-in (the step ""Check the plan is still current"", which compares master's tip with github.sha and reads the time of the plan from needs.plan.outputs.planned)"
+            }
+            if ($job -notmatch '(?m)^[ \t]*operation:[ \t]*create[ \t]*$' -or $job -notmatch '(?m)^[ \t]*deny-settings-mode:[ \t]*none[ \t]*$') { $errors += "${name}: the apply job must create the stack with azure/bicep-deploy (operation: create) and with deny-settings-mode: none" }
+            if ($job -notmatch '(?m)^[ \t]*action-on-unmanage-resources:[ \t]*\$\{\{ matrix\.unmanage \}\}[ \t]*$') { $errors += "${name}: the apply job must take action-on-unmanage-resources from the unit's row (`${{ matrix.unmanage }}), because stackDeletes is read and refused for some units in that row" }
+            foreach ($g in @('resourcegroups', 'managementgroup', 'managementgroups')) {
+              if ($job -notmatch "(?m)^[ \t]*action-on-unmanage-${g}:[ \t]*detach[ \t]*`$") { $errors += "${name}: the apply job must keep action-on-unmanage-${g}: detach, so a stack never deletes a resource group or a management group" }
+            }
+          } else {
+            if ($job -match 'mirror-(production|privileged)-' -or $job -match '(?m)^\s*environment:\s*[^\n]*\$\{\{|(?m)^\s*environment:\s*\n\s+name:[^\n]*\$\{\{') { $errors += "${name}: the job $jn names a mirror-production or mirror-privileged environment or builds an environment name from an expression, and only the apply job may" }
+            if ($job -match '(?i)azure/bicep-deploy@') { $errors += "${name}: the job $jn uses azure/bicep-deploy, and only the apply job may" }
+          }
         }
+        if (-not $sawApply) { $errors += "${name}: the deploy workflow has no apply job" }
       }
     }
     # A token for Azure is requested only by a job that has an environment, because the federated credentials trust
@@ -1281,53 +799,6 @@ function Test-WorkflowHygiene([hashtable]$Files) {
     }
   }
   return $errors
-}
-
-# The verdict of one dry run, for the job summary and the pull request comment.
-function New-Verdict([string]$Unit, [string]$PreviewMode, [int]$Exit, [string]$EvidenceDir) {
-  $v = [ordered]@{ unit = $Unit; mode = $PreviewMode; exit = $Exit; gate = 'none'; approvable = $null; technical = $false; counts = ''; reasons = @(); summary = @() }
-  $sum = $null; $gate = $null
-  if ($EvidenceDir -and (Test-Path -LiteralPath $EvidenceDir)) {
-    $sum = @(Get-ChildItem -LiteralPath $EvidenceDir -Recurse -Filter 'pre-summary.txt' -File | Sort-Object LastWriteTime | Select-Object -Last 1)
-    $g = @(Get-ChildItem -LiteralPath $EvidenceDir -Recurse -Filter 'pre-gate.json' -File | Sort-Object LastWriteTime | Select-Object -Last 1)
-    if ($g.Count -eq 1) { $gate = ConvertFrom-Json @MirrorJsonArgs -InputObject ([IO.File]::ReadAllText($g[0].FullName)) }
-    if ($sum.Count -eq 1) {
-      $lines = [IO.File]::ReadAllLines($sum[0].FullName)
-      $h = Read-DryRunHeader $lines
-      $v.gate = [string]$h.fields['Gate']
-      $v.counts = [string]$h.fields['Counts']
-      $v.summary = $lines
-    } else {
-      $stop = @(Get-ChildItem -LiteralPath $EvidenceDir -Recurse -Filter 'stop.txt' -File | Select-Object -Last 1)
-      if ($stop.Count -eq 1) { $v.summary = [IO.File]::ReadAllLines($stop[0].FullName) }
-    }
-  }
-  if ($null -eq $gate -or ($Exit -ne 0 -and $Exit -ne 1)) {
-    $v.technical = $true
-    $v.reasons = @("no gate result (exit $Exit). The preview could not run, so read the job log")
-  } elseif ($PreviewMode -eq 'plan') {
-    $t = Test-Approvable $gate
-    $v.approvable = [bool]$t.ok
-    $v.reasons = @($t.reasons)
-  }
-  return [pscustomobject]$v
-}
-
-function Format-VerdictMarkdown($Verdict) {
-  $lines = @("### $($Verdict.unit) ($($Verdict.mode))", '')
-  if ($Verdict.technical) { $lines += "**Could not preview.** $(@($Verdict.reasons) -join '; ')" }
-  elseif ($Verdict.mode -eq 'plan') {
-    if ($Verdict.approvable) { $lines += "Gate **$($Verdict.gate)**, approvable. Counts: $($Verdict.counts)" }
-    else { $lines += "Gate **$($Verdict.gate)**, **not approvable**: $(@($Verdict.reasons) -join '; ')" }
-  } else {
-    $lines += "Gate **$($Verdict.gate)** (for information, a deliberate change shows as FAIL until a deployment names it in allowModify). Counts: $($Verdict.counts)"
-  }
-  $body = @($Verdict.summary) -join "`n"
-  if ($body) {
-    if ($body.Length -gt $script:MaxSummaryChars) { $body = $body.Substring(0, $script:MaxSummaryChars) + "`n... (cut, the whole summary is in the run's artifact)" }
-    $lines += @('', '```text', $body, '```')
-  }
-  return ($lines -join "`n")
 }
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -1361,186 +832,10 @@ function Invoke-HygieneMode {
     if (-not $actions.ContainsKey($short) -or -not $actions[$short]) { $errors += ".github/actions/$short/action.yml is missing, and the workflows use it" }
   }
   $errors += @(Test-ActionHygiene $actions)
-  if ($errors.Count -gt 0) { Stop-WithErrors 'Workflow rules broken' $errors }
-  Write-Summary @("Workflow rules: $($files.Count) workflow file(s) and $($actions.Count) local action(s) checked, all pass.")
-}
-
-# The Bicep CLI. In the preflight job the checked binary is first on PATH. On a workstation it is the copy the
-# Azure CLI installed (bin/bicep.exe on Windows, bin/bicep on Linux, in the Azure CLI folder).
-function Get-BicepExe {
-  $first = Get-Command bicep -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-  if ($first) { return $first.Source }
-  $cfg = if ($env:AZURE_CONFIG_DIR) { $env:AZURE_CONFIG_DIR } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) '.azure' }
-  $own = Join-Path (Join-Path $cfg 'bin') $(if ($script:Sep -eq '\') { 'bicep.exe' } else { 'bicep' })
-  if (Test-Path -LiteralPath $own -PathType Leaf) { return $own }
-  Stop-Check 'no Bicep CLI found (bicep on PATH, or the copy in the bin folder of the Azure CLI folder)' 2
-}
-
-# The template a .bicepparam file names in its using line, as a full path, or '' when it has none. Azure deploys
-# that template when the unit is given with --parameters only, which is how deploy-unit.ps1 and the preview run it.
-# The file is read as Bicep reads it, so a using line inside a comment or a multi-line string is not taken, as in
-# preflight-validate.ps1.
-function Get-BicepparamUsing([string]$FullPath) {
-  if (-not (Test-Path -LiteralPath $FullPath -PathType Leaf)) { return '' }
-  $m = [regex]::Match([MirrorPipeline.BicepText]::BlankCommentsAndMultiLineStrings([IO.File]::ReadAllText($FullPath)), "(?m)^[ \t]*using\s+'([^'\\]+)'")
-  if (-not $m.Success) { return '' }
-  try { return [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $FullPath) (ConvertTo-NativePath $m.Groups[1].Value))) } catch { return '' }
-}
-
-# The compile cache. The preflight writes index.json and one file per compiled Bicep file into a folder, and the
-# folder reaches this script as MIRROR_COMPILE_CACHE. The index has format 1 and lists entries with a path (relative
-# to the repository root with /, or a full path for a file outside it), a kind ('parameters' or 'template'), the
-# name of the entry's file in the folder and the inputs of the compile, each with its path and SHA256. A parameters
-# entry's file holds the JSON object {parametersJson, templateJson} of bicep build-params, a template entry's file
-# holds the compiled template. The cache is used only when every input of the entry still exists and hashes the same,
-# so a changed file is compiled again, and only when the index names the Bicep release the workflow pins
-# (BICEP_VERSION, when it is set). A cache that is missing, unreadable or malformed means "compile", and never fails
-# the check.
-function Get-CompileCacheIndex([string]$Folder) {
-  if (-not $Folder) { return $null }
-  try {
-    $file = Join-Path $Folder 'index.json'
-    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $null }
-    $idx = ConvertFrom-Json @MirrorJsonArgs -InputObject ([IO.File]::ReadAllText($file))
-    if ($null -eq $idx -or $idx -isnot [pscustomobject]) { return $null }
-    $fmt = Get-Prop $idx 'format'
-    if (-not ($fmt -is [int] -or $fmt -is [long]) -or $fmt -ne 1) { return $null }
-    $entries = Get-Prop $idx 'entries'
-    if ($null -eq $entries -or $entries -is [string]) { return $null }
-    $pinned = Get-EnvValue 'BICEP_VERSION'
-    if ($pinned -and -not (Test-Same ([string](Get-Prop $idx 'bicep')) $pinned.TrimStart('v'))) { return $null }
-    return $idx
-  } catch { return $null }
-}
-
-# The full path of a path in the cache index: relative to $Root, or already a full path.
-function Resolve-CompileCachePath([string]$Path, [string]$Root) {
-  if (-not $Path) { return $null }
-  $native = ConvertTo-NativePath $Path
-  if ([IO.Path]::IsPathRooted($native)) { return [IO.Path]::GetFullPath($native) }
-  return [IO.Path]::GetFullPath((Join-Path $Root $native))
-}
-
-# The text of the cached compile of one file, or $null when the cache has no usable entry for it. $Kind is
-# 'parameters' for a .bicepparam file and 'template' for a .bicep file. Paths match as the system compares file names
-# (ignoring case on Windows, exactly on Linux). $HashMemo holds the hashes already taken in this run, keyed by full
-# path, so a file shared by many units is hashed once. Pass a fresh table from New-PathTable for a fresh run, whose
-# keys compare as the system compares file names.
-function New-PathTable {
-  $cmp = if ($script:PathCompare -eq [StringComparison]::OrdinalIgnoreCase) { [StringComparer]::OrdinalIgnoreCase } else { [StringComparer]::Ordinal }
-  return (New-Object System.Collections.Hashtable -ArgumentList @($cmp))
-}
-
-function Get-CompileCacheText([string]$Folder, [string]$FullPath, [string]$Kind, [string]$Root, [hashtable]$HashMemo = (New-PathTable)) {
-  try {
-    $idx = Get-CompileCacheIndex $Folder
-    if ($null -eq $idx) { return $null }
-    $want = [IO.Path]::GetFullPath($FullPath)
-    foreach ($e in @(Get-Prop $idx 'entries')) {
-      if ($null -eq $e) { continue }
-      $ep = Resolve-CompileCachePath ([string](Get-Prop $e 'path')) $Root
-      if (-not $ep -or -not [string]::Equals($ep, $want, $script:PathCompare)) { continue }
-      if (-not (Test-Same ([string](Get-Prop $e 'kind')) $Kind)) { continue }
-      $name = [string](Get-Prop $e 'file')
-      if (-not $name -or -not (Test-Same $name ([IO.Path]::GetFileName($name)))) { continue }
-      $inputs = @(Get-Prop $e 'inputs')
-      if ($inputs.Count -eq 0 -or $null -eq $inputs[0]) { continue }
-      $same = $true
-      foreach ($in in $inputs) {
-        $ip = Resolve-CompileCachePath ([string](Get-Prop $in 'path')) $Root
-        $sha = [string](Get-Prop $in 'sha256')
-        if (-not $ip -or -not $sha -or -not (Test-Path -LiteralPath $ip -PathType Leaf)) { $same = $false; break }
-        if (-not $HashMemo.ContainsKey($ip)) { $HashMemo[$ip] = (Get-FileHash -LiteralPath $ip -Algorithm SHA256).Hash }
-        if (-not [string]::Equals($HashMemo[$ip], $sha, [StringComparison]::OrdinalIgnoreCase)) { $same = $false; break }
-      }
-      if (-not $same) { continue }
-      $cached = Join-Path $Folder $name
-      if (-not (Test-Path -LiteralPath $cached -PathType Leaf)) { continue }
-      return [IO.File]::ReadAllText($cached)
-    }
-  } catch { }
-  return $null
-}
-
-# Every unit (enabled or not) is read as Azure receives it, through its parameters file when it has one (bicep
-# build-params, whose template is the one the using line names, and that must be the unit's template in
-# deploy/units.json), else through its template. The compiled output comes from the compile cache of the preflight
-# when the cache holds it for unchanged files, and from the Bicep CLI otherwise. A production unit may declare no
-# role definition and no role assignment of Owner, User Access Administrator or Role Based Access Control
-# Administrator, and none whose role the compiled template does not show. A production deploy identity holds a
-# role-assignment right limited by a condition that excludes those three roles, so such a record would fail in the
-# middle of a deployment, and an identity that could write them could raise its own rights. Those records sit in the
-# privileged unit of the subscription.
-# Policy, exemptions, locks and the other role assignments are allowed in both tiers.
-# Contributor can grant access to data through a resource's own settings, so a data-access grant of the types in
-# $script:DataGrantTypes must be one of $script:KnownDataGrants.
-function Invoke-PipelineScopeMode {
-  $root = $script:RepoRoot
-  $units = Read-JsonFile (Join-RepoPath $root 'deploy/units.json')
-  $bicep = $null
-  $cacheFolder = Get-EnvValue 'MIRROR_COMPILE_CACHE'
-  $memo = New-PathTable
-  $errors = @(); $checked = 0; $grants = 0; $production = 0; $privileged = 0; $cached = 0
-  foreach ($u in @(Get-Prop $units 'units')) {
-    $name = [string](Get-Prop $u 'name')
-    $tier = Get-UnitTier $u
-    if ($null -eq $tier) { $errors += "${name}: the tier '$(Get-Prop $u 'tier')' is neither absent (production) nor privileged"; continue }
-    if ($tier -ceq 'privileged') { $privileged++ } else { $production++ }
-    $tpl = [string](Get-Prop $u 'template'); $prm = [string](Get-Prop $u 'parameters')
-    $full = Join-RepoPath $root $tpl
-    if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { $errors += "${name}: the template $tpl is not in the repository"; continue }
-    $doc = $null; $fromCache = $false
-    if ($prm -match '\.bicepparam$') {
-      $pfull = Join-RepoPath $root $prm
-      if (-not (Test-Path -LiteralPath $pfull -PathType Leaf)) { $errors += "${name}: the parameters file $prm is not in the repository"; continue }
-      $usingPath = Get-BicepparamUsing $pfull
-      if (-not [string]::Equals($usingPath, [IO.Path]::GetFullPath($full), $script:PathCompare)) {
-        $named = if ($usingPath) { ConvertTo-RepoPath $usingPath $root } else { 'no template' }
-        $errors += "${name}: $prm names $named in its using line, but the unit's template in deploy/units.json is $tpl"; continue
-      }
-      $text = $null
-      $hit = Get-CompileCacheText $cacheFolder $pfull 'parameters' $root $memo
-      if ($null -ne $hit) {
-        try { $text = [string](Get-Prop (ConvertFrom-Json @MirrorJsonArgs -InputObject $hit) 'templateJson'); $fromCache = [bool]$text } catch { $text = $null }
-      }
-      if (-not $fromCache) {
-        if (-not $bicep) { $bicep = Get-BicepExe }
-        $r = Invoke-Native $bicep @('build-params', $pfull, '--stdout') -AllowFailure
-        if ($r.Code -ne 0) { $errors += "${name}: bicep build-params of $prm failed (exit $($r.Code)). $(ConvertTo-OneLine $r.Err)"; continue }
-        $text = $null
-        try { $text = [string](Get-Prop (ConvertFrom-Json @MirrorJsonArgs -InputObject ($r.Out -join "`n")) 'templateJson') }
-        catch { $errors += "${name}: the template compiled through $prm is not valid JSON. $($_.Exception.Message)"; continue }
-      }
-      try { $doc = ConvertFrom-Json @MirrorJsonArgs -InputObject $text }
-      catch { $errors += "${name}: the template compiled through $prm is not valid JSON. $($_.Exception.Message)"; continue }
-    } else {
-      $text = Get-CompileCacheText $cacheFolder $full 'template' $root $memo
-      if ($null -ne $text) { $fromCache = $true }
-      else {
-        if (-not $bicep) { $bicep = Get-BicepExe }
-        $r = Invoke-Native $bicep @('build', $full, '--stdout') -AllowFailure
-        if ($r.Code -ne 0) { $errors += "${name}: bicep build of $tpl failed (exit $($r.Code)). $(ConvertTo-OneLine $r.Err)"; continue }
-        $text = $r.Out -join "`n"
-      }
-      try { $doc = ConvertFrom-Json @MirrorJsonArgs -InputObject $text } catch { $errors += "${name}: the compiled $tpl is not valid JSON. $($_.Exception.Message)"; continue }
-    }
-    if ($fromCache) { $cached++ }
-    if ($tier -ceq 'production') {
-      foreach ($h in @(Find-PrivilegedAuthorization $doc)) {
-        $errors += "$name is a production unit but declares $h. A production deploy identity cannot write it. Move the resource to the privileged unit of the subscription (a unit with ""tier"": ""privileged"" in deploy/units.json)"
-      }
-    }
-    foreach ($h in @(Find-DataAccessGrants $doc)) {
-      $grants++
-      if (-not (Test-InList $script:KnownDataGrants "$name|$h")) {
-        $errors += "$name is a unit and declares the data-access grant $h, which is not in the list of known grants in .github/scripts/mirror-pipeline.ps1. Contributor can write it, so a new one is an access change. Add it to the list after IT reviews it"
-      }
-    }
-    $checked++
-    Write-Host "$name ($(if ($prm -match '\.bicepparam$') { $prm } else { $tpl })) $(if ($fromCache) { 'read from the compile cache' } else { 'compiled' })"
-  }
-  if ($errors.Count -gt 0) { Stop-WithErrors 'A unit declares privileged authorization in the production tier, or a new data-access grant' $errors }
-  Write-Summary @("Units: $checked checked, $cached of them from the compile cache of the preflight and $($checked - $cached) compiled here. $production production units declare no role definition and no Owner, User Access Administrator or Role Based Access Control Administrator assignment, $privileged privileged units. $grants data-access grant(s), each in the list of known grants.")
+  $units = Read-JsonFile (Join-RepoPath $script:RepoRoot 'deploy/units.json')
+  $errors += @(Test-UnitRules $units)
+  if ($errors.Count -gt 0) { Stop-WithErrors 'Workflow rules or unit rules broken' $errors }
+  Write-Summary @("Workflow rules: $($files.Count) workflow file(s) and $($actions.Count) local action(s) checked, all pass. Unit rules: $(@(Get-Prop $units 'units').Count) unit(s) of deploy/units.json checked, all pass.")
 }
 
 # The paths whose change makes the portability job run the full preflight on its image: the scripts the preflight and
@@ -1636,8 +931,9 @@ function Invoke-PortabilityScopeMode {
 $script:DriftIssueTitle = 'The drift check found a difference between live Azure and the code, or a unit it could not check'
 $script:DriftMarker = '<!-- mirror-drift findings '
 
-# The state of one drift run: drift when a unit shows drift, error when a unit could not be checked, when the drift
-# job wrote no summary or when the job did not succeed, and clean otherwise.
+# The state of one drift run: drift when a unit shows drift, error when a unit could not be checked, when no drift
+# job wrote a result or when a job failed for another reason, and clean otherwise. A drift job fails on purpose when
+# its unit shows drift, so the result of the jobs counts only when no row says drift or error.
 function Get-DriftState($Rows, [string]$JobResult) {
   $r = @(@($Rows) | Where-Object { $null -ne $_ })
   if ($r.Count -eq 0) { return 'error' }
@@ -1647,7 +943,7 @@ function Get-DriftState($Rows, [string]$JobResult) {
   return 'clean'
 }
 
-# The findings of every unit that is neither clean nor skipped, as Markdown lines. Each finding is one line in a code
+# The findings of every unit that is not clean, as Markdown lines. Each finding is one line in a code
 # span, so text from Azure cannot make a link, a heading or HTML. The units and the findings of each unit are sorted
 # (ordinal), because Azure lists resources in no fixed order, and the same findings must give the same text.
 function Format-DriftFindings($Rows) {
@@ -1659,7 +955,7 @@ function Format-DriftFindings($Rows) {
   }
   foreach ($row in $list) {
     $res = [string](Get-Prop $row 'result')
-    if ($res -ceq 'clean' -or $res -ceq 'SKIP') { continue }
+    if ($res -ceq 'clean') { continue }
     $lines += "- $(ConvertTo-CodeSpan ([string](Get-Prop $row 'unit'))) $res"
     $found = [string[]]@(@(Get-Prop $row 'findings') | Where-Object { $null -ne $_ -and "$_" } | ForEach-Object { ConvertTo-CodeSpan ([string]$_) })
     if ($found.Count -gt 1) { [Array]::Sort($found, [Collections.IComparer][StringComparer]::Ordinal) }
@@ -1674,22 +970,22 @@ function Format-DriftIssueBody($Rows, [string]$State, [string]$RunUrl, [string]$
   $r = @(@($Rows) | Where-Object { $null -ne $_ })
   $count = { param($v) @($r | Where-Object { [string](Get-Prop $_ 'result') -ceq $v }).Count }
   $findings = @(Format-DriftFindings $r)
-  if ($r.Count -eq 0) { $findings = @("- The drift job ended before it wrote its summary (job result $(ConvertTo-CodeSpan $JobResult)). Its log says why.") }
-  elseif ($findings.Count -eq 0) { $findings = @("- No unit shows drift, but the drift job did not succeed (job result $(ConvertTo-CodeSpan $JobResult)). Its log says why.") }
+  if ($r.Count -eq 0) { $findings = @("- The drift jobs ended before they wrote a result (result $(ConvertTo-CodeSpan $JobResult)). Their logs say why.") }
+  elseif ($findings.Count -eq 0) { $findings = @("- No unit shows drift, but the drift jobs did not succeed (result $(ConvertTo-CodeSpan $JobResult)). Their logs say why.") }
   $what = if ($State -ceq 'drift') { 'Live Azure differs from the code in at least one unit.' } else { 'At least one unit could not be checked, so its drift is not known.' }
   $sha = [System.Security.Cryptography.SHA256]::Create()
   $fp = (($sha.ComputeHash($script:Utf8NoBom.GetBytes("$State`n" + ($findings -join "`n"))) | ForEach-Object { $_.ToString('x2') }) -join '')
   $lines = @(
     $what,
     '',
-    "Units checked: $($r.Count - (& $count 'SKIP')). Clean: $(& $count 'clean'). Drift: $(& $count 'DRIFT'). Not checked: $(& $count 'ERROR'). Skipped, because another unit measures them: $(& $count 'SKIP').",
+    "Units checked: $($r.Count). Clean: $(& $count 'clean'). Drift: $(& $count 'DRIFT'). Not checked: $(& $count 'ERROR').",
     '',
     'Findings:',
     '') + $findings + @(
     '',
     "Last run: $RunUrl",
     '',
-    'The drift artifact of the run holds the evidence of each unit. A difference is fixed in a code pull request when the code should follow live, or by a deployment with Run workflow when live should follow the code. The check never changes Azure. This issue closes itself when a run finds every unit clean.',
+    'Each finding is a change type and a resource, as the stack preview of the unit reports it. The job summary and the artifact of each unit''s drift job hold the whole preview. A difference is fixed in a code pull request when the code should follow live, or by a deployment with Run workflow when live should follow the code. A deployment writes the whole template again, so it also takes back every other difference of the unit. The check never changes Azure. A stack preview covers the resources the stack manages, so a resource added by hand beside them does not show here. This issue closes itself when a run finds every unit clean.',
     '',
     "$($script:DriftMarker)$fp -->")
   $text = $lines -join "`n"
@@ -1718,16 +1014,32 @@ function Find-DriftIssue([string]$Repo) {
                                  (Test-Same ([string](Get-Prop (Get-Prop $_ 'user') 'login')) $script:BotLogin) -and $null -eq (Get-Prop $_ 'pull_request') })
 }
 
+# The result of every drift job: the whatif-result.json each one uploaded, read from the folder the artifacts were
+# downloaded to. A unit of the matrix with no readable result gets an ERROR row, so the issue names it.
+function Read-DriftRows([string]$Folder, [string]$MatrixJson) {
+  $rows = @()
+  if ($Folder -and (Test-Path -LiteralPath $Folder -PathType Container)) {
+    foreach ($f in @(Get-ChildItem -LiteralPath $Folder -Recurse -File -Filter 'whatif-result.json' | Sort-Object FullName)) {
+      try { $row = Read-JsonFile $f.FullName } catch { continue }
+      if ([string](Get-Prop $row 'unit')) { $rows += $row }
+    }
+  }
+  $expected = @()
+  # Windows PowerShell hands a JSON list on as one object, so the list is kept first and walked after.
+  if ($MatrixJson) { try { $list = ConvertFrom-Json @MirrorJsonArgs -InputObject $MatrixJson; foreach ($m in @($list)) { $expected += [string](Get-Prop $m 'unit') } } catch { $expected = @() } }
+  foreach ($n in $expected) {
+    if (-not $n -or @($rows | Where-Object { Test-Same ([string](Get-Prop $_ 'unit')) $n }).Count -gt 0) { continue }
+    $rows += [pscustomobject]@{ unit = $n; result = 'ERROR'; findings = @('the drift job of this unit wrote no result. Its log says why') }
+  }
+  return $rows
+}
+
 function Invoke-DriftReportMode {
   $repo = Get-EnvValue 'GITHUB_REPOSITORY'
   if (-not $repo) { Stop-Check 'GITHUB_REPOSITORY is not set' 2 }
   $runUrl = Get-EnvValue 'RUN_URL' 'the run'
   $job = Get-EnvValue 'DRIFT_RESULT'
-  $rows = $null
-  if ($Dir) {
-    $f = Join-Path $Dir 'drift-summary.json'
-    if (Test-Path -LiteralPath $f -PathType Leaf) { try { $rows = @(Read-JsonFile $f) } catch { $rows = $null } }
-  }
+  $rows = @(Read-DriftRows $Dir (Get-EnvValue 'MATRIX'))
   $state = Get-DriftState $rows $job
   $open = @(Find-DriftIssue $repo)
   if ($state -ceq 'clean') {
@@ -1777,9 +1089,7 @@ function Test-CodeIsTrusted {
 # checkout, a bicepconfig.json below the root (Bicep reads the nearest one, and only the root copy is master's), a
 # unit whose files lie outside the repository, a unit name or measuredWith entry that is not lower-case letters,
 # digits and single hyphens, and a UNIT that does not name exactly one unit, character by character and with
-# the same case, as deploy-unit.ps1 matches it. The picked units are UNIT or every enabled unit, with the units
-# their measuredWith lists, because the drift check previews those too. A refusal writes a verdict when
-# -EvidenceRoot is given, so the pull request comment says why the unit was not previewed.
+# the same case. The picked units are UNIT or every enabled unit, with the units their measuredWith lists.
 function Invoke-InputCheckMode {
   if (Test-CodeIsTrusted) { Write-Host "The code is master's commit $(Get-EnvValue 'MIRROR_TRUSTED_COMMIT'). Nothing to check."; return }
   $root = $script:RepoRoot
@@ -1828,427 +1138,352 @@ function Invoke-InputCheckMode {
   $bicepFiles = @($entries | Where-Object { -not $_.dir -and -not $_.link -and $_.path -match '\.(bicep|bicepparam)$' } | ForEach-Object { $_.path })
   $findings += @(Find-UnsafeBicepInputs $bicepFiles $root)
   if ($findings.Count -gt 0) {
-    if ($EvidenceRoot -and $unit) {
-      New-Item -ItemType Directory -Force -Path $EvidenceRoot | Out-Null
-      $v = New-Verdict $unit (Get-EnvValue 'PREVIEW_MODE' 'by hand') 2 ''
-      $v.reasons = @("not previewed with the reader identity, because Bicep from a branch may not read environment variables, registry modules or files outside the repository, nor use a form the input check does not read: $($findings -join ' | ')")
-      [IO.File]::WriteAllText((Join-Path $EvidenceRoot 'verdict.json'), (ConvertTo-Json -InputObject $v -Depth 6), $script:Utf8NoBom)
-      [IO.File]::WriteAllText((Join-Path $EvidenceRoot 'verdict.md'), (Format-VerdictMarkdown $v), $script:Utf8NoBom)
-    }
     Stop-WithErrors 'Bicep from a branch uses inputs that are not run with the reader identity' $findings 2
   }
   Write-Host "Bicep inputs checked: $($bicepFiles.Count) Bicep file(s) in the checkout, $($pick.Count) unit(s). None reads an environment variable, a registry module or a file outside the repository."
 }
 
 
-function Invoke-PlanMode {
-  $head = Get-EnvValue 'HEAD_SHA'; $merge = Get-EnvValue 'MERGE_SHA'
-  # The workflow runs only for pull requests into master. This repeats it in case the trigger is ever widened.
-  $baseRef = Get-EnvValue 'BASE_REF'
-  if ($baseRef -cne 'master') { Stop-Check "this pull request goes into '$baseRef', and the pipeline previews only pull requests into master" }
-  # The commit of master this run compares with is the first parent of GitHub's test merge commit of the run (the
-  # merge of the branch into master's tip). The base commit in the pull request event can be older than master's tip
-  # after the branch is updated, so it is not used.
-  $x = ((Invoke-Git @('rev-parse', '--verify', "$merge^1") -AllowFailure).Out -join '').Trim()
-  if ($x -cnotmatch '^[0-9a-f]{40}$') { $x = '' }
-  # The preview comes only from a branch of this repository, never from a fork. A fork would run its own Bicep with
-  # the reader identity's token.
-  $repo = Get-EnvValue 'GITHUB_REPOSITORY'; $headRepo = Get-EnvValue 'HEAD_REPO'
-  if (-not $headRepo -or $headRepo -cne $repo) { Stop-Check "the pull request comes from the repository '$headRepo', and the pipeline previews only a branch of $repo" }
-  # The branch must be built on master's tip, so the preview and the merge see the same code. When master moves,
-  # the branch is updated and this workflow runs again on the new tip.
-  if (-not $x -or -not (Test-GitCommit $x)) { Stop-Check "this run's merge commit '$merge' has no first parent in the checkout, so the commit of master to preview is not known" 2 }
-  $tip = ((Invoke-Git @('rev-parse', '--verify', 'refs/remotes/origin/master') -AllowFailure).Out -join '').Trim()
-  if ($tip -cnotmatch '^[0-9a-f]{40}$') { Stop-Check 'the checkout has no copy of master (refs/remotes/origin/master), so master''s tip is not known' 2 }
-  if ($x -cne $tip) { Stop-Check "master's tip ($tip) is not the base of this run's merge commit ($x). Update the branch with master (Update branch on the pull request), and this workflow takes the preview again" }
-  if (-not (Test-GitAncestor $x $head)) { Stop-Check "the branch is behind master and does not contain master's commit $x. Update the branch with master (Update branch on the pull request), and this workflow takes the preview again" }
-  $entries = @(Get-GitChanges $x $head -ThreeDot)
 
-  # A code pull request previews the units it touches, for information.
+# ---------------------------------------------------------------------------------------------------------------
+# Units and their deployment stacks
+# ---------------------------------------------------------------------------------------------------------------
+
+# One row of a job matrix for one unit of deploy/units.json: the scope, the name and the files of its deployment
+# stack. A resource group unit is a resource group stack, a subscription unit a subscription stack and a
+# tenant-kind unit a management group stack at the unit's management group, each named mirror-<unit>. unmanage says
+# what a deployment does with a resource that left the template: detach, which leaves it in Azure, or delete when
+# the unit has "stackDeletes": true. A resource group and a management group are always detached, and a unit of a
+# scope in $script:NoStackDeletesScopes may not have stackDeletes. Throws when a field is missing or has a form the
+# stack commands do not take, so a matrix never holds a half-read unit.
+function Get-UnitRow($UnitDef, $UnitsDoc) {
+  $name = [string](Get-Prop $UnitDef 'name')
+  if ($name -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*\z') { throw "the unit name '$name' is not lower-case letters, digits and single hyphens" }
+  $tier = Get-UnitTier $UnitDef
+  if ($null -eq $tier) { throw "${name}: the tier must be privileged or left out" }
+  $deletes = Get-Prop $UnitDef 'stackDeletes'
+  if ($null -ne $deletes -and $deletes -isnot [bool]) { throw "${name}: stackDeletes must be true or false" }
+  if ($deletes -eq $true -and (Test-InList $script:NoStackDeletesScopes (Get-UnitScope $UnitDef))) {
+    throw "${name}: stackDeletes stays off for the units of the scope '$(Get-UnitScope $UnitDef)'. A deletion there is made by hand after IT agrees to it"
+  }
+  $template = [string](Get-Prop $UnitDef 'template'); $parameters = [string](Get-Prop $UnitDef 'parameters')
+  if ($template -cnotmatch '\.bicep\z') { throw "${name}: the template must be a .bicep file" }
+  if ($parameters -and $parameters -cnotmatch '\.bicepparam\z') { throw "${name}: the parameters file must be a .bicepparam file" }
+  foreach ($f in @($template, $parameters)) {
+    if ($f -and ($f -cnotmatch '^[A-Za-z0-9._/-]+\z' -or $f -match '(^|/)\.\.?(/|$)' -or $f.StartsWith('/'))) { throw "${name}: '$f' is not a path inside the repository" }
+  }
+  $location = [string](Get-Prop $UnitsDoc 'deploymentLocation')
+  if ($location -cnotmatch '^[a-z0-9]+\z') { throw "deploymentLocation '$location' is not an Azure location name" }
+  $row = [ordered]@{ unit = $name; tier = $tier; scope = (Get-UnitScope $UnitDef); stack = "$($script:StackPrefix)$name"; stackScope = ''
+                     subscriptionId = ''; resourceGroup = ''; managementGroup = ''; location = $location
+                     template = $template; parameters = $parameters; unmanage = $(if ($deletes -eq $true) { 'delete' } else { 'detach' }) }
+  $kind = [string](Get-Prop $UnitDef 'kind')
+  if ($kind -ceq 'tenant') {
+    $mg = [string](Get-Prop $UnitDef 'managementGroup')
+    if ($mg -cnotmatch '^[A-Za-z0-9._()-]{1,90}\z') { throw "${name}: managementGroup '$mg' is not a management group ID" }
+    $row.stackScope = 'managementGroup'; $row.managementGroup = $mg
+  } elseif ($kind -ceq 'subscription' -or $kind -ceq 'resourceGroup') {
+    $subId = [string](Get-Prop (Get-Prop $UnitsDoc 'subscriptions') ([string](Get-Prop $UnitDef 'subscription')))
+    if ($subId -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z') { throw "${name}: the subscription '$(Get-Prop $UnitDef 'subscription')' has no ID in the subscriptions list" }
+    if ($row.scope -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*\z') { throw "${name}: the subscription '$($row.scope)' is not lower-case letters, digits and single hyphens" }
+    $row.subscriptionId = $subId; $row.stackScope = 'subscription'
+    if ($kind -ceq 'resourceGroup') {
+      $rg = [string](Get-Prop $UnitDef 'resourceGroup')
+      if ($rg -notmatch '^[\w.()-]{1,90}\z') { throw "${name}: resourceGroup '$rg' is not a resource group name" }
+      $row.stackScope = 'resourceGroup'; $row.resourceGroup = $rg
+    }
+  } else { throw "${name}: the kind '$kind' is not resourceGroup, subscription or tenant" }
+  return [pscustomobject]$row
+}
+
+# True when the unit's template is a deploy-excluded file. Such a file holds the resources a deployment must not
+# write (connections without their credentials, extensions without their protected settings, held assignments),
+# so its unit is previewed and never deployed.
+function Test-DeployExcludedUnit($UnitDef) {
+  return ([string](Get-Prop $UnitDef 'template')).EndsWith('.deploy-excluded.bicep', [StringComparison]::OrdinalIgnoreCase)
+}
+
+# The rules every unit of deploy/units.json keeps, read from the file alone with nothing compiled. Each unit gives
+# a stack row (Get-UnitRow: the name, the tier, the kind, the files, the scope and stackDeletes), no two units
+# share a name, enabled and deployed are true or false, and the unit of a deploy-excluded file is neither enabled
+# nor marked deployed nor given stackDeletes. Returns one line per broken rule.
+function Test-UnitRules($UnitsDoc) {
+  $errors = @()
+  $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+  foreach ($u in @(Get-Prop $UnitsDoc 'units')) {
+    $name = [string](Get-Prop $u 'name')
+    if (-not $seen.Add($name)) { $errors += "deploy/units.json: the unit name '$name' is used more than once" }
+    try { $null = Get-UnitRow $u $UnitsDoc } catch { $errors += "deploy/units.json: $($_.Exception.Message)" }
+    foreach ($f in @('enabled', 'deployed')) {
+      $v = Get-Prop $u $f
+      if ($null -ne $v -and $v -isnot [bool]) { $errors += "deploy/units.json: ${name}: $f must be true or false" }
+    }
+    if (Test-DeployExcludedUnit $u) {
+      foreach ($f in @('enabled', 'deployed', 'stackDeletes')) {
+        if ((Get-Prop $u $f) -eq $true) { $errors += "deploy/units.json: ${name}: $f is true, and the unit of a deploy-excluded file is never deployed. Its resources are written by hand, or moved to the routine file of the group first" }
+      }
+    }
+  }
+  return $errors
+}
+
+# The resource ID of the deployment stack of a row.
+function Get-StackId($Row) {
+  $tail = "/providers/Microsoft.Resources/deploymentStacks/$($Row.stack)"
+  if ($Row.stackScope -ceq 'resourceGroup') { return "/subscriptions/$($Row.subscriptionId)/resourceGroups/$($Row.resourceGroup)$tail" }
+  if ($Row.stackScope -ceq 'subscription') { return "/subscriptions/$($Row.subscriptionId)$tail" }
+  if ($Row.stackScope -ceq 'managementGroup') { return "/providers/Microsoft.Management/managementGroups/$($Row.managementGroup)$tail" }
+  throw "unknown stack scope '$($Row.stackScope)'"
+}
+
+# The arguments of one Azure CLI stack command for a row. $Command is validate (az stack <scope> validate), whatif
+# (az stack-whatif <scope> create, the preview as JSON), show (az stack-whatif <scope> show, the same preview as
+# text with its property changes) or stack (az stack <scope> show, the stack itself). The settings are the ones
+# the apply job gives the deployment action: the same action on unmanage, no deny settings and the unit's own
+# parameters file. ProviderNoRbac checks read rights in place of write rights, so the reader identity can run it.
+function Get-StackArguments($Row, [string]$Root, [string]$Command, [string]$ResultName = '') {
+  $word = @{ resourceGroup = 'group'; subscription = 'sub'; managementGroup = 'mg' }[[string]$Row.stackScope]
+  if (-not $word) { throw "unknown stack scope '$($Row.stackScope)'" }
+  $where = if ($word -ceq 'group') { @('--subscription', [string]$Row.subscriptionId, '--resource-group', [string]$Row.resourceGroup) }
+           elseif ($word -ceq 'sub') { @('--subscription', [string]$Row.subscriptionId) }
+           else { @('--management-group-id', [string]$Row.managementGroup) }
+  if ($Command -ceq 'stack') { return @('stack', $word, 'show', '--name', [string]$Row.stack) + $where + @('-o', 'json') }
+  if ($Command -ceq 'show') { return @('stack-whatif', $word, 'show', '--name', $ResultName) + $where + @('--with-property-changes', 'true', '--no-color') }
+  if ($Command -ceq 'validate') { $a = @('stack', $word, 'validate', '--name', [string]$Row.stack) }
+  elseif ($Command -ceq 'whatif') { $a = @('stack-whatif', $word, 'create', '--name', $ResultName, '--stack-id', (Get-StackId $Row), '--retention-interval', $script:WhatIfRetention, '--no-pretty-print') }
+  else { throw "unknown stack command '$Command'" }
+  $a += $where
+  if ($word -cne 'group') { $a += @('--location', [string]$Row.location) }
+  $a += @('--action-on-unmanage', $(if ($Row.unmanage -ceq 'delete') { 'deleteResources' } else { 'detachAll' }), '--deny-settings-mode', 'none', '--validation-level', 'ProviderNoRbac')
+  if ($Row.parameters) { $a += @('--parameters', (Join-RepoPath $Root ([string]$Row.parameters))) }
+  else { $a += @('--template-file', (Join-RepoPath $Root ([string]$Row.template))) }
+  $a += @('-o', $(if ($Command -ceq 'validate') { 'none' } else { 'json' }))
+  return $a
+}
+
+# What a stack preview says, read from the JSON the Azure CLI returns for it. The counts are the resources of each
+# change type as Azure names them (create, modify, delete, detach, noChange, unsupported). Nothing is compared
+# here. result is clean when every resource is noChange, DRIFT when one is not, and ERROR when Azure did not finish
+# the preview. firstRun is true when the stack does not exist yet, and adopted counts the resources that exist
+# and come under the stack's management. diagnosticMessages holds the diagnostic messages Azure added, one line
+# each. A diagnostic means Azure could not evaluate a part of the stack, so a preview with one is not a full check
+# even when every listed resource is noChange.
+function Get-StackWhatIfVerdict($Doc, [string]$Unit) {
+  $props = Get-Prop $Doc 'properties'
+  $changes = @(@(Get-Prop (Get-Prop $props 'changes') 'resourceChanges') | Where-Object { $null -ne $_ })
+  $counts = [ordered]@{}
+  $findings = @(); $adopted = 0
+  foreach ($c in $changes) {
+    $t = [string](Get-Prop $c 'changeType'); if (-not $t) { $t = 'unknown' }
+    if ($counts.Contains($t)) { $counts[$t] = $counts[$t] + 1 } else { $counts[$t] = 1 }
+    if ($t -cne 'noChange') { $findings += "$t $([string](Get-Prop $c 'id'))" }
+    $m = Get-Prop $c 'managementStatusChange'
+    if ([string](Get-Prop $m 'before') -ceq 'notManaged' -and [string](Get-Prop $m 'after') -ceq 'managed' -and $t -cne 'create') { $adopted++ }
+  }
+  # PowerShell 7 before 7.5 reads the time as a date, and the other hosts keep the text.
+  $modified = Get-Prop $props 'deploymentStackLastModified'
+  $firstRun = if ($modified -is [datetime]) { $modified.Year -le 1 } elseif ($modified -is [DateTimeOffset]) { $modified.Year -le 1 } else { ([string]$modified).StartsWith('0001-01-01') }
+  $state = [string](Get-Prop $props 'provisioningState')
+  $failed = ($null -eq $props -or $null -ne (Get-Prop $props 'error') -or $state -ne 'succeeded')
+  if ($failed) { $findings = @("the preview ended in the state '$state'") + $findings }
+  $changed = @($findings).Count
+  $result = if ($failed) { 'ERROR' } elseif ($changed -gt 0) { 'DRIFT' } else { 'clean' }
+  $sorted = [string[]]@($findings)
+  if ($sorted.Count -gt 1) { [Array]::Sort($sorted, [StringComparer]::Ordinal) }
+  $more = $sorted.Count - $script:MaxFindingsPerUnit
+  if ($more -gt 0) { $sorted = [string[]]@($sorted[0..($script:MaxFindingsPerUnit - 1)]) + @("and $more more, in the job summary of the unit") }
+  $diag = @(@(Get-Prop $props 'diagnostics') | Where-Object { $null -ne $_ })
+  $messages = @()
+  foreach ($d in $diag) {
+    if ($messages.Count -ge $script:MaxDiagnostics) { $messages += "and $($diag.Count - $script:MaxDiagnostics) more, in the artifact of the job"; break }
+    $line = ConvertTo-OneLine "$([string](Get-Prop $d 'level')) $([string](Get-Prop $d 'code')): $([string](Get-Prop $d 'message')) $([string](Get-Prop $d 'target'))".Trim()
+    if ($line.Length -gt 400) { $line = $line.Substring(0, 400) + '...' }
+    $messages += $line
+  }
+  return [pscustomobject]@{ unit = $Unit; result = $result; counts = $counts; resources = $changes.Count; changed = $changed
+                            adopted = $adopted; firstRun = [bool]$firstRun; diagnostics = $diag.Count
+                            diagnosticMessages = [string[]]$messages; findings = $sorted }
+}
+
+# Text from Azure inside a fenced code block of a job summary. The fence is longer than any run of backticks in
+# the text, so the text cannot end the block. A text longer than $script:MaxSummaryChars is cut, with a line that
+# says so.
+function ConvertTo-CodeBlock([string]$Text, [string]$Language = 'text') {
+  $t = $Text -replace "`r`n?", "`n"
+  if ($t.Length -gt $script:MaxSummaryChars) { $t = $t.Substring(0, $script:MaxSummaryChars) + "`n`nThe text is cut here. The artifact of this job holds all of it." }
+  $longest = 0
+  foreach ($m in [regex]::Matches($t, '`+')) { if ($m.Length -gt $longest) { $longest = $m.Length } }
+  $fence = '`' * [Math]::Max(3, $longest + 1)
+  return "$fence$Language`n$t`n$fence"
+}
+
+# The job summary of one stack preview: where the stack is, what happens to a resource that left the template, the
+# count of each change type, and the preview as the Azure CLI prints it.
+function Format-StackWhatIfSummary($Row, $Verdict, [string]$PrettyText) {
+  $where = if ($Row.stackScope -ceq 'resourceGroup') { "the resource group $(ConvertTo-CodeSpan $Row.resourceGroup) of the subscription $(ConvertTo-CodeSpan $Row.scope)" }
+           elseif ($Row.stackScope -ceq 'subscription') { "the subscription $(ConvertTo-CodeSpan $Row.scope)" }
+           else { "the management group $(ConvertTo-CodeSpan $Row.managementGroup)" }
+  $leave = if ($Row.unmanage -ceq 'delete') { 'A resource that left the template is **deleted** by the deployment, because the unit has stackDeletes true. A resource group and a management group are only detached.' }
+           else { 'A resource that left the template is detached by the deployment, which leaves it in Azure.' }
+  $lines = @("### Stack preview of $(ConvertTo-CodeSpan $Row.unit)", '',
+             "Deployment stack $(ConvertTo-CodeSpan $Row.stack) at $where. $leave No deny settings.", '')
+  if ($Verdict.firstRun) { $lines += @("The stack does not exist yet, so this is the first run of the unit. $($Verdict.adopted) resource(s) that exist come under the stack's management. Before its first deployment a stack has no baseline, so this preview still lists differences that a deployment does not change.", '') }
+  $lines += @('| Change type | Resources |', '|---|---|')
+  foreach ($k in @($Verdict.counts.Keys)) { $lines += "| $(ConvertTo-CodeSpan $k) | $($Verdict.counts[$k]) |" }
+  if (@($Verdict.counts.Keys).Count -eq 0) { $lines += '| none | 0 |' }
+  $lines += ''
+  $lines += $(if ($Verdict.result -ceq 'clean') { "Every one of the $($Verdict.resources) resource(s) is noChange." }
+              elseif ($Verdict.result -ceq 'DRIFT') { "$($Verdict.changed) of the $($Verdict.resources) resource(s) would change. The preview below lists each one with its properties." }
+              elseif ($Verdict.diagnostics -gt 0 -and @($Verdict.findings).Count -gt 0 -and ([string]$Verdict.findings[0]).StartsWith('the preview is not a full check')) { "Every one of the $($Verdict.resources) resource(s) Azure evaluated is noChange, and the unit still counts as not checked." }
+              else { 'Azure did not finish the preview.' })
+  if ($Verdict.diagnostics -gt 0) {
+    $lines += @('', "**Azure added $($Verdict.diagnostics) diagnostic message(s) to the preview.** A diagnostic means Azure could not evaluate a part of the stack, so the preview does not show what a deployment does to that part. Read each one before the plan is approved.", '')
+    $lines += @($Verdict.diagnosticMessages | ForEach-Object { "- $(ConvertTo-CodeSpan $_)" })
+  }
+  if ($PrettyText) { $lines += @('', '<details><summary>The preview as the Azure CLI prints it</summary>', '', (ConvertTo-CodeBlock $PrettyText), '', '</details>') }
+  elseif (@($Verdict.findings).Count -gt 0) { $lines += @('', 'The text of the preview could not be read back, so the resources are listed without their properties.', '') + @($Verdict.findings | ForEach-Object { "- $(ConvertTo-CodeSpan $_)" }) }
+  return ($lines + '')
+}
+
+# The unit a job works on: UNIT must name exactly one unit of deploy/units.json, with the same case.
+function Get-RowFromEnvironment {
+  $units = Read-JsonFile (Join-RepoPath $script:RepoRoot 'deploy/units.json')
+  $name = Get-EnvValue 'UNIT'
+  $u = Find-UnitDef $units $name
+  if ($null -eq $u) { Stop-Check "the unit '$name' is not exactly one unit in deploy/units.json. A unit name is written with the same case as in the file" }
+  try { return (Get-UnitRow $u $units) } catch { Stop-Check "deploy/units.json: $($_.Exception.Message)" }
+}
+
+# Units mode. Writes the step output matrix, the rows of the units a workflow works on.
+function Invoke-UnitsMode {
+  $select = Get-EnvValue 'SELECT'
   $root = $script:RepoRoot
   $units = Read-JsonFile (Join-RepoPath $root 'deploy/units.json')
-  $baseUnitsText = Get-GitText $x 'deploy/units.json'
-  $changedEntries = @()
-  if ($baseUnitsText) { $changedEntries = @(Get-ChangedUnitEntries (Read-JsonText $baseUnitsText 'deploy/units.json at the base') $units) }
-  $res = Resolve-AffectedUnits @($entries | ForEach-Object { $_.Path }) $units (Get-UnitFiles $units $root) $changedEntries
+  $all = @(Get-Prop $units 'units')
+  $notes = @(); $pick = @()
+  if ($select -ceq 'unit') {
+    $name = Get-EnvValue 'UNIT'
+    $u = Find-UnitDef $units $name
+    if ($null -eq $u) { Stop-Check "the unit '$name' is not exactly one unit in deploy/units.json. A unit name is written with the same case as in the file" }
+    if (Test-DeployExcludedUnit $u) { Stop-Check "the unit $name is the unit of a deploy-excluded file, and such a unit is never deployed. Its resources are written by hand, or moved to the routine file of the group first" }
+    if ((Get-Prop $u 'enabled') -isnot [bool] -or -not (Get-Prop $u 'enabled')) { Stop-Check "the unit $name is not enabled in deploy/units.json. A unit is enabled in a code pull request before its first deployment" }
+    $pick = @($u)
+    # The change ticket and the reason of Run workflow, for the record of the run.
+    $notes += "Change ticket $(ConvertTo-CodeSpan (Get-EnvValue 'CHANGE_REF')). Reason: $(ConvertTo-CodeSpan (Get-EnvValue 'REASON')). Started by $(ConvertTo-CodeSpan (Get-EnvValue 'STARTED_BY'))."
+  } elseif ($select -ceq 'deployed') {
+    # The units whose stack exists. A unit gets "deployed": true in a code pull request after its first deployment.
+    $pick = @($all | Where-Object { (Get-Prop $_ 'deployed') -is [bool] -and (Get-Prop $_ 'deployed') -and -not (Test-DeployExcludedUnit $_) })
+    if ($pick.Count -eq 0) { $notes += 'No unit in deploy/units.json is marked "deployed": true, so there is no deployment stack to check.' }
+  } elseif ($select -ceq 'pullRequest') {
+    # The workflow runs only for pull requests into master, from a branch of this repository. A fork would run its
+    # own Bicep with the reader identity. This repeats both in case the trigger is ever widened.
+    $baseRef = Get-EnvValue 'BASE_REF'
+    if ($baseRef -cne 'master') { Stop-Check "this pull request goes into '$baseRef', and the pipeline previews only pull requests into master" }
+    $repo = Get-EnvValue 'GITHUB_REPOSITORY'; $headRepo = Get-EnvValue 'HEAD_REPO'
+    if (-not $headRepo -or $headRepo -cne $repo) { Stop-Check "the pull request comes from the repository '$headRepo', and the pipeline previews only a branch of $repo" }
+    # The run's commit is GitHub's test merge of the branch into master's tip. Its first parent is master's tip, so
+    # the difference between the two is what the merge would change.
+    $merge = Get-EnvValue 'MERGE_SHA'
+    $base = ((Invoke-Git @('rev-parse', '--verify', "$merge^1") -AllowFailure).Out -join '').Trim()
+    if ($base -cnotmatch '^[0-9a-f]{40}\z' -or -not (Test-GitCommit $base)) { Stop-Check "this run's merge commit '$merge' has no first parent in the checkout, so the commit of master to compare with is not known" 2 }
+    $entries = @(Get-GitChanges $base $merge)
+    $baseUnitsText = Get-GitText $base 'deploy/units.json'
+    $changedEntries = @()
+    if ($baseUnitsText) { $changedEntries = @(Get-ChangedUnitEntries (Read-JsonText $baseUnitsText 'deploy/units.json at the base') $units) }
+    $res = Resolve-AffectedUnits @($entries | ForEach-Object { $_.Path }) $units (Get-UnitFiles $units $root) $changedEntries
+    $pick = @($res.preview | ForEach-Object { Find-UnitDef $units $_ } | Where-Object { $null -ne $_ })
+    $notes = @("$($entries.Count) changed file(s), $($pick.Count) unit(s) to preview.") + @($res.notes)
+  } else { Stop-Check "SELECT '$select' is not unit, deployed or pullRequest" 2 }
   $rows = @()
-  foreach ($n in $res.preview) {
-    $u = Find-UnitDef $units $n
-    $rows += [ordered]@{ unit = $n; subscription = [string]$u.subscription; ref = $merge; mode = 'code' }
-  }
-  $kind = if ($rows.Count -gt 0) { 'code' } else { 'none' }
-  Set-StepOutput 'kind' $kind
+  foreach ($u in $pick) { try { $rows += (Get-UnitRow $u $units) } catch { Stop-Check "deploy/units.json: $($_.Exception.Message)" } }
   Set-StepOutput 'matrix' $(if ($rows.Count -gt 0) { ConvertTo-CompactJson @($rows) } else { '[]' })
-  Set-StepOutput 'notes' (ConvertTo-CompactJson @($res.notes))
-  Write-Summary (@("Code pull request: $($entries.Count) changed file(s), $($rows.Count) unit(s) to preview.") + @($res.notes | ForEach-Object { "- $_" }))
+  Write-Summary (@("Units: $(if ($rows.Count -gt 0) { (@($rows | ForEach-Object { ConvertTo-CodeSpan $_.unit }) -join ', ') } else { 'none' }).") + @($notes | ForEach-Object { "- $_" }))
 }
 
-function Invoke-GateScript([hashtable]$GateArgs, [string]$Unit) {
-  # Out-Host keeps anything the script writes out of this function's return value. The exit code still arrives.
-  & (Join-RepoPath $script:RepoRoot 'scripts/deploy-unit.ps1') -Unit $Unit @GateArgs | Out-Host
-  return $LASTEXITCODE
-}
-
-function Invoke-PreviewMode {
-  $unit = Get-EnvValue 'UNIT'; $previewMode = Get-EnvValue 'PREVIEW_MODE'
-  if (-not $EvidenceRoot) { Stop-Check '-EvidenceRoot is required' 2 }
-  New-Item -ItemType Directory -Force -Path $EvidenceRoot | Out-Null
-  $gateRoot = Join-Path $EvidenceRoot 'gate'
-  if ($previewMode -eq 'code') {
-    $units = Read-JsonFile (Join-RepoPath $script:RepoRoot 'deploy/units.json')
-    $u = Find-UnitDef $units $unit
-    if ($null -eq $u) { Stop-Check "unit $unit is not in deploy/units.json" 2 }
-    $wiFile = Join-Path $EvidenceRoot "whatif-$unit.json"
-    $r = Invoke-Native 'az' (Get-WhatIfArguments $u $units $script:RepoRoot) -AllowFailure
-    if ($r.Code -ne 0 -or -not ($r.Out -join '').Trim()) {
-      [IO.File]::WriteAllText((Join-Path $EvidenceRoot "whatif-$unit.err"), $r.Err, $script:Utf8NoBom)
-      $exit = 2
-    } else {
-      [IO.File]::WriteAllText($wiFile, ($r.Out -join "`n"), $script:Utf8NoBom)
-      $exit = Invoke-GateScript @{ WhatIfJson = @($wiFile); EvidenceRoot = $gateRoot } $unit
-    }
-  } else { Stop-Check "unknown preview mode '$previewMode'" 2 }
-  $v = New-Verdict $unit $previewMode $exit $gateRoot
-  [IO.File]::WriteAllText((Join-Path $EvidenceRoot 'verdict.json'), (ConvertTo-Json -InputObject $v -Depth 6), $script:Utf8NoBom)
-  [IO.File]::WriteAllText((Join-Path $EvidenceRoot 'verdict.md'), (Format-VerdictMarkdown $v), $script:Utf8NoBom)
-  if ($v.technical) { exit 2 }
-  exit 0
-}
-
-# Creates or edits the one comment this workflow keeps on the pull request.
-function Set-PullRequestComment([string]$Pr, [string]$Body) {
-  $repo = Get-EnvValue 'GITHUB_REPOSITORY'
-  $file = Join-Path ([IO.Path]::GetTempPath()) ("mirror-comment-{0}.md" -f [guid]::NewGuid().ToString('N'))
-  [IO.File]::WriteAllText($file, $Body, $script:Utf8NoBom)
-  try {
-    # Only a comment the workflow's own token wrote is edited. A person's comment that starts with the marker is
-    # left alone.
-    $existing = @(Invoke-GhApi "repos/$repo/issues/$Pr/comments?per_page=100" -Paginate | Where-Object {
-        ([string](Get-Prop $_ 'body')).StartsWith($script:CommentMarker) -and
-        [string](Get-Prop (Get-Prop $_ 'user') 'login') -ceq $script:BotLogin -and [string](Get-Prop (Get-Prop $_ 'user') 'type') -ceq 'Bot' })
-    if ($existing.Count -gt 0) { $r = Invoke-Native 'gh' @('api', '-X', 'PATCH', "repos/$repo/issues/comments/$($existing[0].id)", '-F', "body=@$file") -AllowFailure }
-    else { $r = Invoke-Native 'gh' @('api', "repos/$repo/issues/$Pr/comments", '-F', "body=@$file") -AllowFailure }
-    if ($r.Code -ne 0) { Write-Host "::warning::the pull request comment could not be written: $($r.Err)" }
-  } catch { Write-Host "::warning::the pull request comment could not be written: $_" }
-  finally { Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue }
-}
-
-
-# Splits a list of resource IDs (commas or line breaks) into an array.
-function Split-IdList([string]$Text) {
-  return [string[]]@(@($Text -split '[,\r\n]+') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-}
-
-# The options of a plan as the compact JSON the matrix carries to the plan job.
-function ConvertTo-OptionsJson($Options) {
-  return (ConvertTo-CompactJson ([ordered]@{ acknowledgeReview = [bool]$Options.acknowledgeReview; allowCreate = @($Options.allowCreate); allowModify = @($Options.allowModify); allowHeld = @($Options.allowHeld) }))
-}
-
-# The request a plan or an apply job checks, from the matrix row the plan job received.
-function Read-RowRequest {
-  $opts = Read-JsonText (Get-EnvValue 'OPTIONS' '{}') 'the options passed by the select job'
-  return [pscustomobject]@{
-    unit = Get-EnvValue 'UNIT'
-    changeRef = Get-EnvValue 'CHANGE_REF'
-    reason = Get-EnvValue 'REASON'
-    acknowledgeReview = [bool](Get-Prop $opts 'acknowledgeReview')
-    allowCreate = [string[]]@(@(Get-Prop $opts 'allowCreate') | Where-Object { $_ })
-    allowModify = [string[]]@(@(Get-Prop $opts 'allowModify') | Where-Object { $_ })
-    allowHeld = [string[]]@(@(Get-Prop $opts 'allowHeld') | Where-Object { $_ })
+# StackWhatIf mode. Validates and previews the deployment stack of one unit with the Azure CLI. The JSON of the
+# preview (whatif.json), its text (whatif.txt) and what it says (whatif-result.json) go to -Dir, and the summary
+# to the job summary. The script counts the change types Azure reports and compares nothing itself.
+function Invoke-StackWhatIfMode {
+  if (-not $Dir) { Stop-Check '-Dir is required' 2 }
+  New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+  $row = Get-RowFromEnvironment
+  $resultFile = Join-Path $Dir 'whatif-result.json'
+  $fail = {
+    param([string]$What, [string]$ErrorText)
+    $short = if ($ErrorText.Length -gt 6000) { $ErrorText.Substring(0, 6000) } else { $ErrorText }
+    $row0 = [pscustomobject]@{ unit = $row.unit; result = 'ERROR'; findings = @("$What failed. The job log and summary of the unit say why") }
+    [IO.File]::WriteAllText($resultFile, (ConvertTo-Json -InputObject $row0 -Depth 6), $script:Utf8NoBom)
+    Write-Summary @("### Stack preview of $(ConvertTo-CodeSpan $row.unit)", '', "**$What failed**, so there is no preview of this unit.", '', (ConvertTo-CodeBlock $short), '')
+    Write-Host "::error::$(ConvertTo-OneLine "$What of the unit $($row.unit) failed: $short")"
+    Set-StepOutput 'result' 'ERROR'
+    exit 2
   }
-}
-
-# The tip of master, from the GitHub API.
-function Get-MasterTip {
-  $repo = Get-EnvValue 'GITHUB_REPOSITORY'
-  return ([string](Get-Prop (Get-Prop (Invoke-GhApi "repos/$repo/branches/master") 'commit') 'sha'))
-}
-
-# Which unit a run of mirror-deploy-unit plans. Only Run workflow starts it, and it plans the unit it names, after the
-# checks of its inputs.
-function Invoke-SelectMode {
-  $evt = Get-EnvValue 'EVENT_NAME'
-  $root = $script:RepoRoot
-  $units = Read-JsonFile (Join-RepoPath $root 'deploy/units.json')
-  $bounds = Read-JsonFile (Join-RepoPath $root 'deploy/boundaries.json')
-  $actor = Get-EnvValue 'GITHUB_ACTOR' 'unknown'
-  $rows = @(); $notes = @()
-  if ((Get-EnvValue 'GITHUB_REF') -cne 'refs/heads/master') { Stop-Check "the run is on '$(Get-EnvValue 'GITHUB_REF')'. The deployment runs only on master" }
-  if ($evt -cne 'workflow_dispatch') { Stop-Check "the event '$evt' is not one this workflow starts on. The deploy workflow starts only with Run workflow on master" 2 }
-
-  $req = [pscustomobject]@{
-    unit = Get-EnvValue 'UNIT'
-    changeRef = Get-EnvValue 'CHANGE_REF'
-    reason = Get-EnvValue 'REASON'
-    acknowledgeReview = ((Get-EnvValue 'ACK') -eq 'true')
-    allowCreate = [string[]]@(Split-IdList (Get-EnvValue 'ALLOW_CREATE'))
-    allowModify = [string[]]@(Split-IdList (Get-EnvValue 'ALLOW_MODIFY'))
-    allowHeld = [string[]]@(Split-IdList (Get-EnvValue 'ALLOW_HELD'))
+  $r = Invoke-Native 'az' (Get-StackArguments $row $script:RepoRoot 'validate') -AllowFailure
+  if ($r.Code -ne 0) { & $fail 'The validation of the stack' ("$($r.Err)`n$($r.Out -join "`n")".Trim()) }
+  Write-Host "The stack $($row.stack) is valid."
+  # The preview is named after the stack and the run that took it, or after the time outside a workflow run.
+  $runId = Get-EnvValue 'GITHUB_RUN_ID'
+  $resultName = if ($runId -cmatch '^[0-9]+\z') { "$($row.stack)-$runId-$(Get-EnvValue 'GITHUB_RUN_ATTEMPT' '1')" } else { "$($row.stack)-$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" }
+  $r = Invoke-Native 'az' (Get-StackArguments $row $script:RepoRoot 'whatif' $resultName) -AllowFailure
+  $json = ($r.Out -join "`n").Trim()
+  if ($r.Code -ne 0 -or -not $json) { & $fail 'The preview of the stack' ("$($r.Err)`n$json".Trim()) }
+  [IO.File]::WriteAllText((Join-Path $Dir 'whatif.json'), $json, $script:Utf8NoBom)
+  # The time Azure returned the preview, in seconds since 1970 (UTC). The apply job refuses a plan that is too old.
+  Set-StepOutput 'taken' ([string][DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+  try { $doc = ConvertFrom-Json @MirrorJsonArgs -InputObject $json } catch { & $fail 'Reading the preview of the stack' "$($_.Exception.Message)" }
+  $verdict = Get-StackWhatIfVerdict $doc $row.unit
+  # The same stored preview as text, the way the Azure CLI prints it. The step goes on without it.
+  $pretty = ''
+  $s = Invoke-Native 'az' (Get-StackArguments $row $script:RepoRoot 'show' $resultName) -AllowFailure
+  if ($s.Code -eq 0) { $pretty = ($s.Out -join "`n").Trim(); [IO.File]::WriteAllText((Join-Path $Dir 'whatif.txt'), $pretty, $script:Utf8NoBom) }
+  else { Write-Host "::warning::$(ConvertTo-OneLine "the text of the preview could not be read back: $($s.Err)")" }
+  # The drift check answers whether live equals the code. A preview with a diagnostic cannot answer that for the
+  # part Azure did not evaluate, so the unit counts as not checked and never as clean.
+  $drift = (Get-EnvValue 'FAIL_ON_CHANGES') -ceq 'true'
+  $partial = ($drift -and $verdict.result -ceq 'clean' -and $verdict.diagnostics -gt 0)
+  if ($partial) {
+    $verdict.result = 'ERROR'
+    $verdict.findings = [string[]](@("the preview is not a full check, because Azure added $($verdict.diagnostics) diagnostic message(s)") + @($verdict.diagnosticMessages))
   }
-  $chk = Test-DeployRequest $req $units $bounds
-  if (@($chk.errors).Count -gt 0) { Stop-WithErrors 'The inputs of this run do not pass their checks' $chk.errors }
-  $rows += [ordered]@{ unit = $req.unit; subscription = [string]$chk.unitDef.subscription; scope = Get-UnitScope $chk.unitDef; tier = Get-UnitTier $chk.unitDef; trigger = 'Run workflow'
-                       apply = $(if ((Get-EnvValue 'APPLY') -eq 'true') { 'true' } else { 'false' }); startedBy = $actor
-                       changeRef = $req.changeRef; reason = $req.reason; options = (ConvertTo-OptionsJson (Get-DeployOptions $req)) }
-
-  Set-StepOutput 'matrix' $(if ($rows.Count -gt 0) { ConvertTo-CompactJson @($rows) } else { '[]' })
-  $lines = @("Units to plan: $($rows.Count).")
-  foreach ($r in $rows) { $lines += "- $($r.unit), change ticket $($r.changeRef)" }
-  $lines += @($notes | ForEach-Object { "- $_" })
-  Write-Summary $lines
-}
-
-# The dry run and the gate of one unit with the options of its row, judged for the reviewers. Writes the reviewed
-# plan: verdict.md and the job summary for the people, plan.json and the gate files for the apply.
-function Invoke-DeployPlanMode {
-  if (-not $EvidenceRoot) { Stop-Check '-EvidenceRoot is required' 2 }
-  New-Item -ItemType Directory -Force -Path $EvidenceRoot | Out-Null
-  $root = $script:RepoRoot
-  $units = Read-JsonFile (Join-RepoPath $root 'deploy/units.json')
-  $bounds = Read-JsonFile (Join-RepoPath $root 'deploy/boundaries.json')
-  $req = Read-RowRequest
-  $chk = Test-DeployRequest $req $units $bounds
-  if (@($chk.errors).Count -gt 0) { Stop-WithErrors "The request for $($req.unit) does not pass its checks at this commit" $chk.errors }
-  $sha = Get-EnvValue 'GITHUB_SHA'
-  $tip = Get-MasterTip
-  if ($tip -cne $sha) {
-    Stop-Check "master is now at $tip and this run started at $sha. A plan belongs to one commit, so nothing is deployed from this run. Start Run workflow on master again for $($req.unit)"
-  }
-  $opts = Get-DeployOptions $req
-  $gateRoot = Join-Path $EvidenceRoot 'gate'
-  $exit = Invoke-GateScript (Get-GateArguments $opts $gateRoot '') $req.unit
-  $v = New-Verdict $req.unit 'plan' $exit $gateRoot
-  $gateFile = @(Get-ChildItem -LiteralPath $gateRoot -Recurse -Filter 'pre-gate.json' -File -ErrorAction SilentlyContinue | Select-Object -First 1)
-  $gate = $null
-  if ($gateFile.Count -eq 1) { $gate = Read-JsonFile $gateFile[0].FullName }
-  $trigger = Get-EnvValue 'TRIGGER' 'Run workflow'
-  $applyAsked = ((Get-EnvValue 'APPLY') -eq 'true')
-  $hasChanges = ($null -ne $gate -and (Test-HasChanges $gate))
-  $approvable = (-not $v.technical -and [bool]$v.approvable)
-  $offer = ($approvable -and $applyAsked)
-  $plan = [ordered]@{
-    schema = 2; unit = $req.unit; subscription = [string]$chk.unitDef.subscription; scope = Get-UnitScope $chk.unitDef; tier = Get-UnitTier $chk.unitDef
-    environment = Get-UnitEnvironment $chk.unitDef; commit = $sha
-    planned = [DateTimeOffset]::UtcNow.ToString('o'); trigger = $trigger; startedBy = Get-EnvValue 'STARTED_BY' 'unknown'
-    changeRef = $req.changeRef; reason = $req.reason; applyRequested = $applyAsked
-    options = [ordered]@{ acknowledgeReview = $opts.acknowledgeReview; allowCreate = @($opts.allowCreate); allowModify = @($opts.allowModify); allowHeld = @($opts.allowHeld) }
-    gate = $v.gate; counts = $v.counts; approvable = $approvable; hasChanges = $hasChanges; offerApply = $offer
-  }
-  [IO.File]::WriteAllText((Join-Path $EvidenceRoot 'plan.json'), (ConvertTo-Json -InputObject $plan -Depth 8), $script:Utf8NoBom)
-  [IO.File]::WriteAllText((Join-Path $EvidenceRoot 'verdict.json'), (ConvertTo-Json -InputObject $v -Depth 6), $script:Utf8NoBom)
-  $md = Format-PlanMarkdown ([pscustomobject]$plan) $v
-  [IO.File]::WriteAllText((Join-Path $EvidenceRoot 'verdict.md'), $md, $script:Utf8NoBom)
-  $tail = @()
-  if ($v.technical) { Write-Summary @($md); exit 2 }
-  if (-not $approvable) {
-    $tail += @('', '**Nothing deploys from this plan.** The gate stops on the records above.')
-    if ($null -ne $gate) {
-      $h = Get-ExceptionHints $gate $req.unit
-      if ($h.lines.Count -gt 0) { $tail += @('', 'What the options could accept:') + @($h.lines) }
-      if ($h.accepted) { $tail += @('', 'To deploy it with those options, start Run workflow for the same unit. Fill in the ticket and the reason, and check each ID first.', '', '```text', $h.command, '```') }
-    }
-    Write-Summary (@($md) + $tail)
+  [IO.File]::WriteAllText($resultFile, (ConvertTo-Json -InputObject $verdict -Depth 6), $script:Utf8NoBom)
+  Write-Summary (Format-StackWhatIfSummary $row $verdict $pretty)
+  Set-StepOutput 'result' $verdict.result
+  if ($partial) { Write-Host "::error::the preview of the unit $($row.unit) carries $($verdict.diagnostics) diagnostic message(s) of Azure, so it is not a full check of the unit"; exit 2 }
+  Write-Host "Stack preview of $($row.unit): $($verdict.result), $($verdict.changed) of $($verdict.resources) resource(s) would change."
+  if ($verdict.result -ceq 'ERROR') { Write-Host "::error::Azure did not finish the preview of the unit $($row.unit)"; exit 2 }
+  if ($verdict.result -ceq 'DRIFT' -and $drift) {
+    Write-Host "::error::the unit $($row.unit) differs from its code in $($verdict.changed) resource(s)"
     exit 1
   }
-  if (-not $applyAsked) { $tail += @('', 'This run was started as a plan only (apply is off). Nothing waits for a reviewer.') }
-  elseif (-not $hasChanges) { $tail += @('', 'No effective change: the plan holds no record a deployment would change. The apply job still waits for the reviewers of this unit''s environment, and a reviewer who did not start the run reads this plan, then selects Review deployments and Approve and deploy.') }
-  else { $tail += @('', 'The apply job waits for the reviewers of this unit''s environment. A reviewer who did not start the run reads this plan, then selects Review deployments and Approve and deploy.') }
-  Write-Summary (@($md) + $tail)
-  exit 0
 }
 
-# After the plan jobs. Reads each reviewed plan and lists the units whose apply waits for a reviewer, the production
-# units in applyMatrix and the privileged ones in privilegedMatrix.
-function Invoke-CollectMode {
-  $sha = Get-EnvValue 'GITHUB_SHA'
-  $want = @(); $mt = Get-EnvValue 'MATRIX'
-  if ($mt) { $tmp = ConvertFrom-Json @MirrorJsonArgs -InputObject $mt; $want = @($tmp) }
-  $plans = @()
-  if ($Dir -and (Test-Path -LiteralPath $Dir)) {
-    foreach ($f in @(Get-ChildItem -LiteralPath $Dir -Recurse -Filter 'plan.json' -File)) { $plans += Read-JsonFile $f.FullName }
-  }
-  $unitsDoc = Read-JsonFile (Join-RepoPath $script:RepoRoot 'deploy/units.json')
-  $apply = @(); $privileged = @(); $lines = @('## Plans of this run', '', '| Unit | Gate | Counts | What happens next |', '|---|---|---|---|')
-  foreach ($w in $want) {
-    $p = @($plans | Where-Object { (Test-Same ([string]$_.unit) ([string]$w.unit)) -and (Test-Same ([string]$_.commit) $sha) })
-    if ($p.Count -ne 1) { $lines += "| $($w.unit) | none | none | The plan did not finish, so nothing deploys. Read the plan job. |"; continue }
-    $x = $p[0]
-    $def = Find-UnitDef $unitsDoc ([string]$x.unit)
-    $defOk = ($null -ne $def -and $null -ne (Get-UnitTier $def) -and (Test-Same ([string]$x.scope) (Get-UnitScope $def)) -and (Test-Same ([string]$x.tier) (Get-UnitTier $def)))
-    if ($x.offerApply -and -not $defOk) { $lines += "| $($x.unit) | $($x.gate) | $($x.counts) | The plan names a scope or a tier that deploy/units.json does not give this unit, so nothing deploys. |"; continue }
-    $next = if ($x.offerApply) { 'Waiting for a reviewer in the apply job.' }
-            elseif (-not $x.approvable) { 'Not approvable. Nothing deploys.' }
-            elseif (-not $x.applyRequested) { 'Plan only.' }
-            else { 'Nothing to deploy.' }
-    $lines += "| $($x.unit) | $($x.gate) | $($x.counts) | $next |"
-    if ($x.offerApply -and ([string]$x.unit) -cmatch '^[a-z0-9]+(?:-[a-z0-9]+)*\z' -and ([string]$x.scope) -cmatch '^[a-z0-9]+(?:-[a-z0-9]+)*\z') {
-      $row = [ordered]@{ unit = [string]$x.unit; scope = [string]$x.scope }
-      if ((Get-UnitTier $def) -ceq 'privileged') { $privileged += $row } else { $apply += $row }
-    }
-  }
-  Set-StepOutput 'applyMatrix' $(if ($apply.Count -gt 0) { ConvertTo-CompactJson @($apply) } else { '[]' })
-  Set-StepOutput 'privilegedMatrix' $(if ($privileged.Count -gt 0) { ConvertTo-CompactJson @($privileged) } else { '[]' })
-  Write-Summary $lines
-}
-
-# The one reviewed plan in a folder, with the gate files that sit beside its dry run.
-function Get-ReviewedPlan([string]$Folder) {
-  $pj = @(Get-ChildItem -LiteralPath $Folder -Recurse -Filter 'plan.json' -File -ErrorAction SilentlyContinue)
-  $sums = @(Get-ChildItem -LiteralPath $Folder -Recurse -Filter 'pre-summary.txt' -File -ErrorAction SilentlyContinue)
-  $gates = @(Get-ChildItem -LiteralPath $Folder -Recurse -Filter 'pre-gate.json' -File -ErrorAction SilentlyContinue)
-  if ($pj.Count -ne 1 -or $sums.Count -ne 1 -or $gates.Count -ne 1 -or $sums[0].DirectoryName -ne $gates[0].DirectoryName) {
-    Stop-Check "the reviewed plan must hold exactly one plan.json, one pre-summary.txt and one pre-gate.json (the last two in the same folder), and it holds $($pj.Count), $($sums.Count) and $($gates.Count)" 2
-  }
-  return [pscustomobject]@{ plan = Read-JsonFile $pj[0].FullName; summary = $sums[0].FullName; gate = $gates[0].FullName }
-}
-
-# Before the apply signs in. Nothing may have moved since the reviewer read the plan.
-function Invoke-CheckApplyMode {
-  if ((Get-EnvValue 'GITHUB_RUN_ATTEMPT') -ne '1') { Stop-Check 're-runs never deploy. Start the deployment again with Run workflow on master' 2 }
-  $sha = Get-EnvValue 'GITHUB_SHA'; $unit = Get-EnvValue 'UNIT'; $tierWanted = Get-EnvValue 'TIER'
-  if ($tierWanted -cne 'production' -and $tierWanted -cne 'privileged') { Stop-Check "the job names the tier '$tierWanted', and it must be production or privileged" 2 }
-  $head = ((Invoke-Git @('rev-parse', 'HEAD')).Out -join '').Trim()
-  if (-not (Test-Same $head $sha)) { Stop-Check "checked out $head, the run is at $sha" 2 }
-  $dirty = ((Invoke-Git @('status', '--porcelain')).Out -join "`n").Trim()
-  if ($dirty) { Stop-Check "the working tree is not clean: $dirty" 2 }
-  $rp = Get-ReviewedPlan $Dir
-  $plan = $rp.plan
-  $errors = @()
-  if (-not (Test-Same ([string]$plan.unit) $unit)) { $errors += "the reviewed plan is of unit '$($plan.unit)', this job deploys '$unit'" }
-  if (-not (Test-Same ([string]$plan.commit) $sha)) { $errors += "the reviewed plan is of commit $($plan.commit), this run is at $sha" }
-  if (-not [bool]$plan.offerApply) { $errors += 'the reviewed plan did not offer an apply' }
-  $unitsNow = Read-JsonFile (Join-RepoPath $script:RepoRoot 'deploy/units.json')
-  $defNow = Find-UnitDef $unitsNow $unit
-  if ($null -eq $defNow) { $errors += "unit '$unit' is not in deploy/units.json" }
+# StackSummary mode. After the apply, reads the stack and writes its state and the count of the resources it
+# manages, detached, deleted and failed on to the job summary.
+function Invoke-StackSummaryMode {
+  $row = Get-RowFromEnvironment
+  $outcome = Get-EnvValue 'OUTCOME' 'unknown'
+  $lines = @("### Deployment of $(ConvertTo-CodeSpan $row.unit)", '', "The step that creates or updates the deployment stack $(ConvertTo-CodeSpan $row.stack) ended with $(ConvertTo-CodeSpan $outcome).", '')
+  $r = Invoke-Native 'az' (Get-StackArguments $row $script:RepoRoot 'stack') -AllowFailure
+  $doc = $null
+  if ($r.Code -eq 0) { try { $doc = ConvertFrom-Json @MirrorJsonArgs -InputObject ($r.Out -join "`n") } catch { $doc = $null } }
+  if ($null -eq $doc) { $lines += "The stack could not be read afterwards: $(ConvertTo-CodeSpan $r.Err)" }
   else {
-    $tierNow = Get-UnitTier $defNow
-    if ($null -eq $tierNow) { $errors += "unit '$unit' has a tier in deploy/units.json that is neither absent (production) nor privileged" }
-    else {
-      if (-not (Test-Same ([string]$plan.tier) $tierWanted)) { $errors += "the reviewed plan is of the tier '$($plan.tier)', and this job deploys the tier $tierWanted" }
-      if (-not (Test-Same $tierNow $tierWanted)) { $errors += "deploy/units.json gives unit '$unit' the tier $tierNow, and this job deploys the tier $tierWanted" }
-    }
-    if (-not (Test-Same ([string]$plan.scope) (Get-UnitScope $defNow))) { $errors += "the reviewed plan names the scope '$($plan.scope)', and deploy/units.json gives unit '$unit' the scope '$(Get-UnitScope $defNow)'" }
-  }
-  if ($errors.Count -gt 0) { Stop-WithErrors 'The reviewed plan is not the one this job deploys' $errors }
-  $tip = Get-MasterTip
-  if ($tip -cne $sha) { Stop-Check "master moved to $tip after the plan of commit $sha was reviewed. Nothing is deployed. Start the deployment again with Run workflow on master, so a new plan is reviewed" }
-  $errors += @(Test-PlanAge ([string]$plan.planned) ([DateTimeOffset]::UtcNow) (Get-MaxPlanAgeHours))
-  $units = Read-JsonFile (Join-RepoPath $script:RepoRoot 'deploy/units.json')
-  $bounds = Read-JsonFile (Join-RepoPath $script:RepoRoot 'deploy/boundaries.json')
-  $o = Get-DeployOptions $plan.options
-  $req = [pscustomobject]@{ unit = $unit; changeRef = [string]$plan.changeRef; reason = [string]$plan.reason; acknowledgeReview = $o.acknowledgeReview
-                            allowCreate = $o.allowCreate; allowModify = $o.allowModify; allowHeld = $o.allowHeld }
-  $errors += @((Test-DeployRequest $req $units $bounds).errors)
-  $errors += @(Test-PlanMatches (Read-DryRunHeader ([IO.File]::ReadAllLines($rp.summary))) $o $unit $sha)
-  $t = Test-Approvable (Read-JsonFile $rp.gate)
-  if (-not $t.ok) { $errors += @($t.reasons | ForEach-Object { "the reviewed plan is not approvable: $_" }) }
-  if ($errors.Count -gt 0) { Stop-WithErrors 'The reviewed plan can no longer be applied' $errors }
-  Write-Summary @("Reviewed plan of $unit at commit $sha checked after the approval. Master is still at that commit, the plan is recent, the unit is still enabled.")
-}
-
-# A fresh dry run with the options of the plan shows the same records as the plan, apart from the resources the
-# options name.
-function Invoke-ComparePlanMode {
-  if (-not $EvidenceRoot) { Stop-Check '-EvidenceRoot is required' 2 }
-  $unit = Get-EnvValue 'UNIT'
-  $rp = Get-ReviewedPlan $Dir
-  $o = Get-DeployOptions $rp.plan.options
-  # Exit 1 is the expected REVIEW of a dry run with allowModify.
-  $exit = Invoke-GateScript (Get-GateArguments $o $EvidenceRoot '') $unit
-  if ($exit -ne 0 -and $exit -ne 1) { Stop-Check "the fresh dry run stopped with exit $exit, so nothing was deployed" 2 }
-  $now = @(Get-ChildItem -LiteralPath $EvidenceRoot -Recurse -Filter 'pre-gate.json' -File | Sort-Object LastWriteTime | Select-Object -Last 1)
-  if ($now.Count -ne 1) { Stop-Check 'the fresh dry run wrote no pre-gate.json, so nothing was deployed' 2 }
-  $nowGate = Read-JsonFile $now[0].FullName
-  if ([string](Get-Prop $nowGate 'overall') -eq 'fail') { Stop-Check 'the gate fails now (read the compare evidence), so nothing was deployed' }
-  $diff = @(Compare-PlanRecords (Read-JsonFile $rp.gate) $nowGate $o)
-  if ($diff.Count -gt 0) { Stop-WithErrors 'The preview now differs from the reviewed plan. Nothing was deployed' $diff }
-  Write-Summary @("Fresh preview of ${unit}: the same records as the reviewed plan ($(@(Get-PlanRecords $nowGate $o).Count) record(s) compared, the resources the options name left out).")
-}
-
-function Invoke-ReportMode {
-  $kind = Get-EnvValue 'KIND' 'none'; $planResult = Get-EnvValue 'PLAN_RESULT'; $whatifResult = Get-EnvValue 'WHATIF_RESULT'
-  $runUrl = "$(Get-EnvValue 'GITHUB_SERVER_URL')/$(Get-EnvValue 'GITHUB_REPOSITORY')/actions/runs/$(Get-EnvValue 'GITHUB_RUN_ID')"
-  # ConvertFrom-Json hands a JSON list back as one object, so the result is assigned before @() spreads it.
-  $notes = @(); $nt = Get-EnvValue 'NOTES'; if ($nt) { $tmp = ConvertFrom-Json @MirrorJsonArgs -InputObject $nt; $notes = @($tmp) }
-  $rows = @(); $mt = Get-EnvValue 'MATRIX'; if ($mt) { $tmp = ConvertFrom-Json @MirrorJsonArgs -InputObject $mt; $rows = @($tmp) }
-  $verdicts = @()
-  if ($Dir -and (Test-Path -LiteralPath $Dir)) {
-    foreach ($f in @(Get-ChildItem -LiteralPath $Dir -Recurse -Filter 'verdict.json' -File)) { $verdicts += Read-JsonFile $f.FullName }
-  }
-  $fail = @()
-  if ($planResult -ne 'success') { $fail += 'the plan job did not pass (read the plan job log)' }
-  else {
-    foreach ($row in $rows) {
-      $v = @($verdicts | Where-Object { Test-Same ([string]$_.unit) ([string]$row.unit) })
-      if ($v.Count -eq 0) { $fail += "no verdict for $($row.unit) (the preview job $whatifResult)"; continue }
-      if ($v[0].technical) { $fail += "$($row.unit) could not be previewed" }
+    $p = if ($null -ne (Get-Prop $doc 'properties')) { Get-Prop $doc 'properties' } else { $doc }
+    $n = { param($k) @(Get-Prop $p $k | Where-Object { $null -ne $_ }).Count }
+    $aou = Get-Prop $p 'actionOnUnmanage'
+    $lines += @('| Stack | Value |', '|---|---|',
+      "| State | $(ConvertTo-CodeSpan ([string](Get-Prop $p 'provisioningState'))) |",
+      "| Managed resources | $(& $n 'resources') |", "| Detached in this deployment | $(& $n 'detachedResources') |",
+      "| Deleted in this deployment | $(& $n 'deletedResources') |", "| Failed | $(& $n 'failedResources') |",
+      "| Action on unmanage | resources $(ConvertTo-CodeSpan ([string](Get-Prop $aou 'resources'))), resource groups $(ConvertTo-CodeSpan ([string](Get-Prop $aou 'resourceGroups'))), management groups $(ConvertTo-CodeSpan ([string](Get-Prop $aou 'managementGroups'))) |",
+      "| Deny settings | $(ConvertTo-CodeSpan ([string](Get-Prop (Get-Prop $p 'denySettings') 'mode'))) |")
+    # The drift check previews only the units marked deployed, and the mark is set by hand.
+    $def = Find-UnitDef (Read-JsonFile (Join-RepoPath $script:RepoRoot 'deploy/units.json')) $row.unit
+    if ($outcome -ceq 'success' -and (Get-Prop $def 'deployed') -ne $true) {
+      $lines += @('', "**The unit $(ConvertTo-CodeSpan $row.unit) is not marked deployed yet.** Add ``""deployed"": true`` to its entry in deploy/units.json in a code pull request, or the weekly drift check never previews it.")
     }
   }
-  $lines = @($script:CommentMarker, '## Mirror preview', '')
-  switch ($kind) {
-    'code' { $lines += 'Code pull request. The previews below are for information. A change made on purpose shows as FAIL until a deployment of the unit names it in allowModify, and nothing deploys from a pull request. After the merge, a deployment starts only with Run workflow, and its apply waits for a reviewer.' }
-    default { $lines += 'No unit to preview.' }
-  }
-  if ($fail.Count -gt 0) { $lines += @('', '**This check fails:**') + @($fail | ForEach-Object { "- $_" }) }
-  if ($notes.Count -gt 0) { $lines += @('', '**Notes:**') + @($notes | ForEach-Object { "- $_" }) }
-  foreach ($v in $verdicts) { $lines += @('', (Format-VerdictMarkdown $v)) }
-  $lines += @('', "Run: $runUrl")
-  $body = $lines -join "`n"
-  if ($body.Length -gt $script:MaxSummaryChars) { $body = $body.Substring(0, $script:MaxSummaryChars) + "`n... (cut, read the run at $runUrl)" }
-  Write-Summary @($body)
-  $pr = Get-EnvValue 'PR'
-  if ($pr -and ($kind -ne 'none' -or $notes.Count -gt 0 -or $fail.Count -gt 0)) { Set-PullRequestComment $pr $body }
-  if ($fail.Count -gt 0) { Stop-WithErrors 'The mirror preview check fails' $fail }
-}
-
-function Get-ExitMeaning([string]$Code) {
-  switch ($Code) {
-    '0' { return 'deployed, and the second check passed' }
-    '1' { return 'the gate failed, or the changes differ from the reviewed plan. Nothing was deployed' }
-    '2' { return 'set-up, identity or tool error. Nothing was deployed' }
-    '3' { return 'the deployment failed or the second check failed. Stop and follow the rollback steps in REFERENCE.md' }
-    'error' { return 'the gate step stopped with an error before it returned an exit code. A deployment may have started, so read the step log and check the deployments of the scope before anything else' }
-    'started' { return 'the gate step started but ended without an exit code (cancelled or timed out). A deployment may still be running, so check the deployments of the scope before anything else' }
-    default { return 'the gate step did not run' }
-  }
-}
-
-function Invoke-DeploySummaryMode {
-  if (-not $EvidenceRoot) { Stop-Check '-EvidenceRoot is required' 2 }
-  New-Item -ItemType Directory -Force -Path $EvidenceRoot | Out-Null
-  $code = ''
-  $exitFile = Get-EnvValue 'GATE_EXIT_FILE'
-  if ($exitFile -and (Test-Path -LiteralPath $exitFile)) { $code = ([IO.File]::ReadAllText($exitFile)).Trim() }
-  $plan = $null
-  if ($Dir -and (Test-Path -LiteralPath $Dir)) {
-    $pj = @(Get-ChildItem -LiteralPath $Dir -Recurse -Filter 'plan.json' -File | Select-Object -First 1)
-    if ($pj.Count -eq 1) { $plan = Read-JsonFile $pj[0].FullName }
-  }
-  $record = [ordered]@{
-    unit = Get-EnvValue 'UNIT'
-    plan = $plan
-    commit = Get-EnvValue 'GITHUB_SHA'
-    startedBy = Get-EnvValue 'STARTED_BY'
-    workflowRun = Get-EnvValue 'GITHUB_RUN_ID'
-    runAttempt = Get-EnvValue 'GITHUB_RUN_ATTEMPT'
-    gateExit = $code
-    gateResult = Get-ExitMeaning $code
-    approval = 'Recorded in the run (Review deployments, with the reviewer and the comment) and in the audit log of the organization.'
-    written = [DateTimeOffset]::UtcNow.ToString('u')
-  }
-  [IO.File]::WriteAllText((Join-Path $EvidenceRoot 'pipeline-deployment.json'), (ConvertTo-Json -InputObject $record -Depth 10), $script:Utf8NoBom)
-  $lines = @("## Deployment of $(Get-EnvValue 'UNIT')", '')
-  if ($null -ne $plan) { $lines += @("Change ticket: $($plan.changeRef). Started by $($plan.startedBy), $($plan.trigger). Commit $($plan.commit).", '') }
-  $lines += @("Gate step exit: $(if ($code) { $code } else { 'none' }), $(Get-ExitMeaning $code).", '')
-  foreach ($name in @('post-summary.txt', 'pre-summary.txt', 'stop.txt', 'approval.txt')) {
-    $f = @(Get-ChildItem -LiteralPath $EvidenceRoot -Recurse -Filter $name -File -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '[\\/]compare[\\/]' } | Sort-Object LastWriteTime | Select-Object -Last 1)
-    if ($f.Count -eq 0) { continue }
-    $text = [IO.File]::ReadAllText($f[0].FullName)
-    if ($text.Length -gt 20000) { $text = $text.Substring(0, 20000) + "`n... (cut, the whole file is in the evidence artifact)" }
-    $lines += @("$name", '', '```text', $text.TrimEnd(), '```', '')
-  }
-  $lines += 'Download the evidence artifact and attach it to the change ticket.'
-  Write-Summary $lines
+  Write-Summary ($lines + '')
 }
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -2258,19 +1493,12 @@ if (-not $Mode) { return }
 try {
   switch ($Mode) {
     'Hygiene' { Invoke-HygieneMode }
-    'PipelineScope' { Invoke-PipelineScopeMode }
     'PortabilityScope' { Invoke-PortabilityScopeMode }
     'DriftReport' { Invoke-DriftReportMode }
     'InputCheck' { Invoke-InputCheckMode }
-    'Plan' { Invoke-PlanMode }
-    'Preview' { Invoke-PreviewMode }
-    'Report' { Invoke-ReportMode }
-    'Select' { Invoke-SelectMode }
-    'DeployPlan' { Invoke-DeployPlanMode }
-    'Collect' { Invoke-CollectMode }
-    'CheckApply' { Invoke-CheckApplyMode }
-    'ComparePlan' { Invoke-ComparePlanMode }
-    'DeploySummary' { Invoke-DeploySummaryMode }
+    'Units' { Invoke-UnitsMode }
+    'StackWhatIf' { Invoke-StackWhatIfMode }
+    'StackSummary' { Invoke-StackSummaryMode }
   }
 } catch {
   Stop-Check "$Mode failed: $($_.Exception.Message)" 2
