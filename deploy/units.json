@@ -129,6 +129,20 @@
       "notes": "A network security group, an application security group and a route table in rg-demo-lifecycle, a resource group created by hand for this unit alone. All are free. The unit shows a stack's whole life in the pipeline: a first run that only creates, an update, a resource that leaves the template and is detached, and a resource that leaves it and is deleted.",
       "deployed": true,
       "stackDeletes": true
+    },
+    {
+      "name": "demo-tenant-shape",
+      "kind": "tenant",
+      "subscription": null,
+      "resourceGroup": null,
+      "managementGroup": "mg-demo-stk",
+      "template": "infra/tenant/management-group-shape/main.bicep",
+      "parameters": "infra/tenant/management-group-shape/main.bicepparam",
+      "wave": 9,
+      "risk": "high",
+      "tier": "privileged",
+      "enabled": true,
+      "notes": "A child management group of mg-demo-stk, a group created by hand for this unit, and the link of one subscription to the child. It has the shape of the unit that declares a management group at tenant scope and places a subscription, and shows whether a management group stack can hold it."
     }
   ]
 }
