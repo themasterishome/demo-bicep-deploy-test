@@ -64,7 +64,9 @@ function Copy-Object($o) { return (ConvertFrom-Json @MirrorJsonArgs -InputObject
 $units = ConvertFrom-Json @MirrorJsonArgs -InputObject ([IO.File]::ReadAllText((Join-Path $repo 'deploy/units.json')))
 # The tests judge an enabled pilot unit. They start from a copy of the file with the pilot unit disabled, whatever the
 # checkout holds. So enabling the pilot does not change what they prove.
-(@($units.units) | Where-Object { $_.name -eq 'pilot-empty-rg' }).enabled = $false
+# The demo's other units are enabled in its file. The tests start from a copy with every unit disabled, as in the
+# project, so they judge the same cases.
+foreach ($x in @($units.units)) { $x.enabled = $false }
 $unitsOn = Copy-Object $units
 (@($unitsOn.units) | Where-Object { $_.name -eq 'pilot-empty-rg' }).enabled = $true
 $pilot = @($units.units | Where-Object { $_.name -eq 'pilot-empty-rg' })[0]
@@ -79,29 +81,54 @@ Assert-Equal 'new.json' $ns[2].Path 'a rename reads as its new path'
 
 Write-Host '--- units a code change touches'
 $files = Get-UnitFiles $units $repo
-$r = Resolve-AffectedUnits @('infra/modules/governance/common-cmp-policies.bicep') $units $files
-Assert-True (@($r.preview) -contains 'fdm-finance') 'a shared module previews the subscription units that call it'
-Assert-True (@($r.preview) -notcontains 'fdm-rsg-uks-001') 'and not an unrelated resource group unit'
-$r = Resolve-AffectedUnits @('infra/subscriptions/microsoft-azure-fdmgroup-1118536/resource-groups/fdm-rsg-uks-002.bicep') $units $files
-Assert-Equal 'fdm-rsg-uks-002' (@($r.preview) -join ',') 'an FDMGroup group file previews its own unit only'
-$r = Resolve-AffectedUnits @('infra/subscriptions/microsoft-azure-fdmgroup-1118536/resource-groups/fdm-rsg-uks-001.vpn-gateways.bicep') $units $files
-Assert-True (@($r.preview) -contains 'fdm-vpn-gateways-uks' -and @($r.preview) -notcontains 'fdm-vpn-gateways-eus') 'a gateway file previews its own gateway unit only'
-$r = Resolve-AffectedUnits @('bicepconfig.json', 'infra/subscriptions/fdm-finance/main.bicep') $units $files
+$r = Resolve-AffectedUnits @('infra/subscriptions/demo/main.bicep') $units $files
+Assert-True (@($r.preview) -contains 'demo-subscription') 'a subscription main.bicep previews its subscription unit'
+Assert-True (@($r.preview) -notcontains 'rg-demo-network') 'and not an unrelated resource group unit'
+$r = Resolve-AffectedUnits @('infra/subscriptions/demo/resource-groups/rg-demo-routing.bicep') $units $files
+Assert-Equal 'rg-demo-routing' (@($r.preview) -join ',') 'a resource group file previews its own unit only'
+# This estate has no module, so the next tests take a small tree in a temporary folder: a shared module that a
+# subscription main.bicep calls, and a module that only a gateway unit calls.
+$mt = Join-Path ([IO.Path]::GetTempPath()) ('mirror-modules-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path (Join-Path $mt 'infra/modules/governance') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $mt 'infra/subscriptions/demo/resource-groups') | Out-Null
+try {
+  [IO.File]::WriteAllText((Join-Path $mt 'infra/modules/governance/shared-policies.bicep'), "targetScope = 'subscription'`n")
+  [IO.File]::WriteAllText((Join-Path $mt 'infra/subscriptions/demo/main.bicep'), "targetScope = 'subscription'`nmodule p '../../modules/governance/shared-policies.bicep' = {`n  name: 'p'`n}`n")
+  [IO.File]::WriteAllText((Join-Path $mt 'infra/subscriptions/demo/resource-groups/rg-demo-network.bicep'), "output o string = 'x'`n")
+  [IO.File]::WriteAllText((Join-Path $mt 'infra/subscriptions/demo/network-gateways.bicep'), "targetScope = 'subscription'`nmodule g './resource-groups/rg-demo-network.vpn-gateways.bicep' = {`n  name: 'g'`n  scope: resourceGroup('rg-demo-network')`n}`n")
+  [IO.File]::WriteAllText((Join-Path $mt 'infra/subscriptions/demo/resource-groups/rg-demo-network.vpn-gateways.bicep'), "output o string = 'x'`n")
+  $mu = [pscustomobject]@{ units = @(
+    [pscustomobject]@{ name = 'demo-subscription'; kind = 'subscription'; subscription = 'demo'; template = 'infra/subscriptions/demo/main.bicep'; enabled = $false },
+    [pscustomobject]@{ name = 'rg-demo-network'; kind = 'resourceGroup'; subscription = 'demo'; resourceGroup = 'rg-demo-network'; template = 'infra/subscriptions/demo/resource-groups/rg-demo-network.bicep'; enabled = $false },
+    [pscustomobject]@{ name = 'demo-vpn-gateways'; kind = 'subscription'; subscription = 'demo'; template = 'infra/subscriptions/demo/network-gateways.bicep'; enabled = $false }) }
+  $mf = Get-UnitFiles $mu $mt
+  $r = Resolve-AffectedUnits @('infra/modules/governance/shared-policies.bicep') $mu $mf
+  Assert-True (@($r.preview) -contains 'demo-subscription') 'a shared module previews the subscription units that call it'
+  Assert-True (@($r.preview) -notcontains 'rg-demo-network') 'and not an unrelated resource group unit'
+  $r = Resolve-AffectedUnits @('infra/subscriptions/demo/resource-groups/rg-demo-network.vpn-gateways.bicep') $mu $mf
+  Assert-True (@($r.preview) -contains 'demo-vpn-gateways') 'a gateway file previews the gateway unit like any other'
+} finally {
+  Remove-Item -LiteralPath $mt -Recurse -Force -ErrorAction SilentlyContinue
+}
+$r = Resolve-AffectedUnits @('bicepconfig.json', 'infra/subscriptions/demo/main.bicep') $units $files
 Assert-True ($r.all -and @($r.preview).Count -eq 0) 'bicepconfig.json is compiled into every unit, so it previews no single unit'
 Assert-Contains @($r.notes) '*bicepconfig.json changed. Every unit is compiled with it*' 'and the note says why'
 $r = Resolve-AffectedUnits @('deploy/boundaries.json', 'scripts/deploy-unit.ps1') $units $files
 Assert-True (-not $r.all -and @($r.preview).Count -eq 0) 'a file the pipeline does not deploy from previews nothing'
 $r = Resolve-AffectedUnits @('infra/tenant/governance.bicep') $units $files
-Assert-True (@($r.preview) -contains 'tenant-governance-tenant-root-group' -and @($r.preview) -contains 'tenant-governance-fdmgroupresources') 'a tenant file previews the tenant units that use it'
+Assert-True (@($r.preview) -contains 'demo-tenant-governance' -and @($r.preview) -notcontains 'demo-tenant-management-group') 'a tenant file previews the tenant unit that uses it'
 $r = Resolve-AffectedUnits @('README.md') $units $files
 Assert-Equal 0 @($r.preview).Count 'a document previews nothing'
-$many = @(@($units.units) | Where-Object { $_.kind -eq 'resourceGroup' } | Select-Object -First 13 | ForEach-Object { $_.template })
-$r = Resolve-AffectedUnits $many $units $files
+# The demo has fewer than 13 resource group units, so the test takes a copy with thirteen more that share one file.
+$manyUnits = Copy-Object $units
+$proto = @($manyUnits.units | Where-Object { $_.name -eq 'rg-demo-routing' })[0]
+$manyUnits.units = @($manyUnits.units) + @(1..13 | ForEach-Object { $c = Copy-Object $proto; $c.name = "rg-demo-many-$_"; $c })
+$r = Resolve-AffectedUnits @([string]$proto.template) $manyUnits (Get-UnitFiles $manyUnits $repo)
 Assert-True (@($r.preview).Count -eq 0 -and (@($r.notes) -join ' ') -like '*more than the 12*') 'more than 12 units are not previewed from a pull request'
-$changedUnits = Copy-Object $units; $flipUnit = (@($changedUnits.units) | Where-Object { $_.name -eq 'fdm-rsg-uks-002' })[0]; $flipUnit.enabled = -not [bool]$flipUnit.enabled
-Assert-Equal 'fdm-rsg-uks-002' (@(Get-ChangedUnitEntries $units $changedUnits) -join ',') 'switching a unit on or off in units.json previews it'
-$changedUnits = Copy-Object $units; $zwUnit = (@($changedUnits.units) | Where-Object { $_.name -eq 'fdm-rsg-uks-002' })[0]; $zwUnit.resourceGroup = [string]$zwUnit.resourceGroup + $zw
-Assert-Equal 'fdm-rsg-uks-002' (@(Get-ChangedUnitEntries $units $changedUnits) -join ',') 'a unit entry that changes only by a zero-width space is a changed entry'
+$changedUnits = Copy-Object $units; $flipUnit = (@($changedUnits.units) | Where-Object { $_.name -eq 'rg-demo-routing' })[0]; $flipUnit.enabled = -not [bool]$flipUnit.enabled
+Assert-Equal 'rg-demo-routing' (@(Get-ChangedUnitEntries $units $changedUnits) -join ',') 'switching a unit on or off in units.json previews it'
+$changedUnits = Copy-Object $units; $zwUnit = (@($changedUnits.units) | Where-Object { $_.name -eq 'rg-demo-routing' })[0]; $zwUnit.resourceGroup = [string]$zwUnit.resourceGroup + $zw
+Assert-Equal 'rg-demo-routing' (@(Get-ChangedUnitEntries $units $changedUnits) -join ',') 'a unit entry that changes only by a zero-width space is a changed entry'
 
 Write-Host '--- the rows of the units'
 function Get-TestUnit([string]$Name, $Doc = $units) { return (@($Doc.units) | Where-Object { $_.name -eq $Name })[0] }
@@ -117,32 +144,32 @@ Assert-Equal 0 @($allRows | Where-Object { $_.stack -cne "mirror-$($_.unit)" -or
 $row = Get-UnitRow $pilot $units
 Assert-Equal "pilot-empty-rg|production|$($pilot.subscription)|resourceGroup|$subId|$($pilot.resourceGroup)||detach" "$($row.unit)|$($row.tier)|$($row.scope)|$($row.stackScope)|$($row.subscriptionId)|$($row.resourceGroup)|$($row.managementGroup)|$($row.unmanage)" 'the row of a resource group unit'
 Assert-Equal 'pipelines/pilot/empty-rg.bicep|' "$($row.template)|$($row.parameters)" 'a unit without a parameters file has an empty parameters value'
-$row = Get-UnitRow (Get-TestUnit 'fdm-finance-privileged') $units
-Assert-Equal 'privileged|fdm-finance|subscription|' "$($row.tier)|$($row.scope)|$($row.stackScope)|$($row.resourceGroup)" 'the row of a privileged subscription unit'
-$row = Get-UnitRow (Get-TestUnit 'tenant-management-groups') $units
+$row = Get-UnitRow (Get-TestUnit 'demo-privileged') $units
+Assert-Equal 'privileged|demo|subscription|' "$($row.tier)|$($row.scope)|$($row.stackScope)|$($row.resourceGroup)" 'the row of a privileged subscription unit'
+$row = Get-UnitRow (Get-TestUnit 'demo-tenant-management-group') $units
 Assert-Equal "privileged|tenant|managementGroup||$($units.tenantId)" "$($row.tier)|$($row.scope)|$($row.stackScope)|$($row.subscriptionId)|$($row.managementGroup)" 'the management groups unit is a management group stack at the Tenant Root Group'
-Assert-Equal 'FDMGroupResources' (Get-UnitRow (Get-TestUnit 'tenant-governance-fdmgroupresources') $units).managementGroup 'a tenant unit takes its management group from units.json'
+Assert-Equal 'mg-demo' (Get-UnitRow (Get-TestUnit 'demo-tenant-governance') $units).managementGroup 'a tenant unit takes its management group from units.json'
 $delUnits = Copy-Object $units
-(Get-TestUnit 'fdm-rsg-uks-002' $delUnits) | Add-Member -NotePropertyName stackDeletes -NotePropertyValue $true
-Assert-Equal 'delete' (Get-UnitRow (Get-TestUnit 'fdm-rsg-uks-002' $delUnits) $delUnits).unmanage 'stackDeletes true deletes what leaves the template'
-Assert-Equal 'detach' (Get-UnitRow (Get-TestUnit 'fdm-rsg-uks-001' $delUnits) $delUnits).unmanage 'and only for the unit that has it'
-(Get-TestUnit 'fdm-rsg-uks-002' $delUnits).stackDeletes = 'true'
-Assert-True ((Get-ThrowText { Get-UnitRow (Get-TestUnit 'fdm-rsg-uks-002' $delUnits) $delUnits }) -like '*stackDeletes must be true or false*') 'stackDeletes as text is refused'
-$badUnits = Copy-Object $units; (Get-TestUnit 'fdm-rsg-uks-002' $badUnits).kind = 'tenants'
-Assert-True ((Get-ThrowText { Get-UnitRow (Get-TestUnit 'fdm-rsg-uks-002' $badUnits) $badUnits }) -like "*the kind 'tenants' is not*") 'an unknown kind is refused'
-$badUnits = Copy-Object $units; (Get-TestUnit 'fdm-finance-privileged' $badUnits).tier = 'Privileged'
-Assert-True ((Get-ThrowText { Get-UnitRow (Get-TestUnit 'fdm-finance-privileged' $badUnits) $badUnits }) -like '*the tier must be privileged or left out*') 'a misspelled tier is refused and never read as production'
-$badUnits = Copy-Object $units; (Get-TestUnit 'fdm-rsg-uks-002' $badUnits).parameters = '../outside.bicepparam'
-Assert-True ((Get-ThrowText { Get-UnitRow (Get-TestUnit 'fdm-rsg-uks-002' $badUnits) $badUnits }) -like '*is not a path inside the repository*') 'a file outside the repository is refused'
-$badUnits = Copy-Object $units; (Get-TestUnit 'fdm-rsg-uks-002' $badUnits).subscription = 'no-such-subscription'
-Assert-True ((Get-ThrowText { Get-UnitRow (Get-TestUnit 'fdm-rsg-uks-002' $badUnits) $badUnits }) -like '*has no ID in the subscriptions list*') 'a subscription that is not in the list is refused'
-$badUnits = Copy-Object $units; (Get-TestUnit 'fdm-rsg-uks-002' $badUnits).resourceGroup = 'rg one; az group delete'
-Assert-True ((Get-ThrowText { Get-UnitRow (Get-TestUnit 'fdm-rsg-uks-002' $badUnits) $badUnits }) -like '*is not a resource group name*') 'a resource group name with other characters is refused'
-$badUnits = Copy-Object $units; (Get-TestUnit 'fdm-rsg-uks-002' $badUnits).name = 'FDM-RSG'
-Assert-True ((Get-ThrowText { Get-UnitRow (Get-TestUnit 'FDM-RSG' $badUnits) $badUnits }) -like '*is not lower-case letters, digits and single hyphens*') 'a unit name with capitals is refused'
-foreach ($n in @('tenant-management-groups', 'tenant-governance-fdmgroupresources', 'fdm-apim', 'rg-fdmint-dev-apim', 'fdm-apim-privileged')) {
+(Get-TestUnit 'rg-demo-routing' $delUnits) | Add-Member -NotePropertyName stackDeletes -NotePropertyValue $true
+Assert-Equal 'delete' (Get-UnitRow (Get-TestUnit 'rg-demo-routing' $delUnits) $delUnits).unmanage 'stackDeletes true deletes what leaves the template'
+Assert-Equal 'detach' (Get-UnitRow (Get-TestUnit 'rg-demo-network' $delUnits) $delUnits).unmanage 'and only for the unit that has it'
+(Get-TestUnit 'rg-demo-routing' $delUnits).stackDeletes = 'true'
+Assert-True ((Get-ThrowText { Get-UnitRow (Get-TestUnit 'rg-demo-routing' $delUnits) $delUnits }) -like '*stackDeletes must be true or false*') 'stackDeletes as text is refused'
+$badUnits = Copy-Object $units; (Get-TestUnit 'rg-demo-routing' $badUnits).kind = 'tenants'
+Assert-True ((Get-ThrowText { Get-UnitRow (Get-TestUnit 'rg-demo-routing' $badUnits) $badUnits }) -like "*the kind 'tenants' is not*") 'an unknown kind is refused'
+$badUnits = Copy-Object $units; (Get-TestUnit 'demo-privileged' $badUnits).tier = 'Privileged'
+Assert-True ((Get-ThrowText { Get-UnitRow (Get-TestUnit 'demo-privileged' $badUnits) $badUnits }) -like '*the tier must be privileged or left out*') 'a misspelled tier is refused and never read as production'
+$badUnits = Copy-Object $units; (Get-TestUnit 'rg-demo-routing' $badUnits).parameters = '../outside.bicepparam'
+Assert-True ((Get-ThrowText { Get-UnitRow (Get-TestUnit 'rg-demo-routing' $badUnits) $badUnits }) -like '*is not a path inside the repository*') 'a file outside the repository is refused'
+$badUnits = Copy-Object $units; (Get-TestUnit 'rg-demo-routing' $badUnits).subscription = 'no-such-subscription'
+Assert-True ((Get-ThrowText { Get-UnitRow (Get-TestUnit 'rg-demo-routing' $badUnits) $badUnits }) -like '*has no ID in the subscriptions list*') 'a subscription that is not in the list is refused'
+$badUnits = Copy-Object $units; (Get-TestUnit 'rg-demo-routing' $badUnits).resourceGroup = 'rg one; az group delete'
+Assert-True ((Get-ThrowText { Get-UnitRow (Get-TestUnit 'rg-demo-routing' $badUnits) $badUnits }) -like '*is not a resource group name*') 'a resource group name with other characters is refused'
+$badUnits = Copy-Object $units; (Get-TestUnit 'rg-demo-routing' $badUnits).name = 'RG-DEMO'
+Assert-True ((Get-ThrowText { Get-UnitRow (Get-TestUnit 'RG-DEMO' $badUnits) $badUnits }) -like '*is not lower-case letters, digits and single hyphens*') 'a unit name with capitals is refused'
+foreach ($n in @('demo-tenant-management-group', 'demo-tenant-governance')) {
   $badUnits = Copy-Object $units; (Get-TestUnit $n $badUnits) | Add-Member -NotePropertyName stackDeletes -NotePropertyValue $true
-  Assert-True ((Get-ThrowText { Get-UnitRow (Get-TestUnit $n $badUnits) $badUnits }) -like '*stackDeletes stays off for the units of the scope*') "stackDeletes is refused for $n, a unit of the tenant or of fdm-apim"
+  Assert-True ((Get-ThrowText { Get-UnitRow (Get-TestUnit $n $badUnits) $badUnits }) -like '*stackDeletes stays off for the units of the scope*') "stackDeletes is refused for $n, a unit of the tenant"
   (Get-TestUnit $n $badUnits).stackDeletes = $false
   Assert-Equal 'detach' (Get-UnitRow (Get-TestUnit $n $badUnits) $badUnits).unmanage "and stackDeletes false passes for $n"
 }
@@ -158,36 +185,36 @@ foreach ($f in @('enabled', 'deployed', 'stackDeletes')) {
   if ($null -eq $x.PSObject.Properties[$f]) { $x | Add-Member -NotePropertyName $f -NotePropertyValue $true } else { $x.$f = $true }
   Assert-Contains @(Test-UnitRules $badUnits) "*$($excluded[0].name): $f is true, and the unit of a deploy-excluded file is never deployed*" "a deploy-excluded unit with $f true breaks the unit rules"
 }
-$badUnits = Copy-Object $units; (Get-TestUnit 'fdm-finance-privileged' $badUnits).tier = 'Privileged'
-Assert-Contains @(Test-UnitRules $badUnits) '*fdm-finance-privileged: the tier must be privileged or left out*' 'a misspelled tier breaks the unit rules'
-$badUnits = Copy-Object $units; (Get-TestUnit 'fdm-rsg-uks-002' $badUnits).enabled = 'true'
-Assert-Contains @(Test-UnitRules $badUnits) '*fdm-rsg-uks-002: enabled must be true or false*' 'enabled as text breaks the unit rules'
-$badUnits = Copy-Object $units; (Get-TestUnit 'tenant-management-groups' $badUnits) | Add-Member -NotePropertyName stackDeletes -NotePropertyValue $true
-Assert-Contains @(Test-UnitRules $badUnits) '*tenant-management-groups: stackDeletes stays off*' 'stackDeletes on a tenant unit breaks the unit rules'
-$badUnits = Copy-Object $units; (Get-TestUnit 'fdm-rsg-uks-002' $badUnits).name = 'FDM-RSG-UKS-001'
-Assert-Contains @(Test-UnitRules $badUnits) "*the unit name 'FDM-RSG-UKS-001' is used more than once*" 'two units whose names differ only in case break the unit rules'
+$badUnits = Copy-Object $units; (Get-TestUnit 'demo-privileged' $badUnits).tier = 'Privileged'
+Assert-Contains @(Test-UnitRules $badUnits) '*demo-privileged: the tier must be privileged or left out*' 'a misspelled tier breaks the unit rules'
+$badUnits = Copy-Object $units; (Get-TestUnit 'rg-demo-routing' $badUnits).enabled = 'true'
+Assert-Contains @(Test-UnitRules $badUnits) '*rg-demo-routing: enabled must be true or false*' 'enabled as text breaks the unit rules'
+$badUnits = Copy-Object $units; (Get-TestUnit 'demo-tenant-management-group' $badUnits) | Add-Member -NotePropertyName stackDeletes -NotePropertyValue $true
+Assert-Contains @(Test-UnitRules $badUnits) '*demo-tenant-management-group: stackDeletes stays off*' 'stackDeletes on a tenant unit breaks the unit rules'
+$badUnits = Copy-Object $units; (Get-TestUnit 'rg-demo-routing' $badUnits).name = 'RG-DEMO-NETWORK'
+Assert-Contains @(Test-UnitRules $badUnits) "*the unit name 'RG-DEMO-NETWORK' is used more than once*" 'two units whose names differ only in case break the unit rules'
 
 Write-Host '--- the stack commands of the Azure CLI'
 $rgRow = Get-UnitRow $pilot $units
-$subRow = Get-UnitRow (Get-TestUnit 'fdm-finance') $units
-$mgRow = Get-UnitRow (Get-TestUnit 'tenant-governance-fdmgroupresources') $units
+$subRow = Get-UnitRow (Get-TestUnit 'demo-subscription') $units
+$mgRow = Get-UnitRow (Get-TestUnit 'demo-tenant-governance') $units
 Assert-Equal "/subscriptions/$subId/resourceGroups/$($pilot.resourceGroup)/providers/Microsoft.Resources/deploymentStacks/mirror-pilot-empty-rg" (Get-StackId $rgRow) 'the ID of a resource group stack'
-Assert-Equal "/subscriptions/$($subRow.subscriptionId)/providers/Microsoft.Resources/deploymentStacks/mirror-fdm-finance" (Get-StackId $subRow) 'the ID of a subscription stack'
-Assert-Equal '/providers/Microsoft.Management/managementGroups/FDMGroupResources/providers/Microsoft.Resources/deploymentStacks/mirror-tenant-governance-fdmgroupresources' (Get-StackId $mgRow) 'the ID of a management group stack'
+Assert-Equal "/subscriptions/$($subRow.subscriptionId)/providers/Microsoft.Resources/deploymentStacks/mirror-demo-subscription" (Get-StackId $subRow) 'the ID of a subscription stack'
+Assert-Equal '/providers/Microsoft.Management/managementGroups/mg-demo/providers/Microsoft.Resources/deploymentStacks/mirror-demo-tenant-governance' (Get-StackId $mgRow) 'the ID of a management group stack'
 $sa = @(Get-StackArguments $rgRow $repo 'validate')
 Assert-Equal 'stack group validate --name mirror-pilot-empty-rg' ($sa[0..4] -join ' ') 'a resource group unit is validated as a resource group stack'
 Assert-True ($sa -contains '--resource-group' -and $sa -contains $pilot.resourceGroup -and $sa -contains '--subscription' -and $sa -contains $subId -and $sa -notcontains '--location') 'with its subscription and resource group, and no location'
 Assert-True ($sa -contains '--template-file' -and $sa -notcontains '--parameters') 'a unit without a parameters file gives its template'
 Assert-Equal 'detachAll|none|ProviderNoRbac|none' "$($sa[[array]::IndexOf($sa, '--action-on-unmanage') + 1])|$($sa[[array]::IndexOf($sa, '--deny-settings-mode') + 1])|$($sa[[array]::IndexOf($sa, '--validation-level') + 1])|$($sa[[array]::IndexOf($sa, '-o') + 1])" 'detach, no deny settings and the validation level a reader can run'
-$sa = @(Get-StackArguments $subRow $repo 'whatif' 'mirror-fdm-finance-1')
-Assert-Equal 'stack-whatif sub create --name mirror-fdm-finance-1 --stack-id' ($sa[0..5] -join ' ') 'a subscription unit is previewed as a subscription stack'
+$sa = @(Get-StackArguments $subRow $repo 'whatif' 'mirror-demo-subscription-1')
+Assert-Equal 'stack-whatif sub create --name mirror-demo-subscription-1 --stack-id' ($sa[0..5] -join ' ') 'a subscription unit is previewed as a subscription stack'
 Assert-Equal "$(Get-StackId $subRow)|PT1H|$($units.deploymentLocation)|json" "$($sa[[array]::IndexOf($sa, '--stack-id') + 1])|$($sa[[array]::IndexOf($sa, '--retention-interval') + 1])|$($sa[[array]::IndexOf($sa, '--location') + 1])|$($sa[[array]::IndexOf($sa, '-o') + 1])" 'the preview names the stack, is kept one hour, takes the location from units.json and returns JSON'
 Assert-True ($sa -contains '--no-pretty-print' -and $sa -contains '--parameters' -and $sa -notcontains '--template-file' -and $sa -notcontains '--resource-group') 'a unit with a parameters file gives that file only'
-Assert-True ($sa[[array]::IndexOf($sa, '--parameters') + 1] -like '*fdm-finance*parameters.bicepparam') 'the parameters file is the one of the unit'
+Assert-True ($sa[[array]::IndexOf($sa, '--parameters') + 1] -like '*demo*parameters.bicepparam') 'the parameters file is the one of the unit'
 $delRow = Copy-Object $subRow; $delRow.unmanage = 'delete'
 Assert-True (@(Get-StackArguments $delRow $repo 'whatif' 'x') -contains 'deleteResources' -and @(Get-StackArguments $delRow $repo 'whatif' 'x') -notcontains 'deleteAll') 'a unit that deletes previews deleteResources, never deleteAll'
 $sa = @(Get-StackArguments $mgRow $repo 'show' 'mirror-x-1')
-Assert-Equal 'stack-whatif mg show --name mirror-x-1 --management-group-id FDMGroupResources --with-property-changes true --no-color' ($sa -join ' ') 'the text of a management group preview is read back with its property changes'
+Assert-Equal 'stack-whatif mg show --name mirror-x-1 --management-group-id mg-demo --with-property-changes true --no-color' ($sa -join ' ') 'the text of a management group preview is read back with its property changes'
 $sa = @(Get-StackArguments $mgRow $repo 'validate')
 Assert-True ($sa[1] -ceq 'mg' -and $sa -contains '--location' -and $sa -notcontains '--subscription') 'a tenant unit is validated at its management group, with a location and no subscription'
 Assert-Equal "stack group show --name mirror-pilot-empty-rg --subscription $subId --resource-group $($pilot.resourceGroup) -o json" (@(Get-StackArguments $rgRow $repo 'stack') -join ' ') 'the stack itself is read with az stack group show'
@@ -242,9 +269,9 @@ $sum = (Format-StackWhatIfSummary $rgRow (Get-StackWhatIfVerdict (Read-Fixture '
 Assert-True ($sum.Contains("Stack preview of ${tick}pilot-empty-rg${tick}") -and $sum.Contains('mirror-pilot-empty-rg') -and $sum.Contains("the resource group $tick$($pilot.resourceGroup)$tick")) 'the summary names the unit, the stack and its scope'
 Assert-True ($sum -like '*The stack does not exist yet*3 resource(s) that exist come under*' -and $sum.Contains("| ${tick}modify${tick} | 1 |") -and $sum.Contains("| ${tick}noChange${tick} | 2 |")) 'it says a first run, and counts each change type'
 Assert-True ($sum -like '*is detached by the deployment*' -and $sum -like '*<details>*the text*</details>*') 'it says what happens to a resource that left the template, and holds the text of the preview'
-$sum = (Format-StackWhatIfSummary $delRow (Get-StackWhatIfVerdict (Read-Fixture 'stack-whatif-delete.json') 'fdm-finance') '') -join "`n"
+$sum = (Format-StackWhatIfSummary $delRow (Get-StackWhatIfVerdict (Read-Fixture 'stack-whatif-delete.json') 'demo-subscription') '') -join "`n"
 Assert-True ($sum.Contains('is **deleted** by the deployment') -and $sum -like '*could not be read back*' -and $sum.Contains("- ${tick}delete /subscriptions/")) 'a unit that deletes says so, and without the text the changed resources are listed'
-$sum = (Format-StackWhatIfSummary $subRow (Get-StackWhatIfVerdict (Read-Fixture 'stack-whatif-clean.json') 'fdm-finance') 't') -join "`n"
+$sum = (Format-StackWhatIfSummary $subRow (Get-StackWhatIfVerdict (Read-Fixture 'stack-whatif-clean.json') 'demo-subscription') 't') -join "`n"
 Assert-True ($sum -like '*Every one of the 3 resource(s) is noChange*' -and $sum -notlike '*does not exist yet*') 'a clean preview of an existing stack says every resource is noChange'
 
 Write-Host '--- workflow rules'
@@ -372,7 +399,7 @@ try {
   Assert-Equal 0 $f.Count "the units a pull request can preview use none of these inputs ($($f -join '; '))"
   Push-Location $repo; $trackedBicep = @(git ls-files '*.bicep' '*.bicepparam'); Pop-Location
   $f = @(Find-UnsafeBicepInputs $trackedBicep $repo)
-  Assert-True ($trackedBicep.Count -gt 200 -and $f.Count -eq 0) "every Bicep file of the repository passes, as the check reads the whole checkout ($($trackedBicep.Count) files, $($f -join '; '))"
+  Assert-True ($trackedBicep.Count -gt 10 -and $f.Count -eq 0) "every Bicep file of the repository passes, as the check reads the whole checkout ($($trackedBicep.Count) files, $($f -join '; '))"
   $code = [MirrorPipeline.BicepText]::BlankComments("var a = 'x // y' // z`n/* q`nr */ var b = '`${'}'}' /* s */ var c = 1")
   Assert-Equal "var a = 'x // y'     `n    `n     var b = '`${'}'}'         var c = 1" $code 'comments are blanked the way Bicep reads them, strings and interpolations are kept'
   # The InputCheck mode as the preview job runs it, on a copy of the helper beside one unit whose parameter file
@@ -663,22 +690,22 @@ exit $LASTEXITCODE
   Invoke-TestMode 'Units' $o3 'an unknown unit is refused before any sign-in' 1 "the unit 'no-such-unit' is not exactly one unit"
   $o4 = $one.Clone(); $o4['UNIT'] = 'Pilot-Empty-RG'
   Invoke-TestMode 'Units' $o4 'a unit name in another case is refused' 1 'is not exactly one unit'
-  $o5 = $one.Clone(); $o5['UNIT'] = 'fdm-rsg-uks-002'
-  Invoke-TestMode 'Units' $o5 'a unit that is not enabled is refused' 1 'the unit fdm-rsg-uks-002 is not enabled'
-  $o6 = $one.Clone(); $o6['UNIT'] = 'fdm-rsg-uks-monitor-deploy-excluded'
+  $o5 = $one.Clone(); $o5['UNIT'] = 'rg-demo-routing'
+  Invoke-TestMode 'Units' $o5 'a unit that is not enabled is refused' 1 'the unit rg-demo-routing is not enabled'
+  $o6 = $one.Clone(); $o6['UNIT'] = 'rg-demo-identities-deploy-excluded'
   Invoke-TestMode 'Units' $o6 'the unit of a deploy-excluded file is refused for a deployment' 1 'is the unit of a deploy-excluded file, and such a unit is never deployed'
   Invoke-TestMode 'Units' @{ SELECT = 'everything' } 'an unknown selection is refused' 2 "SELECT 'everything' is not unit, deployed or pullRequest"
   # Units, for the drift check. No unit is marked deployed in the repository's file.
   Invoke-TestMode 'Units' @{ SELECT = 'deployed' } 'with no deployed unit the drift check has an empty matrix and says so' 0 @('matrix=[]', 'No unit in deploy/units.json is marked "deployed": true')
   $depUnits = Copy-Object $unitsOn
   (@($depUnits.units) | Where-Object { $_.name -eq 'pilot-empty-rg' })[0] | Add-Member -NotePropertyName deployed -NotePropertyValue $true
-  (@($depUnits.units) | Where-Object { $_.name -eq 'fdm-rsg-uks-002' })[0] | Add-Member -NotePropertyName deployed -NotePropertyValue 'true'
-  (@($depUnits.units) | Where-Object { $_.name -eq 'fdm-rsg-uks-001' })[0] | Add-Member -NotePropertyName deployed -NotePropertyValue $false
-  $exUnit = (@($depUnits.units) | Where-Object { $_.name -eq 'fdm-rsg-uks-monitor-deploy-excluded' })[0]
+  (@($depUnits.units) | Where-Object { $_.name -eq 'rg-demo-routing' })[0] | Add-Member -NotePropertyName deployed -NotePropertyValue 'true'
+  (@($depUnits.units) | Where-Object { $_.name -eq 'rg-demo-network' })[0] | Add-Member -NotePropertyName deployed -NotePropertyValue $false
+  $exUnit = (@($depUnits.units) | Where-Object { $_.name -eq 'rg-demo-identities-deploy-excluded' })[0]
   $exUnit.enabled = $true; $exUnit | Add-Member -NotePropertyName deployed -NotePropertyValue $true
   Write-TestFile 'deploy/units.json' (ConvertTo-Json $depUnits -Depth 20); Invoke-TestGit add -A | Out-Null; Invoke-TestGit commit -q -m c7 | Out-Null
   Invoke-TestMode 'Units' @{ SELECT = 'deployed' } 'only a unit with deployed true, as a true and not as text, is checked for drift, and never the unit of a deploy-excluded file' 0 'Units: `pilot-empty-rg`.'
-  $o7 = $one.Clone(); $o7['UNIT'] = 'fdm-rsg-uks-monitor-deploy-excluded'
+  $o7 = $one.Clone(); $o7['UNIT'] = 'rg-demo-identities-deploy-excluded'
   Invoke-TestMode 'Units' $o7 'the unit of a deploy-excluded file is refused for a deployment also when a change enabled it' 1 'is the unit of a deploy-excluded file, and such a unit is never deployed'
   Invoke-TestGit checkout -q --detach $c2 | Out-Null
   # Units, for a pull request of mirror-pr. The test merge commit has master's tip as its first parent.
