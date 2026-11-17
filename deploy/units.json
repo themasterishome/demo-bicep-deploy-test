@@ -115,6 +115,18 @@
       "tier": "privileged",
       "enabled": false,
       "notes": "The pipeline's own identities, their federated credentials and the secrets vault, in rg-demo-identities. The file is deploy-excluded, so this unit is previewed by pull requests and never deployed. The group is changed by hand at the setup steps. Run workflow refuses the unit."
+    },
+    {
+      "name": "lifecycle-proof",
+      "kind": "resourceGroup",
+      "subscription": "demo",
+      "resourceGroup": "rg-demo-lifecycle",
+      "template": "pipelines/lifecycle/lifecycle.bicep",
+      "parameters": "pipelines/lifecycle/lifecycle.bicepparam",
+      "wave": 8,
+      "risk": "low",
+      "enabled": true,
+      "notes": "A network security group, an application security group and a route table in rg-demo-lifecycle, a resource group created by hand for this unit alone. All are free. The unit shows a stack's whole life in the pipeline: a first run that only creates, an update, a resource that leaves the template and is detached, and a resource that leaves it and is deleted."
     }
   ]
 }
