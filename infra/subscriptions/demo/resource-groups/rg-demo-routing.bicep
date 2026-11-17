@@ -95,3 +95,7 @@ resource automationCredential_demo_cred 'Microsoft.Automation/automationAccounts
     description: 'Demo credential whose password is read from kv-demo-mirror-secrets.'
   }
 }
+
+resource brokenRouteTable 'Microsoft.Network/routeTables@2026-01-01' = {
+  name: 'rt-broken'
+  properties: {
