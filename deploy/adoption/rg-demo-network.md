@@ -37,5 +37,5 @@ The records come from the read-only preview of the demo units, preview file `rg-
 
 The files of the unit the previews were taken from, each with the SHA256 of its text (line endings left out). The plan of the unit's first run compares them with the files of its commit and fails when one differs, because this evidence then belongs to another version of the unit.
 
-- `infra/subscriptions/demo/resource-groups/rg-demo-network.bicep` SHA256 `29f673ef4d95a8ef36e1239700b911ef8392e1fb90bb90e8d03715c726208a36`
+- `infra/subscriptions/demo/resource-groups/rg-demo-network.bicep` SHA256 `19f673ef4d95a8ef36e1239700b911ef8392e1fb90bb90e8d03715c726208a36`
 - `infra/subscriptions/demo/resource-groups/rg-demo-network.bicepparam` SHA256 `0c982d630a62bc692ad7a60a1545e6e0c09b9fd432fc9b371705d11937a1f8b0`
