@@ -67,6 +67,8 @@ $units = ConvertFrom-Json @MirrorJsonArgs -InputObject ([IO.File]::ReadAllText((
 # The demo's other units are enabled in its file. The tests start from a copy with every unit disabled, as in the
 # project, so they judge the same cases.
 foreach ($x in @($units.units)) { $x.enabled = $false }
+# The tests that count the deployed units start from a file with none marked, so the pull request that marks the first unit deployed does not stop them.
+foreach ($u in @($units.units)) { $u.PSObject.Properties.Remove('deployed') }
 $unitsOn = Copy-Object $units
 (@($unitsOn.units) | Where-Object { $_.name -eq 'pilot-empty-rg' }).enabled = $true
 $pilot = @($units.units | Where-Object { $_.name -eq 'pilot-empty-rg' })[0]
