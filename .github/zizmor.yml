@@ -1,0 +1,9 @@
+rules:
+  forbidden-uses:
+    config:
+      allow:
+        - actions/checkout
+        - actions/upload-artifact
+        - actions/download-artifact
+        - azure/login
+        - azure/bicep-deploy

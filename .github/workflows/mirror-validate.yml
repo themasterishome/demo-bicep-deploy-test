@@ -61,6 +61,11 @@ env:
   ACTIONLINT_VERSION: 1.7.12
   ACTIONLINT_SHA256_WINDOWS: 6E7241B51E6817EA6A047693D8E6FED13B31819C9A0DD6C5A726E1592D22F6E9
   ACTIONLINT_SHA256_LINUX: 8ACA8DB96F1B94770F1B0D72B6DDDCB1EBB8123CB3712530B08CC387B349A3D8
+  # The workflow audit uses zizmor-x86_64-pc-windows-msvc.zip or zizmor-x86_64-unknown-linux-gnu.tar.gz, with the
+  # SHA256 shown for each file on the zizmor v1.32.0 GitHub release.
+  ZIZMOR_VERSION: 1.32.0
+  ZIZMOR_SHA256_WINDOWS: D284A16E09D9DF4CE2C000357E7B59BD531BE093BEA5718A1CE225B449B59D49
+  ZIZMOR_SHA256_LINUX: BB110CC765ECA9CD7EFB2E284A956BE5974C60027B0970F16397D86208A9957B
 
 # Actions are pinned to the full commit SHA of the release named in the comment.
 jobs:
@@ -140,6 +145,23 @@ jobs:
           persist-credentials: false
       - name: Runner check
         uses: ./.github/actions/runner-check
+      - name: Workflow audit (zizmor)
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'zizmor'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $name = if ($IsWindows) { 'zizmor-x86_64-pc-windows-msvc.zip' } else { 'zizmor-x86_64-unknown-linux-gnu.tar.gz' }
+          $want = if ($IsWindows) { $env:ZIZMOR_SHA256_WINDOWS } else { $env:ZIZMOR_SHA256_LINUX }
+          $archive = Join-Path $dir $name
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri "https://github.com/zizmorcore/zizmor/releases/download/v$($env:ZIZMOR_VERSION)/$name" -OutFile $archive
+          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+          if ($hash -ne $want) { Write-Error "$name SHA256 $hash does not match the published hash"; exit 1 }
+          if ($IsWindows) { Expand-Archive -LiteralPath $archive -DestinationPath $dir -Force }
+          else { tar -xzf $archive -C $dir; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          # Offline, so no audit calls the GitHub API. The settings are in .github/zizmor.yml.
+          & (Join-Path $dir $(if ($IsWindows) { 'zizmor.exe' } else { 'zizmor' })) --offline .github/workflows .github/actions
+          exit $LASTEXITCODE
       - name: Workflow rules and unit rules
         shell: pwsh
         run: |
