@@ -20,7 +20,7 @@ param location string = resourceGroup().location
 resource userAssignedIdentity_id_mirror_reader 'Microsoft.ManagedIdentity/userAssignedIdentities@2024-11-30' = {
   name: 'id-mirror-reader'
   location: location
-  tags: {}
+  tags: { change: 'pr-c' }
   properties: {
     isolationScope: 'None'
   }
