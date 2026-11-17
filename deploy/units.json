@@ -147,6 +147,18 @@
       "enabled": true,
       "notes": "A child management group of mg-demo-stk, a group created by hand for this unit, and the link of one subscription to the child. It has the shape of the unit that declares a management group at tenant scope and places a subscription, and shows whether a management group stack can hold it.",
       "deployed": true
+    },
+    {
+      "name": "pilot-missing-rg",
+      "kind": "resourceGroup",
+      "subscription": "demo",
+      "resourceGroup": "rg-demo-missing",
+      "template": "pipelines/pilot-missing/empty-rg.bicep",
+      "parameters": null,
+      "wave": 10,
+      "risk": "none",
+      "enabled": true,
+      "notes": "The empty pilot template against rg-demo-missing, a resource group that does not exist. It shows what the pipeline does when the group of a unit is missing: the plan fails and nothing is created."
     }
   ]
 }
