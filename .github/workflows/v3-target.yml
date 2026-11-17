@@ -1,0 +1,9 @@
+name: v3
+on:
+  pull_request_target: {}
+permissions: {}
+jobs:
+  a:
+    runs-on: windows-2025
+    steps:
+      - run: echo x

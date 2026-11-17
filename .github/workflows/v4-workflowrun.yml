@@ -1,0 +1,11 @@
+name: v4
+on:
+  workflow_run:
+    workflows: [ mirror-validate ]
+    types: [ completed ]
+permissions: {}
+jobs:
+  a:
+    runs-on: windows-2025
+    steps:
+      - run: echo x

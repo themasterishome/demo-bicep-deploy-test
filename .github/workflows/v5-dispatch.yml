@@ -1,0 +1,9 @@
+name: v5
+on:
+  repository_dispatch: {}
+permissions: {}
+jobs:
+  a:
+    runs-on: windows-2025
+    steps:
+      - run: echo x

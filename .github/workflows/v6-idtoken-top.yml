@@ -1,0 +1,9 @@
+name: v6
+on: workflow_dispatch
+permissions:
+  id-token: write
+jobs:
+  a:
+    runs-on: windows-2025
+    steps:
+      - run: echo x

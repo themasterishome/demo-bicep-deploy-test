@@ -1,0 +1,10 @@
+name: v7
+on: workflow_dispatch
+permissions: {}
+jobs:
+  a:
+    runs-on: windows-2025
+    permissions:
+      id-token: write
+    steps:
+      - run: echo x

@@ -1,0 +1,8 @@
+name: v9
+on: workflow_dispatch
+permissions: {}
+jobs:
+  a:
+    runs-on: windows-2025
+    steps:
+      - uses: docker://ubuntu:24.04

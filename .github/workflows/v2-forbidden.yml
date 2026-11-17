@@ -1,0 +1,8 @@
+name: v2
+on: workflow_dispatch
+permissions: {}
+jobs:
+  a:
+    runs-on: windows-2025
+    steps:
+      - uses: someone/tool@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
