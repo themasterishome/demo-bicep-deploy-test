@@ -59,7 +59,7 @@ resource resourceGroup_rg_demo_network 'Microsoft.Resources/resourceGroups@2025-
 resource resourceGroup_rg_demo_routing 'Microsoft.Resources/resourceGroups@2025-04-01' = {
   name: 'rg-demo-routing'
   location: location
-  tags: { purpose: 'demo-bicep-deploy' }
+  tags: { purpose: 'demo-bicep-deploy', phase: 'c' }
 }
 
 // The Defender for Cloud plan for virtual machines, at the value it has live. The deploy identity writes it through
