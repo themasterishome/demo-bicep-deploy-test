@@ -74,7 +74,7 @@ $ErrorActionPreference = 'Stop'
 $script:RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 # Files that every unit is compiled with. A change there needs a preview of every unit, not of one.
 $script:GlobalFiles = @('bicepconfig.json')
-$script:MaxPreviewUnits = 12
+$script:MaxPreviewUnits = 3
 # The account that writes as the workflow's own token. Only its issues are the pipeline's own.
 $script:BotLogin = 'github-actions[bot]'
 # The longest preview text a job summary shows. GitHub accepts 1 MiB for the summary of one step. The whole text is
