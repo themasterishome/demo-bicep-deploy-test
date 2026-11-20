@@ -95,3 +95,5 @@ resource automationCredential_demo_cred 'Microsoft.Automation/automationAccounts
     description: 'Demo credential whose password is read from kv-demo-mirror-secrets.'
   }
 }
+
+// test comment

@@ -45,3 +45,5 @@ resource roleDefinition_demo_reader_plus 'Microsoft.Authorization/roleDefinition
     ]
   }
 }
+
+// test comment
