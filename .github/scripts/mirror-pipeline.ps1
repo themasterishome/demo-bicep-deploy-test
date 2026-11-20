@@ -426,10 +426,11 @@ function Get-UnitFiles($UnitsDoc, [string]$Root) {
 }
 
 # The units a code change touches. Returns the units to preview and notes for the job summary. A change to a file
-# that every unit is compiled with (bicepconfig.json in any folder) previews no unit. The preview job takes
-# bicepconfig.json from master, so a preview could not show the effect of the changed copy. The preflight job
-# compiles and lints every unit with it, and a code owner reviews it. Bicep reads the bicepconfig.json nearest to
-# each file, so one in a subfolder applies to every file below it.
+# that every unit is compiled with (bicepconfig.json in any folder) adds no unit to the preview. The preview job
+# takes bicepconfig.json from master, so a preview could not show the effect of the changed copy. The preflight job
+# compiles and lints every unit with it, and a code owner reviews it. The other units the pull request changes are
+# still previewed. Bicep reads the bicepconfig.json nearest to each file, so one in a subfolder applies to every
+# file below it.
 # No standard tool names the deployments a changed Bicep file belongs to without compiling every unit, so the
 # units come from the references the files hold (module, using, the load functions).
 function Resolve-AffectedUnits([string[]]$ChangedPaths, $UnitsDoc, $UnitFiles, [string[]]$ChangedUnitEntries = @()) {
@@ -458,7 +459,6 @@ function Resolve-AffectedUnits([string[]]$ChangedPaths, $UnitsDoc, $UnitFiles, [
     if (-not $hits.Contains($n)) { continue }
     $preview.Add($n)
   }
-  if ($all -and $preview.Count -gt 0) { $preview.Clear() }
   return [pscustomobject]@{ preview = [string[]]$preview.ToArray(); notes = [string[]]$notes.ToArray(); all = $all }
 }
 

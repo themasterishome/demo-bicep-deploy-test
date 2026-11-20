@@ -113,7 +113,7 @@ try {
   Remove-Item -LiteralPath $mt -Recurse -Force -ErrorAction SilentlyContinue
 }
 $r = Resolve-AffectedUnits @('bicepconfig.json', 'infra/subscriptions/demo/main.bicep') $units $files
-Assert-True ($r.all -and @($r.preview).Count -eq 0) 'bicepconfig.json is compiled into every unit, so it previews no single unit'
+Assert-True ($r.all -and @($r.preview) -contains 'demo-subscription') 'bicepconfig.json adds no unit to the preview, and the other units the pull request changes are still previewed'
 Assert-Contains @($r.notes) '*bicepconfig.json changed. Every unit is compiled with it*preflight job*' 'and the note names the check that covers it'
 $r = Resolve-AffectedUnits @('deploy/boundaries.json', 'scripts/deploy-unit.ps1') $units $files
 Assert-True (-not $r.all -and @($r.preview).Count -eq 0) 'a file the pipeline does not deploy from previews nothing'
