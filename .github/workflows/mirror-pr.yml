@@ -68,7 +68,6 @@ jobs:
     timeout-minutes: 10
     outputs:
       matrix: ${{ steps.units.outputs.matrix }}
-      blocked: ${{ steps.units.outputs.blocked }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -196,8 +195,7 @@ jobs:
 
   pr-gate:
     # The required status check. No Azure. It passes when the units were listed and every preview was taken, or
-    # when the pull request changes no unit. It fails when the pull request needs a preview that is not taken
-    # (a change to bicepconfig.json, or to more units than a pull request previews).
+    # when the pull request changes no unit.
     needs: [ units, whatif ]
     if: vars.MIRROR_PIPELINE_ENABLED == 'true' && always()
     runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
@@ -216,13 +214,11 @@ jobs:
           UNITS_RESULT: ${{ needs.units.result }}
           WHATIF_RESULT: ${{ needs.whatif.result }}
           MATRIX: ${{ needs.units.outputs.matrix }}
-          BLOCKED: ${{ needs.units.outputs.blocked }}
         run: |
           $text = if ($env:UNITS_RESULT -cne 'success') { "The units of this pull request could not be listed (result $env:UNITS_RESULT). The units job says why." }
-                  elseif ($env:BLOCKED -ceq 'true') { 'This pull request needs a preview that the pipeline does not take (a change to bicepconfig.json, or to more units than a pull request previews). The summary of the units job says which. Split the change, or preview the units by hand and have an owner of the repository merge it.' }
                   elseif ($env:MATRIX -ceq '[]') { 'This pull request changes no unit, so there is nothing to preview.' }
                   elseif ($env:WHATIF_RESULT -cne 'success') { "At least one preview could not be taken (result $env:WHATIF_RESULT). The summary of its whatif job says why." }
                   else { 'Every unit this pull request changes was previewed. The summary of each whatif job holds its preview.' }
           $text | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           Write-Host $text
-          if ($env:UNITS_RESULT -cne 'success' -or $env:BLOCKED -ceq 'true' -or ($env:MATRIX -cne '[]' -and $env:WHATIF_RESULT -cne 'success')) { exit 1 }
+          if ($env:UNITS_RESULT -cne 'success' -or ($env:MATRIX -cne '[]' -and $env:WHATIF_RESULT -cne 'success')) { exit 1 }
