@@ -52,3 +52,5 @@ and closes the issue when a run finds every unit clean.
 | `.github/scripts/` | The pipeline's helper script and its offline tests. |
 
 Nothing runs until the repository variable `MIRROR_PIPELINE_ENABLED` is set to `true`, as GUIDE.md shows.
+
+test line
