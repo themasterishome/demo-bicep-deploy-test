@@ -251,8 +251,9 @@ function Test-Retired([string]$full) {
 }
 
 # Environment variables a parameters file reads with readEnvironmentVariable('X') and no default, and that are not set.
+# The file is read as Bicep reads it, so a call inside a comment is not counted.
 function Get-UnsetSecureInputs([string]$paramFile) {
-  $text = [IO.File]::ReadAllText($paramFile)
+  $text = Get-BicepCodeText $paramFile
   return @([regex]::Matches($text, "readEnvironmentVariable\(\s*'([^']+)'\s*\)") | ForEach-Object { $_.Groups[1].Value } |
            Where-Object { -not [Environment]::GetEnvironmentVariable($_) } | Select-Object -Unique)
 }

@@ -115,6 +115,7 @@ try {
 $r = Resolve-AffectedUnits @('bicepconfig.json', 'infra/subscriptions/demo/main.bicep') $units $files
 Assert-True ($r.all -and @($r.preview).Count -eq 0) 'bicepconfig.json is compiled into every unit, so it previews no single unit'
 Assert-Contains @($r.notes) '*bicepconfig.json changed. Every unit is compiled with it*' 'and the note says why'
+Assert-True (@($r.blocked).Count -eq 1 -and @($r.blocked)[0] -like 'bicepconfig.json changed*Preview every unit by hand*') 'and the change is blocked, because no preview covers it'
 $r = Resolve-AffectedUnits @('deploy/boundaries.json', 'scripts/deploy-unit.ps1') $units $files
 Assert-True (-not $r.all -and @($r.preview).Count -eq 0) 'a file the pipeline does not deploy from previews nothing'
 $r = Resolve-AffectedUnits @('infra/tenant/governance.bicep') $units $files
@@ -127,6 +128,7 @@ $proto = @($manyUnits.units | Where-Object { $_.name -eq 'rg-demo-routing' })[0]
 $manyUnits.units = @($manyUnits.units) + @(1..13 | ForEach-Object { $c = Copy-Object $proto; $c.name = "rg-demo-many-$_"; $c })
 $r = Resolve-AffectedUnits @([string]$proto.template) $manyUnits (Get-UnitFiles $manyUnits $repo)
 Assert-True (@($r.preview).Count -eq 0 -and (@($r.notes) -join ' ') -like '*more than the 12*') 'more than 12 units are not previewed from a pull request'
+Assert-True (@($r.blocked).Count -eq 1 -and @($r.blocked)[0] -like '*more than the 12*Split the change into pull requests of 12 units or fewer*') 'and the change is blocked with the way out'
 $changedUnits = Copy-Object $units; $flipUnit = (@($changedUnits.units) | Where-Object { $_.name -eq 'rg-demo-routing' })[0]; $flipUnit.enabled = -not [bool]$flipUnit.enabled
 Assert-Equal 'rg-demo-routing' (@(Get-ChangedUnitEntries $units $changedUnits) -join ',') 'switching a unit on or off in units.json previews it'
 $changedUnits = Copy-Object $units; $zwUnit = (@($changedUnits.units) | Where-Object { $_.name -eq 'rg-demo-routing' })[0]; $zwUnit.resourceGroup = [string]$zwUnit.resourceGroup + $zw
@@ -733,7 +735,7 @@ exit $LASTEXITCODE
   Invoke-TestGit checkout -q --detach $c3 | Out-Null
   Invoke-TestGit merge -q --no-ff -m m2 $bDoc | Out-Null
   $prDoc = $pr.Clone(); $prDoc['MERGE_SHA'] = (Invoke-TestGit rev-parse HEAD)
-  Invoke-TestMode 'Units' $prDoc 'a pull request that changes no unit has an empty matrix' 0 'matrix=[]'
+  Invoke-TestMode 'Units' $prDoc 'a pull request that changes no unit has an empty matrix' 0 @('matrix=[]', 'blocked=false')
   Invoke-TestGit checkout -q --detach $c3 | Out-Null
   $delUnits = Copy-Object $unitsOn
   (@($delUnits.units) | Where-Object { $_.name -eq 'pilot-empty-rg' })[0] | Add-Member -Force -NotePropertyName stackDeletes -NotePropertyValue $true
@@ -749,7 +751,7 @@ exit $LASTEXITCODE
   Invoke-TestGit checkout -q --detach $c3 | Out-Null
   Invoke-TestGit merge -q --no-ff -m m4 $bCfg | Out-Null
   $prCfg = $pr.Clone(); $prCfg['MERGE_SHA'] = (Invoke-TestGit rev-parse HEAD)
-  Invoke-TestMode 'Units' $prCfg 'a pull request that changes bicepconfig.json previews no single unit and says why' 0 'Every unit is compiled with it'
+  Invoke-TestMode 'Units' $prCfg 'a pull request that changes bicepconfig.json previews no single unit, says why and is blocked' 0 @('Every unit is compiled with it', 'blocked=true', 'the required check fails')
   Invoke-TestGit checkout -q --detach $c2 | Out-Null
 
   # StackWhatIf, with the recorded answers of the Azure CLI.

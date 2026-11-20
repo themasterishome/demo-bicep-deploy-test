@@ -424,15 +424,17 @@ function Get-UnitFiles($UnitsDoc, [string]$Root) {
   return $map
 }
 
-# The units a code change touches. Returns the units to preview (at most $script:MaxPreviewUnits) and
-# notes for the job summary. A change to a file that every unit is compiled with (bicepconfig.json in any folder)
-# previews nothing, because such a change needs a preview of every unit. Bicep reads the bicepconfig.json nearest
-# to each file, so one in a subfolder applies to every file below it.
+# The units a code change touches. Returns the units to preview (at most $script:MaxPreviewUnits), notes for the
+# job summary and blocked, one line for each reason the change cannot be previewed in full. A change to a file that
+# every unit is compiled with (bicepconfig.json in any folder) previews nothing, because such a change needs a
+# preview of every unit. Bicep reads the bicepconfig.json nearest to each file, so one in a subfolder applies to
+# every file below it. A change with a blocked reason is not covered by a preview, so the required check fails.
 # No standard tool names the deployments a changed Bicep file belongs to without compiling every unit, so the
 # units come from the references the files hold (module, using, the load functions).
 function Resolve-AffectedUnits([string[]]$ChangedPaths, $UnitsDoc, $UnitFiles, [string[]]$ChangedUnitEntries = @()) {
   $preview = New-Object System.Collections.Generic.List[string]
   $notes = New-Object System.Collections.Generic.List[string]
+  $blocked = New-Object System.Collections.Generic.List[string]
   $all = $false
   $hits = New-Object 'System.Collections.Generic.HashSet[string]'
   foreach ($p in @($ChangedPaths)) {
@@ -440,7 +442,8 @@ function Resolve-AffectedUnits([string[]]$ChangedPaths, $UnitsDoc, $UnitFiles, [
     $lp = $p.Replace('\', '/').ToLowerInvariant()
     if ($script:GlobalFiles -contains $lp -or $lp.EndsWith('/bicepconfig.json')) {
       $all = $true
-      $notes.Add("$p changed. Every unit is compiled with it, so no single preview covers it. Preview the units by hand before this is merged.")
+      $notes.Add("$p changed. Every unit is compiled with it, so no single preview covers it.")
+      $blocked.Add("$p changed, and every unit is compiled with it. Preview every unit by hand before this is merged.")
       continue
     }
     $found = $false
@@ -458,10 +461,11 @@ function Resolve-AffectedUnits([string[]]$ChangedPaths, $UnitsDoc, $UnitFiles, [
   }
   if ($all -and $preview.Count -gt 0) { $preview.Clear() }
   if ($preview.Count -gt $script:MaxPreviewUnits) {
-    $notes.Add("$($preview.Count) units are affected, more than the $($script:MaxPreviewUnits) a pull request previews. Preview the units by hand instead.")
+    $notes.Add("$($preview.Count) units are affected, more than the $($script:MaxPreviewUnits) a pull request previews.")
+    $blocked.Add("$($preview.Count) units are affected, more than the $($script:MaxPreviewUnits) a pull request previews. Split the change into pull requests of $($script:MaxPreviewUnits) units or fewer, or preview the units by hand before this is merged.")
     $preview.Clear()
   }
-  return [pscustomobject]@{ preview = [string[]]$preview.ToArray(); notes = [string[]]$notes.ToArray(); all = $all }
+  return [pscustomobject]@{ preview = [string[]]$preview.ToArray(); notes = [string[]]$notes.ToArray(); blocked = [string[]]$blocked.ToArray(); all = $all }
 }
 
 # Unit entries that differ between two copies of deploy/units.json (added or changed), so enabling a unit
@@ -1360,7 +1364,7 @@ function Invoke-UnitsMode {
   $root = $script:RepoRoot
   $units = Read-JsonFile (Join-RepoPath $root 'deploy/units.json')
   $all = @(Get-Prop $units 'units')
-  $notes = @(); $pick = @()
+  $notes = @(); $pick = @(); $blocked = @()
   if ($select -ceq 'unit') {
     $name = Get-EnvValue 'UNIT'
     $u = Find-UnitDef $units $name
@@ -1393,11 +1397,15 @@ function Invoke-UnitsMode {
     $res = Resolve-AffectedUnits @($entries | ForEach-Object { $_.Path }) $units (Get-UnitFiles $units $root) $changedEntries
     $pick = @($res.preview | ForEach-Object { Find-UnitDef $units $_ } | Where-Object { $null -ne $_ })
     $notes = @("$($entries.Count) changed file(s), $($pick.Count) unit(s) to preview.") + @($res.notes)
+    $blocked = @($res.blocked)
   } else { Stop-Check "SELECT '$select' is not unit, deployed or pullRequest" 2 }
   $rows = @()
   foreach ($u in $pick) { try { $rows += (Get-UnitRow $u $units) } catch { Stop-Check "deploy/units.json: $($_.Exception.Message)" } }
   Set-StepOutput 'matrix' $(if ($rows.Count -gt 0) { ConvertTo-CompactJson @($rows) } else { '[]' })
-  Write-Summary (@("Units: $(if ($rows.Count -gt 0) { (@($rows | ForEach-Object { ConvertTo-CodeSpan $_.unit }) -join ', ') } else { 'none' }).") + @($notes | ForEach-Object { "- $_" }))
+  # The required check fails when the pull request needs a preview that this run does not take.
+  Set-StepOutput 'blocked' $(if ($blocked.Count -gt 0) { 'true' } else { 'false' })
+  $blockedLines = @(); if ($blocked.Count -gt 0) { $blockedLines = @('**This pull request is not covered by a preview, so the required check fails.**') + @($blocked | ForEach-Object { "- $_" }) + @('') }
+  Write-Summary ($blockedLines + @("Units: $(if ($rows.Count -gt 0) { (@($rows | ForEach-Object { ConvertTo-CodeSpan $_.unit }) -join ', ') } else { 'none' }).") + @($notes | ForEach-Object { "- $_" }))
 }
 
 # StackWhatIf mode. Validates and previews the deployment stack of one unit with the Azure CLI. The JSON of the
