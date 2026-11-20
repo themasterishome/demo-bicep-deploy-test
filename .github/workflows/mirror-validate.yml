@@ -72,7 +72,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-          # The whole history, so a secret that a later commit removed is found too.
+          # The whole history of the commit under test, so a secret that a later commit removed is found too.
           fetch-depth: 0
       - name: Runner check
         uses: ./.github/actions/runner-check
@@ -90,7 +90,7 @@ jobs:
           if ($hash -ne $want) { Write-Error "$name SHA256 $hash does not match the published hash"; exit 1 }
           if ($IsWindows) { Expand-Archive -LiteralPath $archive -DestinationPath $dir -Force }
           else { tar -xzf $archive -C $dir; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
-          & (Join-Path $dir $(if ($IsWindows) { 'gitleaks.exe' } else { 'gitleaks' })) detect --redact --no-banner --source . --config .gitleaks.toml
+          & (Join-Path $dir $(if ($IsWindows) { 'gitleaks.exe' } else { 'gitleaks' })) detect --redact --no-banner --source . --config .gitleaks.toml --log-opts HEAD
           exit $LASTEXITCODE
 
   actionlint:
