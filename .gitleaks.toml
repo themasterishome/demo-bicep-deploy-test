@@ -1,5 +1,5 @@
 # Secret scan settings for the validate workflow, .github/workflows/mirror-validate.yml (Gitleaks 8.30.1).
-#   gitleaks detect --redact --no-banner --no-git --source . --config .gitleaks.toml
+#   gitleaks detect --redact --no-banner --source . --config .gitleaks.toml --log-opts HEAD
 # The default Gitleaks rules apply, plus three Azure patterns they do not cover. Any finding fails
 # the run. The only folder left out is reports/work/ at the root of the repository, the local working
 # folder that is never committed (sweep output and deployment evidence).
@@ -55,6 +55,6 @@ regexes = [
   '''`[0-9a-f]{40}` v\d+\.\d+''',
 ]
 
-[allowlist]
+[[allowlists]]
 description = "The local working folder at the repository root, never committed"
 paths = ['''^reports[\\/]work[\\/]''']

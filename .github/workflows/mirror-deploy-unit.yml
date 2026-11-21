@@ -27,7 +27,7 @@
 #            mirror-privileged-tenant for a unit of the privileged tier. Only master may use these environments, and
 #            they hold the required reviewers. After the approval the job first checks that the plan is still
 #            current, which means that master's tip is still the commit of the run and that the plan is not
-#            older than 24 hours (the repository variable MIRROR_MAX_PLAN_AGE_HOURS changes the number). An approval that comes after a
+#            older than 72 hours (the repository variable MIRROR_MAX_PLAN_AGE_HOURS changes the number). An approval that comes after a
 #            later merge, or too late, deploys nothing, and the deployment is started again. Then the job creates
 #            or updates the stack mirror-<unit> with azure/bicep-deploy from the same commit as the plan, because
 #            both are jobs of the same run.
@@ -269,7 +269,7 @@ jobs:
         # The job starts here only after a reviewer approved, which can be days after the plan. A deployment
         # writes the whole template of this run's commit, so an approval that comes after a later merge would
         # write older code over a newer deployment, and no plan of this run would show it. The step stops the job
-        # when master's tip is no longer the commit of this run, and when the plan is older than 24 hours, or the
+        # when master's tip is no longer the commit of this run, and when the plan is older than 72 hours, or the
         # whole number of hours in the repository variable MIRROR_MAX_PLAN_AGE_HOURS (1 to 720). Nothing is
         # written to Azure before it. The deployment is then started again with Run workflow.
         shell: pwsh
@@ -280,7 +280,7 @@ jobs:
           PLANNED: ${{ needs.plan.outputs.planned }}
           MAX_HOURS: ${{ vars.MIRROR_MAX_PLAN_AGE_HOURS }}
         run: |
-          $max = 24
+          $max = 72
           if ($env:MAX_HOURS -match '^[0-9]{1,3}\z' -and [int]$env:MAX_HOURS -ge 1 -and [int]$env:MAX_HOURS -le 720) { $max = [int]$env:MAX_HOURS }
           if ($env:PLANNED -notmatch '^[0-9]{9,11}\z') { Write-Host "::error::the plan job gave no time for its preview, so the age of the plan is not known. Start the deployment again"; exit 1 }
           $hours = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [long]$env:PLANNED) / 3600

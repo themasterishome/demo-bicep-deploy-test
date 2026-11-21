@@ -17,8 +17,9 @@ updates:
     directory: /
     schedule:
       interval: monthly
-    # A release is proposed only when it is 7 days old, so a release that is withdrawn or found to be malicious in
-    # its first week is never proposed.
+    # A release is proposed only when it is 3 days old, so a release that is withdrawn or found to be malicious in
+    # its first days is never proposed. 3 days is GitHub's default for version updates. It is written here so that
+    # it stays visible, and a lower value fails the workflow audit.
     cooldown:
-      default-days: 7
+      default-days: 3
     open-pull-requests-limit: 0

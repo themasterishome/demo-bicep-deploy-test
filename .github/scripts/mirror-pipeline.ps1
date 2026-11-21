@@ -605,12 +605,12 @@ function Get-JobSteps([string]$JobText) {
 # The rules for the two local actions under .github/actions. Each is a composite action of run steps in pwsh. It uses
 # no other action and no expression, so nothing a caller or an event supplies reaches its commands. The runner check
 # must read the runner's three facts, and the Bicep setup must keep the pinned version, both hashes, the check of the
-# binary and the PATH setting.
+# binary and the Azure CLI setting that makes it use that binary.
 function Test-ActionHygiene([hashtable]$Files) {
   $errors = @()
   $needs = @{
     'runner-check' = @('RUNNER_ENVIRONMENT', 'RUNNER_ARCH', 'ImageOS')
-    'setup-bicep'  = @('az bicep install --version', 'BICEP_VERSION', 'BICEP_SHA256_WINDOWS', 'BICEP_SHA256_LINUX', 'Get-FileHash', 'GITHUB_PATH', 'AZURE_BICEP_USE_BINARY_FROM_PATH', 'az bicep version')
+    'setup-bicep'  = @('az bicep install --version', 'BICEP_VERSION', 'BICEP_SHA256_WINDOWS', 'BICEP_SHA256_LINUX', 'Get-FileHash', 'bicep.use_binary_from_path=false', 'az bicep version')
   }
   foreach ($name in @($Files.Keys | Sort-Object)) {
     $label = ".github/actions/$name/action.yml"

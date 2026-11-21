@@ -1,5 +1,5 @@
 name: Set up Bicep
-description: Installs the pinned Bicep CLI through the Azure CLI, checks its SHA256, puts it first on PATH and checks that the Azure CLI uses it. The version and the two hashes come from BICEP_VERSION, BICEP_SHA256_WINDOWS and BICEP_SHA256_LINUX in the calling workflow.
+description: Installs the pinned Bicep CLI through the Azure CLI, checks its SHA256 and checks that the Azure CLI uses it. The version and the two hashes come from BICEP_VERSION, BICEP_SHA256_WINDOWS and BICEP_SHA256_LINUX in the calling workflow.
 runs:
   using: composite
   steps:
@@ -11,30 +11,24 @@ runs:
         if ($env:RUNNER_ARCH -ne 'X64' -or @('Windows', 'Linux') -notcontains $env:RUNNER_OS) { Write-Error "the runner is $env:RUNNER_OS $env:RUNNER_ARCH, and the Bicep CLI is pinned for Windows or Linux on x64"; exit 1 }
         $exe = if ($IsWindows) { 'bicep.exe' } else { 'bicep' }
         $want = if ($IsWindows) { $env:BICEP_SHA256_WINDOWS } else { $env:BICEP_SHA256_LINUX }
+        # In a GitHub job the Azure CLI would use the first bicep on PATH, which is the runner image's own copy.
+        # With bicep.use_binary_from_path set to false it always uses the copy it installs in the bin folder of its
+        # configuration folder, which is the copy whose hash is checked below. The setting is kept in the Azure CLI's
+        # configuration file, so it holds for the later steps of the job. The step writes nothing to GITHUB_PATH or
+        # GITHUB_ENV, because a later step that trusted such a file would run whatever it named.
+        az config set bicep.use_binary_from_path=false --only-show-errors
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         az bicep install --version $env:BICEP_VERSION
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         $cfg = if ($env:AZURE_CONFIG_DIR) { $env:AZURE_CONFIG_DIR } else { Join-Path $HOME '.azure' }
-        $bin = Join-Path $cfg 'bin'
-        $file = Join-Path $bin $exe
+        $file = Join-Path (Join-Path $cfg 'bin') $exe
         $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
         if ($hash -ne $want) { Write-Error "$exe SHA256 $hash does not match the published hash of $env:BICEP_VERSION"; exit 1 }
         # On Linux the file must be executable. The Azure CLI sets that, and the step sets it again.
         if (-not $IsWindows) { chmod 755 $file; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
-        # In a GitHub job the Azure CLI uses the first bicep on PATH, and the runner image has its own copy
-        # there. So the checked binary goes first on PATH for the later steps of this job, and the CLI setting
-        # bicep.use_binary_from_path is set to true through its environment variable.
-        $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-        'AZURE_BICEP_USE_BINARY_FROM_PATH=true' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-    - name: Check the Bicep CLI
-      # A step of its own, because a PATH change takes effect only in the steps after the one that made it.
-      shell: pwsh
-      run: |
-        $want = if ($IsWindows) { $env:BICEP_SHA256_WINDOWS } else { $env:BICEP_SHA256_LINUX }
-        $first = Get-Command bicep -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-        if (-not $first) { Write-Error 'no bicep on PATH'; exit 1 }
-        $hash = (Get-FileHash -LiteralPath $first.Source -Algorithm SHA256).Hash
-        if ($hash -ne $want) { Write-Error "the first bicep on PATH, $($first.Source), is not the checked $env:BICEP_VERSION binary"; exit 1 }
-        $want = $env:BICEP_VERSION.TrimStart('v')
+        $setting = ((az config get bicep.use_binary_from_path --query value -o tsv --only-show-errors) -join '').Trim()
+        if ($LASTEXITCODE -ne 0 -or $setting -ne 'false') { Write-Error "the Azure CLI setting bicep.use_binary_from_path reads '$setting', expected false"; exit 1 }
         $v = (az bicep version) -join ' '
-        if ($LASTEXITCODE -ne 0 -or $v -notmatch ('version ' + [regex]::Escape($want) + '\b')) { Write-Error "az bicep version reports '$v', expected $want"; exit 1 }
-        Write-Host "The Azure CLI uses Bicep $want from $($first.Source)"
+        $version = $env:BICEP_VERSION.TrimStart('v')
+        if ($LASTEXITCODE -ne 0 -or $v -notmatch ('version ' + [regex]::Escape($version) + '\b')) { Write-Error "az bicep version reports '$v', expected $version"; exit 1 }
+        Write-Host "The Azure CLI uses Bicep $version from $file"

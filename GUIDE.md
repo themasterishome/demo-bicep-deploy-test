@@ -68,7 +68,7 @@ Five things protect a deploy or govern identity:
 - The environment's branch rule, which lets only `master` use the environment.
 - The federated credential, bound to that one environment. A pull request, another branch or another environment presents another subject, and Azure refuses it.
 - No secret. Nobody can add a client secret to a managed identity.
-- The stale-plan check and the tier. The apply refuses to write when `master` has moved since the plan or the plan is older than 24 hours. A unit's tier chooses its environment and its identity.
+- The stale-plan check and the tier. The apply refuses to write when `master` has moved since the plan or the plan is older than 72 hours. A unit's tier chooses its environment and its identity.
 
 A deploy identity can still assign Reader, the one role on its list, to any principal, and Contributor can grant access to data through a resource's own settings. So the reviewer reads a role assignment in a production unit's plan as an access change. The demo's production units declare one, the Reader assignment of `rg-demo-network`, and no data access grants.
 
@@ -889,7 +889,7 @@ Check each environment, for example with `gh variable list --env mirror-reader-d
 
 To show it in the browser, select **Settings** > **Environments** and the environment's name. Under **Environment variables**, select **Add variable**, type the name and the value, and select **Add variable** again. GitHub cannot store a variable with an empty value, so it refuses an empty one with the message "Variable value cannot be empty".
 
-Leave `MIRROR_RUNNER`, `MIRROR_MAX_PLAN_AGE_HOURS` and `MIRROR_DRIFT_SCHEDULE_ENABLED` unset. Every job then runs on `windows-2025`, apart from `portability`, which runs on `ubuntu-24.04`. A plan may wait 24 hours for its approval. The weekly start of mirror-drift, every Monday at 05:00 UTC, skips every job until `MIRROR_DRIFT_SCHEDULE_ENABLED` is `true`, and section 4.9 sets it. Run workflow starts the drift check at any time without it. The switch `MIRROR_PIPELINE_ENABLED` waits for step 3.20.
+Leave `MIRROR_RUNNER`, `MIRROR_MAX_PLAN_AGE_HOURS` and `MIRROR_DRIFT_SCHEDULE_ENABLED` unset. Every job then runs on `windows-2025`, apart from `portability`, which runs on `ubuntu-24.04`. A plan may wait 72 hours for its approval. The weekly start of mirror-drift, every Monday at 05:00 UTC, skips every job until `MIRROR_DRIFT_SCHEDULE_ENABLED` is `true`, and section 4.9 sets it. Run workflow starts the drift check at any time without it. The switch `MIRROR_PIPELINE_ENABLED` waits for step 3.20.
 
 ### 3.19 Check the client IDs of the environments
 
@@ -1169,7 +1169,7 @@ This is project step 3.23 and sections 4.2 to 4.8. Project section 4.6, the chec
    gh run view RUN_ID --repo themasterishome/demo-bicep-deploy-test --json status,conclusion,jobs --jq "[.status, .conclusion, (.jobs[] | .name + ':' + .conclusion)]"
    ```
 
-   Replace `RUN_ID` with the run's ID (item 10). The apply job checks that the plan is still current (`master` has not moved since the plan and the plan is under 24 hours old), reads the environment's client ID, signs in as the deploy identity, creates the deployment stack `mirror-pilot-empty-rg` with the action `azure/bicep-deploy` from the same commit as the plan, and then summarizes the stack. The summary table says `succeeded`, 0 managed resources and the action on unmanage. The action warns about the input `action-on-unmanage-managementgroups`. The released action describes the singular `action-on-unmanage-managementgroup` and its code reads the plural, so the workflow sets both, and the warning changes nothing.
+   Replace `RUN_ID` with the run's ID (item 10). The apply job checks that the plan is still current (`master` has not moved since the plan and the plan is under 72 hours old), reads the environment's client ID, signs in as the deploy identity, creates the deployment stack `mirror-pilot-empty-rg` with the action `azure/bicep-deploy` from the same commit as the plan, and then summarizes the stack. The summary table says `succeeded`, 0 managed resources and the action on unmanage. The action warns about the input `action-on-unmanage-managementgroups`. The released action describes the singular `action-on-unmanage-managementgroup` and its code reads the plural, so the workflow sets both, and the warning changes nothing.
 
 10. Read the stack and download the plan. The run's ID is the long number after `/actions/runs/` in the run's address, not the `#N` number.
 
@@ -1397,7 +1397,7 @@ This is project section 4.9. The resources now exist under a stack, and a change
    gh workflow run mirror-deploy-unit.yml --ref master -f unit=rg-demo-network -f changeRef=DEMO-0009 -f reason="A tag on nsg-demo" -f apply=true --repo themasterishome/demo-bicep-deploy-test
    ```
 
-5. Approve it as the second account with **Review deployments**, as in 4.2 item 8. The apply refuses to write when the plan is no longer current. Show it once. Start a deployment with `apply` on and, while it waits for approval, merge any other pull request. After the approval the apply stops at the step "Check the plan is still current" with `master is at ... and the plan was taken on ...`, and the stack stays as it was. The same step refuses a plan older than 24 hours. The repository variable `MIRROR_MAX_PLAN_AGE_HOURS` changes the number.
+5. Approve it as the second account with **Review deployments**, as in 4.2 item 8. The apply refuses to write when the plan is no longer current. Show it once. Start a deployment with `apply` on and, while it waits for approval, merge any other pull request. After the approval the apply stops at the step "Check the plan is still current" with `master is at ... and the plan was taken on ...`, and the stack stays as it was. The same step refuses a plan older than 72 hours. The repository variable `MIRROR_MAX_PLAN_AGE_HOURS` changes the number.
 
 6. When a resource leaves the template, the stack detaches it. Remove one resource from a template in a pull request, and the preview shows it as `detach`. After the deployment the resource still exists and the stack lists it under its detached resources. A unit with `"stackDeletes": true` in `deploy/units.json` deletes it instead, and the preview shows `delete`. A resource group and a management group are never deleted, and the pipeline's rules refuse `stackDeletes` for a tenant unit and for a unit of the subscription that holds the API Management platform.
 
@@ -1490,7 +1490,7 @@ A rollback of a resource that a deployment created is a deletion. With `stackDel
 | A plan fails at "Validate and preview the stack" with `ResourceGroupNotFound` | The resource group of the unit does not exist. The pipeline never creates it | Create the group by hand, as 4.2 item 1 does, and start a new run |
 | A plan fails with `The content for this response was already consumed` or with `AuthorizationFailed` for a `deploymentStacks` action | The reader lacks one of its three stack actions (step 3.13). The first message is the missing `deploymentStacksWhatIfResults/whatIf/action` | Compare the role Mirror What-If Reader with the table of step 3.13 and wait about 10 minutes after a change |
 | A plan of a stack that creates a new management group fails with `Authorization failed for template resource ... Microsoft.Management/managementGroups/read` | A management group that does not exist has no parent path for the reader's Reader role to follow | Create the group by hand first, then the unit adopts it |
-| The apply stops at "Check the plan is still current" | `master` moved since the plan, or the plan is older than 24 hours (`MIRROR_MAX_PLAN_AGE_HOURS`). Nothing was written | Reject the run and start a new one |
+| The apply stops at "Check the plan is still current" | `master` moved since the plan, or the plan is older than 72 hours (`MIRROR_MAX_PLAN_AGE_HOURS`). Nothing was written | Reject the run and start a new one |
 | A second apply of the same subscription shows `pending` and not **Waiting** | A first apply of the subscription waits for its approval and holds the place. The second starts when the first is approved, rejected or cancelled | Approve or reject the first run |
 | The apply fails with `Cannot set Resources to 'Detach' when Resource Groups or Management Groups are 'Delete'` | The action on unmanage of a stack must agree, and a stack with a management group action of `delete` needs `delete` for resources too | Leave all three at `detach`, as the workflow does |
 | A run started from Git Bash is refused, and the IDs read `C:/Program Files/Git/subscriptions/...` | Git Bash rewrites arguments that start with `/subscriptions/` into Windows paths | Run the command from PowerShell. In Git Bash, put `MSYS_NO_PATHCONV=1` in front of it |
