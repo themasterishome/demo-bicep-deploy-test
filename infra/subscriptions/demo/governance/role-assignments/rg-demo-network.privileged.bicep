@@ -17,3 +17,5 @@ resource roleAssignment_owner 'Microsoft.Authorization/roleAssignments@2022-04-0
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '8e3af657-a8ff-443c-a75c-2fe8c4bcb635') // Owner
   }
 }
+
+// L14 test line for the preview run.
