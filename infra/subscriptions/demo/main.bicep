@@ -70,3 +70,5 @@ resource defenderPlan_VirtualMachines 'Microsoft.Security/pricings@2026-07-01' =
     pricingTier: 'Free'
   }
 }
+
+// Security scan test line.
