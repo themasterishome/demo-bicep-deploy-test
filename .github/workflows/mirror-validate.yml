@@ -61,6 +61,13 @@ env:
   ACTIONLINT_VERSION: 1.7.12
   ACTIONLINT_SHA256_WINDOWS: 6E7241B51E6817EA6A047693D8E6FED13B31819C9A0DD6C5A726E1592D22F6E9
   ACTIONLINT_SHA256_LINUX: 8ACA8DB96F1B94770F1B0D72B6DDDCB1EBB8123CB3712530B08CC387B349A3D8
+  # The security scan uses the PowerShell Gallery packages PSRule 2.9.0 and PSRule.Rules.Azure 1.47.0, with the
+  # SHA512 (base64) the Gallery publishes for each package. Change a version and its hash together, and the
+  # versions in ps-rule.yaml and scripts/sast-psrule.ps1.
+  PSRULE_VERSION: 2.9.0
+  PSRULE_SHA512: F7Pjubm+Muxmi1lA+2IIysnAMKa2I2QmgiD1BWHOQuDLxB7b4Ybb/IZ1SlqEHEwHE8F6ldJ+eTnwRgLVtDVsCw==
+  PSRULE_AZURE_VERSION: 1.47.0
+  PSRULE_AZURE_SHA512: aW1NQ3wSRH6W3LgoggerVs7fMcRfLpzU+PiyXKPZQtIC2hgSF0Ap8I1lwj53mYLFh/AuA6wIIBe3wg6G0EP+Bw==
 
 # Actions are pinned to the full commit SHA of the release named in the comment.
 jobs:
@@ -274,3 +281,78 @@ jobs:
         with:
           name: build-logs
           path: ${{ runner.temp }}/build-logs
+
+  security-scan:
+    # Report-only. PSRule for Azure scans the units a pull request changes and writes its findings to the job summary
+    # and the security-scan artifact. The code copies live, so nearly every finding is a live setting that only IT
+    # can change, and each is an open item of DECISIONS-AND-REVIEW.md or a note in its section "Closed by a decision".
+    # So the job never fails the run (continue-on-error) and is not a required check. It runs on windows-2025,
+    # because the scan script is measured on Windows PowerShell 5.1.
+    if: vars.MIRROR_PIPELINE_ENABLED == 'true' && github.event_name == 'pull_request'
+    runs-on: windows-2025
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The test merge commit and its first parent, master's tip, so the job can list what the merge changes.
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Runner check
+        uses: ./.github/actions/runner-check
+      - name: Pin and check the Bicep CLI
+        uses: ./.github/actions/setup-bicep
+      - id: units
+        name: List the units the pull request changes
+        shell: pwsh
+        env:
+          SELECT: pullRequest
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          MERGE_SHA: ${{ github.sha }}
+        run: |
+          & ./.github/scripts/mirror-pipeline.ps1 -Mode Units
+          exit $LASTEXITCODE
+      - name: Security scan (PSRule for Azure)
+        id: scan
+        shell: pwsh
+        env:
+          MATRIX: ${{ steps.units.outputs.matrix }}
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'security-scan'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $names = @(($env:MATRIX | ConvertFrom-Json) | ForEach-Object { [string]$_.unit })
+          if ($names.Count -eq 0) {
+            'Security scan: the pull request changes no unit, so nothing was scanned.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            exit 0
+          }
+          # Each package comes from the PowerShell Gallery and must have the SHA512 the Gallery publishes for it.
+          $mods = Join-Path $env:RUNNER_TEMP 'psmodules'
+          foreach ($p in @(@{ Id = 'PSRule'; Version = $env:PSRULE_VERSION; Sha = $env:PSRULE_SHA512 }, @{ Id = 'PSRule.Rules.Azure'; Version = $env:PSRULE_AZURE_VERSION; Sha = $env:PSRULE_AZURE_SHA512 })) {
+            $zip = Join-Path $env:RUNNER_TEMP "$($p.Id).$($p.Version).zip"
+            Invoke-WebRequest -Uri "https://www.powershellgallery.com/api/v2/package/$($p.Id)/$($p.Version)" -OutFile $zip
+            $sha = [System.Security.Cryptography.SHA512]::Create()
+            try { $hash = [Convert]::ToBase64String($sha.ComputeHash([IO.File]::ReadAllBytes($zip))) } finally { $sha.Dispose() }
+            if ($hash -cne $p.Sha) { Write-Error "$($p.Id) $($p.Version) SHA512 $hash does not match the published hash"; exit 1 }
+            Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path (Join-Path $mods $p.Id) $p.Version) -Force
+          }
+          $cfg = if ($env:AZURE_CONFIG_DIR) { $env:AZURE_CONFIG_DIR } else { Join-Path $HOME '.azure' }
+          # The values reach Windows PowerShell through its environment, never through the text of the command.
+          $env:SCAN_MODULES = $mods
+          $env:SCAN_UNITS = $names -join ','
+          $env:SCAN_OUT = $out
+          $env:SCAN_BICEP = Join-Path (Join-Path $cfg 'bin') 'bicep.exe'
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '$env:PSModulePath = $env:SCAN_MODULES + [IO.Path]::PathSeparator + $env:PSModulePath; & ./scripts/sast-psrule.ps1 -Unit $env:SCAN_UNITS -OutDir $env:SCAN_OUT -Bicep $env:SCAN_BICEP; exit $LASTEXITCODE'
+          $code = $LASTEXITCODE
+          $summary = Join-Path $out 'summary.txt'
+          $lines = @("### Security scan (report-only)", '', "Units: $($names -join ', ').", '')
+          if (Test-Path -LiteralPath $summary) { $lines += @('```', (Get-Content -LiteralPath $summary -Raw).TrimEnd(), '```') } else { $lines += 'The scan wrote no summary. The job log says why.' }
+          $lines += @('', 'Findings do not fail the run. A finding on a live setting belongs to an open item of DECISIONS-AND-REVIEW.md. The SARIF files are in the security-scan artifact.')
+          $lines -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          exit $code
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        if: always()
+        with:
+          name: security-scan
+          path: ${{ runner.temp }}/security-scan
+          if-no-files-found: ignore

@@ -1,0 +1,62 @@
+# PSRule for Azure settings for the offline security scan (scripts/sast-psrule.ps1).
+# The scan reads files only; it makes no Azure call. The runner passes the entry points from deploy/units.json,
+# because a module file with required parameters cannot be expanded on its own.
+
+# Measured with PSRule 2.9.0 and PSRule.Rules.Azure 1.47.0 on Windows PowerShell 5.1, with Bicep CLI 0.49.2.
+requires:
+  PSRule: '>=2.9.0'
+  PSRule.Rules.Azure: '>=1.47.0'
+
+include:
+  module:
+  - PSRule.Rules.Azure
+
+# Bind each expanded resource by its resource type, as PSRule for Azure does by default.
+binding:
+  preferTargetInfo: true
+  targetType:
+  - resourceType
+  - type
+
+configuration:
+  # Expand .bicep and .bicepparam files with the Bicep CLI (PSRULE_AZURE_BICEP_PATH points at it).
+  AZURE_BICEP_FILE_EXPANSION: true
+  AZURE_BICEP_PARAMS_FILE_EXPANSION: true
+  # Seconds allowed for one bicep build. 120 is the most PSRule accepts; an entry point that takes longer is
+  # compiled by the runner and scanned as ARM JSON instead.
+  AZURE_BICEP_FILE_EXPANSION_TIMEOUT: 120
+  # Refuse a Bicep CLI older than the one the repository is built with.
+  AZURE_BICEP_CHECK_TOOL: true
+  AZURE_BICEP_MINIMUM_VERSION: '0.49.2'
+  # Used only for the compiled fallback: a JSON parameter file whose metadata names its template.
+  AZURE_PARAMETER_FILE_EXPANSION: true
+  AZURE_PARAMETER_FILE_METADATA_LINK: true
+
+input:
+  # When PSRule is pointed at a folder instead of the runner's entry points (Assert-PSRule -InputPath .), it
+  # leaves out the git-ignored work folder (sweep output, scan reports, local copies) and the raw discovery output.
+  pathIgnore:
+  - 'reports/work/'
+  - 'reports/raw/'
+
+execution:
+  # The parameter file itself is not a resource; do not warn that no rule matched it.
+  unprocessedObject: Ignore
+
+output:
+  culture:
+  - en-US
+
+# Baseline: the runner uses Azure.Default (every GA rule of the current release) and reports the Security
+# pillar subset separately. Pass -Baseline Azure.Pillar.Security to run only the security rules.
+
+# Suppression. A suppressed rule does not run on the resources named under it, and every other rule still runs
+# on them. fdmt-mysql-uks-mysqlcourse-001 (MySQL flexible server) in FDMT-RSG-UKS-MYSQLCOURSE-001 in FDM - Skills Lab
+# is a training server for Skills Lab consultants. It is open to the internet by design and needs no geo-redundant
+# backup (Klaudio's decision), so the geo-redundant backup rule is suppressed for this name only. PSRule for Azure
+# 1.47.0 has no rule on public network access or infrastructure encryption, and it runs Azure.MySQL.AllowAzureAccess,
+# Azure.MySQL.FirewallIPRange and Azure.MySQL.FirewallRuleCount only on single servers, so the MySQL flexible server
+# needs no entry for them. The name is written as the scan reports it.
+suppression:
+  Azure.MySQL.GeoRedundantBackup:
+  - fdmt-mysql-uks-mysqlcourse-001
