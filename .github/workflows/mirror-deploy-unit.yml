@@ -13,8 +13,9 @@
 # reason. Leave apply off for a plan only. With apply on, the apply waits for the reviewers.
 #
 #   units    No Azure. Reads the unit from deploy/units.json and writes the row the other jobs use: the scope, the
-#            name and the files of its stack. A unit that is not enabled is refused, and so is the unit of a
-#            deploy-excluded file, which is never deployed.
+#            name and the files of its stack. A unit that is not enabled is refused when apply is on, and
+#            planned when apply is off. The unit of a deploy-excluded file is always refused, because it is never
+#            deployed.
 #   plan     The reader identity (environment mirror-reader-dispatch, master only). It validates the stack and
 #            previews it with the Azure CLI (az stack validate, az stack-whatif), and writes the preview to the
 #            job summary and to an artifact. When the file deploy/adoption/<unit>.md exists, the summary also
@@ -112,6 +113,9 @@ jobs:
     timeout-minutes: 10
     outputs:
       matrix: ${{ steps.units.outputs.matrix }}
+      # true only for a unit that is enabled. The apply job runs only then, so a plan only of a disabled unit
+      # can never deploy it.
+      deployable: ${{ steps.units.outputs.deployable }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -250,7 +254,7 @@ jobs:
   apply:
     needs: [ units, plan ]
     # The first attempt only. A re-run of this job alone would deploy without a fresh plan.
-    if: vars.MIRROR_PIPELINE_ENABLED == 'true' && inputs.apply && needs.plan.result == 'success' && github.run_attempt == '1'
+    if: vars.MIRROR_PIPELINE_ENABLED == 'true' && inputs.apply && needs.units.outputs.deployable == 'true' && needs.plan.result == 'success' && github.run_attempt == '1'
     name: apply ${{ matrix.unit }}
     runs-on: ${{ vars.MIRROR_RUNNER == 'ubuntu-24.04' && 'ubuntu-24.04' || 'windows-2025' }}
     # The job waits here for the required reviewers of the environment, and the identity cannot sign in until one
