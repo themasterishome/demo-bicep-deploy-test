@@ -127,7 +127,7 @@ resource federatedCredential_mirror_privileged_tenant 'Microsoft.ManagedIdentity
 resource vault_kv_demo_mirror_secrets 'Microsoft.KeyVault/vaults@2025-05-01' = {
   name: 'kv-demo-mirror-secrets'
   location: location
-  tags: { purpose: 'demo-bicep-deploy' }
+  tags: { purpose: 'demo-bicep-deploy-changed' }
   properties: {
     tenantId: tenant().tenantId
     sku: {
