@@ -1,0 +1,19 @@
+# Settings of the workflow audit (zizmor) in mirror-validate. The audits run with their defaults. The first rule below
+# names the actions a workflow may use, and unpinned-uses keeps its default of a full commit SHA for every one of
+# them. The local actions under .github/actions are audited with the workflows, and the helper's workflow rules limit them too.
+rules:
+  forbidden-uses:
+    config:
+      allow:
+        - actions/checkout
+        - actions/upload-artifact
+        - actions/download-artifact
+        - azure/login
+        - azure/bicep-deploy
+  # The Dependabot cooldown must be at least GitHub's default of 3 days. zizmor's own default asks for 7.
+  dependabot-cooldown:
+    config:
+      days: 3
+  # Style advice to write a local action as $/.github/actions/name. It is not a security finding.
+  self-repository:
+    disable: true
