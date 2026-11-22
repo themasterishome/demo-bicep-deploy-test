@@ -34,7 +34,7 @@
       "parameters": "infra/subscriptions/demo/resource-groups/rg-demo-network.bicepparam",
       "wave": 1,
       "risk": "low",
-      "enabled": true,
+      "enabled": false,
       "notes": "One network security group with no rules of its own and one virtual network with one subnet, which that network security group protects, and the private endpoint of the secrets vault with its DNS zone, link and zone group. The group's lock, policy assignment and Reader role assignment are here too. Free resources apart from the private endpoint."
     },
     {
