@@ -20,5 +20,5 @@ The records come from the read-only preview of the demo units, preview file `rg-
 
 The files of the unit the previews were taken from, each with the SHA256 of its text (line endings left out). The plan of the unit's first run compares them with the files of its commit and fails when one differs, because this evidence then belongs to another version of the unit.
 
-- `infra/subscriptions/demo/resource-groups/rg-demo-identities.deploy-excluded.bicep` SHA256 `764be4015e98611701c364220c303d85c5da99f83c730a6f25c4c052507885c5`
+- `infra/subscriptions/demo/resource-groups/rg-demo-identities.deploy-excluded.bicep` compiled template hash `583679676902983462`
 - `infra/subscriptions/demo/resource-groups/rg-demo-identities.deploy-excluded.bicepparam` SHA256 `2d3032906490f0ea6aacfcdf3144c8004b61bbe605d975a8fc8189d78662d880`

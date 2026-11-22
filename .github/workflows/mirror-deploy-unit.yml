@@ -194,8 +194,10 @@ jobs:
         # deploy/adoption/<unit>.md explains the differences the first preview of a unit lists before its stack
         # has a baseline. It is in the repository only until the unit's first deployment. A first run that brings
         # existing resources under the stack needs that evidence, so the plan fails when the file is missing, when
-        # it says it is not evidence, and when the SHA256 it names for the unit's template or parameters file is
-        # not the SHA256 of the file in this commit (line endings left out). A first run that only creates
+        # it says it is not evidence, and when a value it names is not the value of this commit. For the unit's
+        # template the value is the templateHash that Bicep writes into the compiled template. The compiled
+        # template holds every module the template calls, so a change to a module changes it too. For the
+        # parameters file it is the SHA256 of its text (line endings left out). A first run that only creates
         # resources, and every later run, passes without the file.
         shell: pwsh
         env:
@@ -213,12 +215,23 @@ jobs:
             $text = [IO.File]::ReadAllText($file)
             @('', '---', '', "## Adoption evidence for the first run of $env:UNIT", '', "From the file deploy/adoption/$env:UNIT.md of this commit.", '', $text) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
             if ($text -match 'This file cannot be relied on' -or $text -match 'this file is not evidence yet') { $problems += "the file deploy/adoption/$env:UNIT.md says it is not evidence" }
-            foreach ($path in @($env:TEMPLATE, $env:PARAMETERS) | Where-Object { $_ }) {
-              $m = [regex]::Match($text, '(?m)^- `' + [regex]::Escape($path) + '` SHA256 `([0-9a-f]{64})`\s*$')
-              $bytes = [Text.UTF8Encoding]::new($false).GetBytes([IO.File]::ReadAllText($path).Replace("`r`n", "`n"))
+            if ($env:TEMPLATE) {
+              $m = [regex]::Match($text, '(?m)^- `' + [regex]::Escape($env:TEMPLATE) + '` compiled template hash `([0-9]{1,30})`\s*$')
+              if (-not $m.Success) { $problems += "the file deploy/adoption/$env:UNIT.md names no compiled template hash for $env:TEMPLATE" }
+              else {
+                $compiled = (az bicep build --file $env:TEMPLATE --stdout --only-show-errors) -join "`n"
+                if ($LASTEXITCODE -ne 0) { Write-Host "::error::$env:TEMPLATE did not compile, so its adoption evidence cannot be checked"; exit 1 }
+                $now = [string]($compiled | ConvertFrom-Json -AsHashtable -Depth 100).metadata._generator.templateHash
+                if ($now -notmatch '^[0-9]{1,30}\z') { Write-Host "::error::the compiled template of $env:TEMPLATE carries no templateHash, so its adoption evidence cannot be checked"; exit 1 }
+                if ($m.Groups[1].Value -cne $now) { $problems += "the evidence was written from another version of $env:TEMPLATE or of a module it calls (compiled template hash $($m.Groups[1].Value) in the file, $now in this commit)" }
+              }
+            }
+            if ($env:PARAMETERS) {
+              $m = [regex]::Match($text, '(?m)^- `' + [regex]::Escape($env:PARAMETERS) + '` SHA256 `([0-9a-f]{64})`\s*$')
+              $bytes = [Text.UTF8Encoding]::new($false).GetBytes([IO.File]::ReadAllText($env:PARAMETERS).Replace("`r`n", "`n"))
               $now = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).Replace('-', '').ToLowerInvariant()
-              if (-not $m.Success) { $problems += "the file deploy/adoption/$env:UNIT.md names no SHA256 for $path" }
-              elseif ($m.Groups[1].Value -cne $now) { $problems += "the evidence was written from another version of $path (SHA256 $($m.Groups[1].Value) in the file, $now in this commit)" }
+              if (-not $m.Success) { $problems += "the file deploy/adoption/$env:UNIT.md names no SHA256 for $env:PARAMETERS" }
+              elseif ($m.Groups[1].Value -cne $now) { $problems += "the evidence was written from another version of $env:PARAMETERS (SHA256 $($m.Groups[1].Value) in the file, $now in this commit)" }
             }
           }
           if ($problems.Count -eq 0) { Write-Host "The adoption evidence of $env:UNIT is in the job summary."; exit 0 }

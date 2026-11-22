@@ -761,6 +761,13 @@ function Test-WorkflowHygiene([hashtable]$Files) {
             if ($current -lt 0 -or ($signIn -ge 0 -and $current -gt $signIn) -or $job -notmatch 'git/ref/heads/master' -or $job -notmatch 'github\.sha' -or $job -notmatch 'needs\.plan\.outputs\.planned') {
               $errors += "${name}: the apply job must check that the plan is still current before the Azure sign-in (the step ""Check the plan is still current"", which compares master's tip with github.sha and reads the time of the plan from needs.plan.outputs.planned)"
             }
+            $pin = $job.IndexOf('uses: ./.github/actions/setup-bicep', [StringComparison]::Ordinal)
+            $give = $job.IndexOf('- name: Give the deployment action the checked Bicep', [StringComparison]::Ordinal)
+            $stackStep = $job.IndexOf('azure/bicep-deploy@', [StringComparison]::Ordinal)
+            $used = $job.IndexOf('- name: Check the deployment action used the checked Bicep', [StringComparison]::Ordinal)
+            if ($pin -lt 0 -or $give -lt $pin -or $stackStep -lt $give -or $used -lt $stackStep) {
+              $errors += "${name}: the apply job must give azure/bicep-deploy the hash-checked Bicep (the local action setup-bicep, then the step ""Give the deployment action the checked Bicep"", both before the deployment, and the step ""Check the deployment action used the checked Bicep"" after it)"
+            }
             if ($job -notmatch '(?m)^[ \t]*operation:[ \t]*create[ \t]*$' -or $job -notmatch '(?m)^[ \t]*deny-settings-mode:[ \t]*none[ \t]*$') { $errors += "${name}: the apply job must create the stack with azure/bicep-deploy (operation: create) and with deny-settings-mode: none" }
             if ($job -notmatch '(?m)^[ \t]*action-on-unmanage-resources:[ \t]*\$\{\{ matrix\.unmanage \}\}[ \t]*$') { $errors += "${name}: the apply job must take action-on-unmanage-resources from the unit's row (`${{ matrix.unmanage }}), because stackDeletes is read and refused for some units in that row" }
             foreach ($g in @('resourcegroups', 'managementgroup', 'managementgroups')) {
