@@ -173,3 +173,5 @@ resource privateDnsZoneGroup_pe_kv_demo_mirror_secrets_default 'Microsoft.Networ
     ]
   }
 }
+
+// Temporary line so the pull request names this unit and the security scan runs.
