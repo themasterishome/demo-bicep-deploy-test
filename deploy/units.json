@@ -46,7 +46,7 @@
       "parameters": "infra/subscriptions/demo/resource-groups/rg-demo-routing.bicepparam",
       "wave": 2,
       "risk": "low",
-      "enabled": true,
+      "enabled": false,
       "notes": "One route table with no routes, one application security group and one Automation account with a credential whose password is read from the secrets vault with getSecret. Free resources only."
     },
     {
