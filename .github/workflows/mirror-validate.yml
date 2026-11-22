@@ -357,6 +357,7 @@ jobs:
           }
           # Each package comes from the PowerShell Gallery and must have the SHA512 the Gallery publishes for it.
           $mods = Join-Path $env:RUNNER_TEMP 'psmodules'
+          $ProgressPreference = 'SilentlyContinue'
           foreach ($p in @(@{ Id = 'PSRule'; Version = $env:PSRULE_VERSION; Sha = $env:PSRULE_SHA512 }, @{ Id = 'PSRule.Rules.Azure'; Version = $env:PSRULE_AZURE_VERSION; Sha = $env:PSRULE_AZURE_SHA512 })) {
             $zip = Join-Path $env:RUNNER_TEMP "$($p.Id).$($p.Version).zip"
             Invoke-WebRequest -Uri "https://www.powershellgallery.com/api/v2/package/$($p.Id)/$($p.Version)" -OutFile $zip
