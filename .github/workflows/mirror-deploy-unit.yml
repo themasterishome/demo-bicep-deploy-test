@@ -309,6 +309,38 @@ jobs:
             exit 1
           }
           Write-Host "The environment $env:ENVIRONMENT_NAME has an AZURE_CLIENT_ID."
+      - name: Pin and check the Bicep CLI
+        uses: ./.github/actions/setup-bicep
+      - name: Give the deployment action the checked Bicep
+        # azure/bicep-deploy compiles the unit with its own copy of Bicep. It looks in the runner's tool cache for
+        # the version of its bicep-version input first, and downloads that version without a hash check only when
+        # the cache has none. The step puts the binary that the step above checked into the tool cache under that
+        # version and checks the hash of the copy again. So the action compiles with the same binary as the plan
+        # and downloads nothing. The step after the deployment fails the job if the action downloaded anyway.
+        shell: pwsh
+        run: |
+          $version = $env:BICEP_VERSION.TrimStart('v')
+          $exe = if ($IsWindows) { 'bicep.exe' } else { 'bicep' }
+          $want = if ($IsWindows) { $env:BICEP_SHA256_WINDOWS } else { $env:BICEP_SHA256_LINUX }
+          $cfg = if ($env:AZURE_CONFIG_DIR) { $env:AZURE_CONFIG_DIR } else { Join-Path $HOME '.azure' }
+          $source = Join-Path (Join-Path $cfg 'bin') $exe
+          if ([string]::IsNullOrWhiteSpace($env:RUNNER_TOOL_CACHE)) { Write-Host "::error::the runner has no tool cache folder (RUNNER_TOOL_CACHE), so the deployment action would download its own Bicep"; exit 1 }
+          # The layout of the tool cache is <tool>/<version>/<architecture>, with an empty file <architecture>.complete
+          # beside the folder. The action finds the binary only when both are there.
+          $versionFolder = Join-Path (Join-Path $env:RUNNER_TOOL_CACHE 'bicep') $version
+          $folder = Join-Path $versionFolder 'x64'
+          if (Test-Path -LiteralPath $versionFolder) { Remove-Item -LiteralPath $versionFolder -Recurse -Force }
+          New-Item -ItemType Directory -Path $folder -Force | Out-Null
+          $copy = Join-Path $folder $exe
+          Copy-Item -LiteralPath $source -Destination $copy
+          New-Item -ItemType File -Path "$folder.complete" -Force | Out-Null
+          if (-not $IsWindows) { chmod 755 $copy; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          $hash = (Get-FileHash -LiteralPath $copy -Algorithm SHA256).Hash
+          if ($hash -ne $want) { Write-Host "::error::$exe in the tool cache has SHA256 $hash, which is not the published hash of $env:BICEP_VERSION"; exit 1 }
+          # The action downloads into a new folder bicep-<random> of the temporary folder. None may be there before
+          # the deployment, so that the check after it reads only what the action did.
+          Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Directory -Filter 'bicep-*' -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+          Write-Host "The deployment action finds Bicep $version in the tool cache at $copy"
       - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906  # v3.1.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -341,6 +373,26 @@ jobs:
           action-on-unmanage-managementgroup: detach
           action-on-unmanage-managementgroups: detach
           deny-settings-mode: none
+      - name: Check the deployment action used the checked Bicep
+        # Runs after a failed deployment too. The action writes a download of Bicep into a new folder bicep-<random>
+        # of the temporary folder and then into the tool cache. So the job fails when such a folder exists or when
+        # the binary in the tool cache no longer has the pinned hash. The deployment has run by then, so a failure
+        # here means that the stack was written with a Bicep nobody checked, and the stack is read before anything
+        # else is deployed.
+        if: always() && steps.stack.conclusion != 'skipped'
+        shell: pwsh
+        run: |
+          $version = $env:BICEP_VERSION.TrimStart('v')
+          $exe = if ($IsWindows) { 'bicep.exe' } else { 'bicep' }
+          $want = if ($IsWindows) { $env:BICEP_SHA256_WINDOWS } else { $env:BICEP_SHA256_LINUX }
+          $copy = Join-Path (Join-Path (Join-Path (Join-Path $env:RUNNER_TOOL_CACHE 'bicep') $version) 'x64') $exe
+          $problems = @()
+          $downloads = @(Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Directory -Filter 'bicep-*' -Force -ErrorAction SilentlyContinue)
+          if ($downloads.Count -gt 0) { $problems += "the action downloaded its own Bicep into $($downloads[0].FullName)" }
+          if (-not (Test-Path -LiteralPath $copy -PathType Leaf)) { $problems += "the tool cache no longer holds $copy" }
+          elseif ((Get-FileHash -LiteralPath $copy -Algorithm SHA256).Hash -ne $want) { $problems += "$exe in the tool cache no longer has the published hash of $env:BICEP_VERSION" }
+          if ($problems.Count -gt 0) { Write-Host "::error::The deployment was not compiled with the checked Bicep. $($problems -join '. '). Read the stack and the action's log before any other deployment."; exit 1 }
+          Write-Host "The deployment action downloaded no Bicep, and the tool cache still holds the checked $exe."
       - name: Summarize the stack
         # Reads the stack with the Azure CLI and writes its state and its resource counts to the job summary.
         if: always()
