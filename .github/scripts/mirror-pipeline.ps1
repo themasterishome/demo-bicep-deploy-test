@@ -752,7 +752,10 @@ function Test-WorkflowHygiene([hashtable]$Files) {
           $job = $jobText.Substring($heads[$k].Index, $to - $heads[$k].Index)
           $jn = $heads[$k].Groups['job'].Value
           if ($jn -ceq 'units' -and $name -ceq 'mirror-deploy-unit.yml') {
-            if ($job -notmatch '(?m)^[ \t]*APPLY:[ \t]*\$\{\{ inputs\.apply \}\}[ \t]*$' -or $job -notmatch '(?m)^[ \t]*deployable:[ \t]*\$\{\{ steps\.units\.outputs\.deployable \}\}[ \t]*$') { $errors += "${name}: the units job must give the helper APPLY: `${{ inputs.apply }} and expose deployable: `${{ steps.units.outputs.deployable }}, because a disabled unit is planned only when apply is off" }
+            # The output belongs to the job, and APPLY to the step with id units, which runs the helper.
+            $jobOut = [regex]::Match($job, '(?m)^    outputs:[ \t]*\n(?<b>(?:      [^\n]*\n)+)')
+            $unitsStep = [regex]::Match($job, '(?ms)^      - id: units[ \t]*\n(?<b>.*?)(?=^      - |\z)')
+            if (-not $jobOut.Success -or $jobOut.Groups['b'].Value -notmatch '(?m)^      deployable:[ \t]*\$\{\{ steps\.units\.outputs\.deployable \}\}[ \t]*$' -or -not $unitsStep.Success -or $unitsStep.Groups['b'].Value -notmatch '(?m)^          APPLY:[ \t]*\$\{\{ inputs\.apply \}\}[ \t]*$') { $errors += "${name}: the units job must give the helper APPLY: `${{ inputs.apply }} and expose deployable: `${{ steps.units.outputs.deployable }}, because a disabled unit is planned only when apply is off" }
           }
           if ($jn -ceq 'apply') {
             $sawApply = $true
