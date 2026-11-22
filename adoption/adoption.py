@@ -6,18 +6,22 @@ such record. This tool puts that result into one file per unit of deploy/units.j
 and makes no Azure call.
 
 usage: python adoption/adoption.py <sweep folder> <gate folder> --sweep "<words that name the sweep>"
-                                   [--missing "<unit>=<why the sweep has no preview of it>"]
+                                   [--missing "<unit>=<why the sweep has no preview of it>"] [--bicep <path>]
   <sweep folder>  saved what-if results, one <unit>.json per unit in any subfolder. The preview of a
                   deploy-excluded unit is named <group>.deploy-excluded.json.
   <gate folder>   one <unit>.txt per unit, the output of scripts/deploy-unit.ps1 -Unit <unit> -WhatIfJson <file>.
+  --bicep         the Bicep CLI that compiles each unit's template. Without it the tool uses the copy the Azure CLI
+                  installed (bin/bicep in its configuration folder). It must be the version the workflows pin.
 
 The tool counts every preview again. When its counts or its records differ from the gate's, the file of that unit
 says so in its first lines and the tool ends with exit code 1.
-Each file names the unit's template and parameters file with the SHA256 of their text. The plan of a unit's first
-run compares them with the files of its commit, so run the tool on the code the previews were taken from.
+Each file names the unit's template with the hash of its compiled template and the parameters file with the SHA256
+of its text. The compiled template holds every module the template calls, so its hash changes with any of them. The
+plan of a unit's first run compares both with the files of its commit, so run the tool on the code the previews
+were taken from.
 This tool is temporary. It is deleted with deploy/adoption/ once every unit has had its first run.
 """
-import argparse, collections, hashlib, json, os, re, sys
+import argparse, collections, hashlib, json, os, re, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESULTS = ['NoChange', 'Modify', 'Ignore', 'Create', 'Delete']
@@ -55,6 +59,39 @@ def text_hash(path):
     same on a Windows and a Linux checkout. The plan job of mirror-deploy-unit computes it the same way."""
     with open(path, 'rb') as f: text = f.read().decode('utf-8-sig')
     return hashlib.sha256(text.replace('\r\n', '\n').encode('utf-8')).hexdigest()
+
+
+def pinned_bicep_version():
+    """The Bicep version the workflows pin, read from the env block of mirror-deploy-unit.yml."""
+    text = read_text(os.path.join(ROOT, '.github', 'workflows', 'mirror-deploy-unit.yml'))
+    m = re.search(r'(?m)^  BICEP_VERSION: v?([0-9.]+)\s*$', text)
+    if not m: sys.exit('STOP: .github/workflows/mirror-deploy-unit.yml names no BICEP_VERSION')
+    return m.group(1)
+
+
+def find_bicep(given):
+    """The Bicep CLI to compile with. It must be the pinned version, because another version can give another hash."""
+    exe = 'bicep.exe' if os.name == 'nt' else 'bicep'
+    path = given or os.path.join(os.environ.get('AZURE_CONFIG_DIR') or os.path.join(os.path.expanduser('~'), '.azure'), 'bin', exe)
+    if not os.path.isfile(path): sys.exit('STOP: no Bicep CLI at %s. Install it with az bicep install --version v%s or give --bicep' % (path, pinned_bicep_version()))
+    said = subprocess.run([path, '--version'], capture_output=True, text=True).stdout
+    want = pinned_bicep_version()
+    if not re.search(r'version ' + re.escape(want) + r'\b', said): sys.exit('STOP: %s is not Bicep %s (it says: %s)' % (path, want, said.strip()))
+    return path
+
+
+TEMPLATE_HASHES = {}
+
+
+def template_hash(bicep, path):
+    """The templateHash that Bicep writes into the compiled template of a .bicep file. The compiled template holds
+    the template of every module inline, so the value changes when the file or any module it calls changes. The plan
+    job of mirror-deploy-unit reads the same value from its own compile."""
+    if path not in TEMPLATE_HASHES:
+        run = subprocess.run([bicep, 'build', os.path.join(ROOT, path), '--stdout'], capture_output=True)
+        if run.returncode != 0: sys.exit('STOP: %s does not compile:\n%s' % (path, run.stderr.decode('utf-8', 'replace')))
+        TEMPLATE_HASHES[path] = str(json.loads(run.stdout.decode('utf-8-sig'))['metadata']['_generator']['templateHash'])
+    return TEMPLATE_HASHES[path]
 
 
 def resource_type(rid):
@@ -129,7 +166,7 @@ def table(rows, numbers, with_gate):
     return lines + ['']
 
 
-def build(unit, preview, rel, gate_file, boundaries, sweep, missing, files):
+def build(unit, preview, rel, gate_file, boundaries, sweep, missing, files, bicep):
     """Returns the text of one unit's file, a summary of it and the list of what makes the file unreliable."""
     title = ['# Adoption evidence for %s' % unit, '']
     if not preview or not os.path.isfile(gate_file):
@@ -176,18 +213,21 @@ def build(unit, preview, rel, gate_file, boundaries, sweep, missing, files):
         out.append('')
     out += ['## Source', '', 'The records come from %s, preview file `%s`. The gate judged them offline with scripts/deploy-unit.ps1 and '
             'deploy/boundaries.json, and its result for the unit is %s.' % (sweep, rel, gate), '',
-            'The files of the unit the previews were taken from, each with the SHA256 of its text (line endings left out). The plan '
-            'of the unit\'s first run compares them with the files of its commit and fails when one differs, because this '
-            'evidence then belongs to another version of the unit.', '']
-    out += ['- `%s` SHA256 `%s`' % (f, text_hash(os.path.join(ROOT, f))) for f in files] + ['']
+            'The files of the unit the previews were taken from. The template has the hash that Bicep writes into its '
+            'compiled template, which holds every module the template calls. The parameters file has the SHA256 of its '
+            'text (line endings left out). The plan of the unit\'s first run computes both from the files of its commit and '
+            'fails when one differs, because this evidence then belongs to another version of the unit.', '']
+    out += ['- `%s` compiled template hash `%s`' % (f, template_hash(bicep, f)) if f.endswith('.bicep')
+            else '- `%s` SHA256 `%s`' % (f, text_hash(os.path.join(ROOT, f))) for f in files] + ['']
     return '\n'.join(out), (gate, dict(counts), len(refused)), problems
 
 
 def main():
     ap = argparse.ArgumentParser(description='Writes deploy/adoption/<unit>.md from a saved sweep and its gate output.')
     ap.add_argument('sweep_folder'); ap.add_argument('gate_folder'); ap.add_argument('--sweep', required=True)
-    ap.add_argument('--missing', action='append', default=[])
+    ap.add_argument('--missing', action='append', default=[]); ap.add_argument('--bicep')
     a = ap.parse_args()
+    bicep = find_bicep(a.bicep)
     previews = {}
     for folder, _, files in os.walk(a.sweep_folder):
         for f in files:
@@ -203,7 +243,7 @@ def main():
     for unit in units:
         preview = previews.get(unit.replace('-deploy-excluded', '.deploy-excluded')) or previews.get(unit)
         rel = os.path.relpath(preview, a.sweep_folder).replace('\\', '/') if preview else ''
-        text, summary, problems = build(unit, preview, rel, os.path.join(a.gate_folder, unit + '.txt'), boundaries, a.sweep, missing, files[unit])
+        text, summary, problems = build(unit, preview, rel, os.path.join(a.gate_folder, unit + '.txt'), boundaries, a.sweep, missing, files[unit], bicep)
         with open(os.path.join(target, unit + '.md'), 'w', encoding='utf-8', newline='\n') as f: f.write(text)
         print(unit, summary if summary else 'NOT JUDGED', *problems, sep='\t')
         bad += len(problems)

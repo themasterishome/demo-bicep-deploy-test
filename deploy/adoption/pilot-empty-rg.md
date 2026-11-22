@@ -20,4 +20,4 @@ The records come from the read-only preview of the demo units, preview file `pil
 
 The files of the unit the previews were taken from, each with the SHA256 of its text (line endings left out). The plan of the unit's first run compares them with the files of its commit and fails when one differs, because this evidence then belongs to another version of the unit.
 
-- `pipelines/pilot/empty-rg.bicep` SHA256 `5d8716d1a6fe10511badb0db44b9ad62636595e0b31b213f9583bf42f7df5d3d`
+- `pipelines/pilot/empty-rg.bicep` compiled template hash `5396157071037984767`

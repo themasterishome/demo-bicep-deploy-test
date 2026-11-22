@@ -493,7 +493,7 @@ Assert-Equal 'a | ::warning::b | c | d' (ConvertTo-OneLine ("a`r::warning::b" + 
 Write-Host '--- the deploy workflow rules'
 $applyEnv = 'mirror-${{ matrix.tier }}-${{ matrix.scope }}'
 $applyIf = "    if: $($script:PipelineSwitch) && inputs.apply && needs.plan.result == 'success' && github.run_attempt == '1'`n"
-$applyStep = "    steps:`n      - name: Check the plan is still current`n        env:`n          RUN_COMMIT: `${{ github.sha }}`n          PLANNED: `${{ needs.plan.outputs.planned }}`n        run: gh api repos/x/git/ref/heads/master`n      - uses: azure/login@$sha`n      - uses: azure/bicep-deploy@$sha`n        with:`n          type: deploymentStack`n          operation: create`n          action-on-unmanage-resources: `${{ matrix.unmanage }}`n          action-on-unmanage-resourcegroups: detach`n          action-on-unmanage-managementgroup: detach`n          action-on-unmanage-managementgroups: detach`n          deny-settings-mode: none`n"
+$applyStep = "    steps:`n      - name: Check the plan is still current`n        env:`n          RUN_COMMIT: `${{ github.sha }}`n          PLANNED: `${{ needs.plan.outputs.planned }}`n        run: gh api repos/x/git/ref/heads/master`n      - uses: ./.github/actions/setup-bicep`n      - name: Give the deployment action the checked Bicep`n        run: x`n      - uses: azure/login@$sha`n      - uses: azure/bicep-deploy@$sha`n        with:`n          type: deploymentStack`n          operation: create`n          action-on-unmanage-resources: `${{ matrix.unmanage }}`n          action-on-unmanage-resourcegroups: detach`n          action-on-unmanage-managementgroup: detach`n          action-on-unmanage-managementgroups: detach`n          deny-settings-mode: none`n      - name: Check the deployment action used the checked Bicep`n        run: x`n"
 $goodDeploy = "on:`n  workflow_dispatch:`n    inputs: {}`njobs:`n  units:`n    permissions:`n      contents: read`n  plan:`n    needs: units`n    environment:`n      name: mirror-reader-dispatch`n    permissions:`n      id-token: write`n  apply:`n    needs: [ units, plan ]`n$applyIf    environment: $applyEnv`n    permissions:`n      id-token: write`n$applyStep"
 function Test-DeployRules([string]$Text) { return @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $Text } | Where-Object { $_ -notlike '*runner check*' -and $_ -notlike '*pipeline switch*' -and $_ -notlike '*Check the Bicep inputs*' -and $_ -notlike '*run step*' }) }
 $e = @(Test-DeployRules $goodDeploy)
@@ -517,6 +517,10 @@ $e = @(Test-DeployRules $goodDeploy.Replace(" && github.run_attempt == '1'", '')
 Assert-Contains $e '*the apply job must run only on the first attempt of a run*' 'an apply that a re-run could start is refused'
 $e = @(Test-DeployRules $goodDeploy.Replace('      - name: Check the plan is still current', '      - name: Another step'))
 Assert-Contains $e '*the apply job must check that the plan is still current before the Azure sign-in*' 'an apply without the check of the plan is refused'
+$e = @(Test-DeployRules $goodDeploy.Replace('      - name: Give the deployment action the checked Bicep', '      - name: Another step'))
+Assert-Contains $e '*the apply job must give azure/bicep-deploy the hash-checked Bicep*' 'an apply that lets the action download its own Bicep is refused'
+$e = @(Test-DeployRules $goodDeploy.Replace('      - name: Check the deployment action used the checked Bicep', '      - name: Another step'))
+Assert-Contains $e '*the apply job must give azure/bicep-deploy the hash-checked Bicep*' 'an apply without the check after the deployment is refused'
 $e = @(Test-DeployRules $goodDeploy.Replace('git/ref/heads/master', 'git/ref/heads/main'))
 Assert-Contains $e '*the apply job must check that the plan is still current*' 'a check that does not read the tip of master is refused'
 $e = @(Test-DeployRules $goodDeploy.Replace('needs.plan.outputs.planned', 'github.run_id'))

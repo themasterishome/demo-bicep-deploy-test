@@ -20,5 +20,5 @@ The records come from the read-only preview of the demo units, preview file `dem
 
 The files of the unit the previews were taken from, each with the SHA256 of its text (line endings left out). The plan of the unit's first run compares them with the files of its commit and fails when one differs, because this evidence then belongs to another version of the unit.
 
-- `infra/tenant/governance.bicep` SHA256 `3d2b874b433275a7e3440cececda4cacd8c1b17343ca95a92f4e1d773f89e8c3`
+- `infra/tenant/governance.bicep` compiled template hash `144862160903612971`
 - `infra/tenant/governance.mg-demo.bicepparam` SHA256 `3b0d1da4e72322088598f2d3e8a42560db6e0896674eb870288f3b6d709bb369`
