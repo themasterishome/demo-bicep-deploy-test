@@ -3,8 +3,8 @@
 #
 # Offline checks on every push to master, every pull request into master and every Run workflow: secret scan,
 # workflow lint, the workflow rules with the rules of deploy/units.json, and the preflight (compile, lint,
-# parameter files, file layout, duplicate declarations, deployment unit files, the delegated roles). No Azure
-# login, no Azure calls.
+# parameter files, file layout, duplicate declarations, deployment unit files, the delegated roles). On a pull
+# request also a report-only security scan of the units it changes. No Azure login, no Azure calls.
 #
 # The preflight is the check that keeps privileged access out of the production units. It fails a production unit
 # that declares a role assignment of a role that is not on the list of its subscription in
@@ -17,8 +17,8 @@
 # a path filter skips stays pending and blocks the merge. Turn on "Require branches to be up to date before
 # merging" in the branch ruleset, so a pull request's preflight covers the tree that lands.
 #
-# Every job but one runs on windows-2025, or on ubuntu-24.04 when the repository variable MIRROR_RUNNER is
-# ubuntu-24.04. The portability job runs on the other image. It always parses every script and runs the workflow
+# Every job but two runs on windows-2025, or on ubuntu-24.04 when the repository variable MIRROR_RUNNER is
+# ubuntu-24.04. The portability job runs on the other image, and the security-scan job always on windows-2025. It always parses every script and runs the workflow
 # rules and the helper tests there. It repeats the preflight on that image only for a Run workflow, for a change to
 # the scripts, to the local actions under .github/actions, to bicepconfig.json, .gitattributes, .gitignore or this workflow, for a change that adds a name that
 # differs only in case from another path (a Windows checkout keeps only one of the two), and when the changed files
@@ -61,6 +61,11 @@ env:
   ACTIONLINT_VERSION: 1.7.12
   ACTIONLINT_SHA256_WINDOWS: 6E7241B51E6817EA6A047693D8E6FED13B31819C9A0DD6C5A726E1592D22F6E9
   ACTIONLINT_SHA256_LINUX: 8ACA8DB96F1B94770F1B0D72B6DDDCB1EBB8123CB3712530B08CC387B349A3D8
+  # The workflow audit uses zizmor-x86_64-pc-windows-msvc.zip or zizmor-x86_64-unknown-linux-gnu.tar.gz, with the
+  # SHA256 shown for each file on the zizmor v1.32.0 GitHub release.
+  ZIZMOR_VERSION: 1.32.0
+  ZIZMOR_SHA256_WINDOWS: D284A16E09D9DF4CE2C000357E7B59BD531BE093BEA5718A1CE225B449B59D49
+  ZIZMOR_SHA256_LINUX: BB110CC765ECA9CD7EFB2E284A956BE5974C60027B0970F16397D86208A9957B
   # The security scan uses the PowerShell Gallery packages PSRule 2.9.0 and PSRule.Rules.Azure 1.47.0, with the
   # SHA512 (base64) the Gallery publishes for each package. Change a version and its hash together, and the
   # versions in ps-rule.yaml and scripts/sast-psrule.ps1.
@@ -133,9 +138,10 @@ jobs:
 
   workflow-hygiene:
     # A deploy token goes to any job that names a production environment from master, so only the deploy workflow
-    # may name one, no workflow uses a trigger that runs pull request code with master's rights, and every action
-    # is an allowed one pinned to a full commit SHA. The same step reads deploy/units.json. Every unit must give
-    # a stack row, the unit of a deploy-excluded file may be neither enabled nor marked deployed, and stackDeletes
+    # may name one and no workflow uses a trigger that runs pull request code with master's rights. Every action
+    # must be one of the allowed ones and pinned to a full commit SHA, which zizmor checks (rules in
+    # .github/zizmor.yml) before the helper's rules run. The helper's step also reads deploy/units.json. Every unit
+    # must give a stack row, the unit of a deploy-excluded file may be neither enabled nor marked deployed, and stackDeletes
     # stays off for the tenant units and the units of fdm-apim. The rules are in .github/scripts/mirror-pipeline.ps1. They
     # are text matches that catch mistakes, and on a pull request they run the pull request's own copy. The
     # controls are the production environments' branch policy (master only), the code owners' review and the push
@@ -149,6 +155,29 @@ jobs:
           persist-credentials: false
       - name: Runner check
         uses: ./.github/actions/runner-check
+      - name: Workflow audit (zizmor)
+        shell: pwsh
+        env:
+          # Read access to public repositories is all the audits need. The token of the run has contents: read.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'zizmor'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $name = if ($IsWindows) { 'zizmor-x86_64-pc-windows-msvc.zip' } else { 'zizmor-x86_64-unknown-linux-gnu.tar.gz' }
+          $want = if ($IsWindows) { $env:ZIZMOR_SHA256_WINDOWS } else { $env:ZIZMOR_SHA256_LINUX }
+          $archive = Join-Path $dir $name
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri "https://github.com/zizmorcore/zizmor/releases/download/v$($env:ZIZMOR_VERSION)/$name" -OutFile $archive
+          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+          if ($hash -ne $want) { Write-Error "$name SHA256 $hash does not match the published hash"; exit 1 }
+          if ($IsWindows) { Expand-Archive -LiteralPath $archive -DestinationPath $dir -Force }
+          else { tar -xzf $archive -C $dir; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+          # Online, with the token of the run, so the audits that read the actions' own repositories run too. They
+          # check that a pinned commit belongs to the action's repository and not to a fork, that the pin matches the
+          # release named beside it and that the release has no known vulnerability. The settings are in
+          # .github/zizmor.yml. The local actions and the Dependabot settings are audited with the workflows.
+          & (Join-Path $dir $(if ($IsWindows) { 'zizmor.exe' } else { 'zizmor' })) .github/workflows .github/actions .github/dependabot.yml
+          exit $LASTEXITCODE
       - name: Workflow rules and unit rules
         shell: pwsh
         run: |
