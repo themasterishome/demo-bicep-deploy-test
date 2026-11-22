@@ -4,8 +4,8 @@
 # The preview on every pull request into master. It is read-only. The one job that signs in to Azure uses the reader
 # identity of the mirror-reader environment.
 #
-# Every pull request gets, for information, a deployment stack preview of each unit whose files it changes (at most
-# 12). The preview is what a deployment of the unit would do after the merge: the resources it would create, change,
+# Every pull request gets, for information, a deployment stack preview of each unit whose files it changes (the job
+# matrix holds at most 256 jobs). The preview is what a deployment of the unit would do after the merge: the resources it would create, change,
 # detach or delete. A unit whose stack does not exist yet is previewed the same way, and its resources then show as
 # coming under the stack's management. Nothing deploys from a pull request, and the merge deploys nothing either. A
 # deployment is started with Run workflow (mirror-deploy-unit), and its apply waits for the reviewers of the unit's
