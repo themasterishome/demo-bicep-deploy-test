@@ -751,11 +751,15 @@ function Test-WorkflowHygiene([hashtable]$Files) {
           $to = if ($k + 1 -lt $heads.Count) { $heads[$k + 1].Index } else { $jobText.Length }
           $job = $jobText.Substring($heads[$k].Index, $to - $heads[$k].Index)
           $jn = $heads[$k].Groups['job'].Value
+          if ($jn -ceq 'units' -and $name -ceq 'mirror-deploy-unit.yml') {
+            if ($job -notmatch '(?m)^[ \t]*APPLY:[ \t]*\$\{\{ inputs\.apply \}\}[ \t]*$' -or $job -notmatch '(?m)^[ \t]*deployable:[ \t]*\$\{\{ steps\.units\.outputs\.deployable \}\}[ \t]*$') { $errors += "${name}: the units job must give the helper APPLY: `${{ inputs.apply }} and expose deployable: `${{ steps.units.outputs.deployable }}, because a disabled unit is planned only when apply is off" }
+          }
           if ($jn -ceq 'apply') {
             $sawApply = $true
             if ($job -notmatch '(?m)^    environment:[ \t]*mirror-\$\{\{ matrix\.tier \}\}-\$\{\{ matrix\.scope \}\}[ \t]*$') { $errors += "${name}: the apply job must have environment: mirror-`${{ matrix.tier }}-`${{ matrix.scope }} and no other environment" }
             if ($job -notmatch '(?m)^    needs:.*plan') { $errors += "${name}: the apply job must need the plan job" }
             if ($job -notmatch "(?m)^    if:[^\n]*github\.run_attempt == '1'") { $errors += "${name}: the apply job must run only on the first attempt of a run (github.run_attempt == '1' in its condition)" }
+            if ($job -notmatch "(?m)^    if:[^\n]*&& inputs\.apply &&" -or $job -notmatch "(?m)^    if:[^\n]*needs\.units\.outputs\.deployable == 'true'") { $errors += "${name}: the apply job must run only when the run has apply on and the units job found the unit enabled (inputs.apply and needs.units.outputs.deployable == 'true' in its condition)" }
             $current = $job.IndexOf('- name: Check the plan is still current', [StringComparison]::Ordinal)
             $signIn = $job.IndexOf('azure/login@', [StringComparison]::Ordinal)
             if ($current -lt 0 -or ($signIn -ge 0 -and $current -gt $signIn) -or $job -notmatch 'git/ref/heads/master' -or $job -notmatch 'github\.sha' -or $job -notmatch 'needs\.plan\.outputs\.planned') {
@@ -1377,6 +1381,9 @@ function Invoke-UnitsMode {
     if (-not $enabled -and (Get-EnvValue 'APPLY') -cne 'false') { Stop-Check "the unit $name is not enabled in deploy/units.json. A unit is enabled in a code pull request before its first deployment. A run with apply off plans a disabled unit" }
     $pick = @($u)
     if (-not $enabled) { $notes += "The unit $name is not enabled, so this run plans it and cannot deploy it." }
+    # The apply job of mirror-deploy-unit runs only when this is true, so a disabled unit never reaches it, whatever
+    # else the run's inputs say.
+    Set-StepOutput 'deployable' $(if ($enabled) { 'true' } else { 'false' })
     # The change ticket and the reason of Run workflow, for the record of the run.
     $notes += "Change ticket $(ConvertTo-CodeSpan (Get-EnvValue 'CHANGE_REF')). Reason: $(ConvertTo-CodeSpan (Get-EnvValue 'REASON')). Started by $(ConvertTo-CodeSpan (Get-EnvValue 'STARTED_BY'))."
   } elseif ($select -ceq 'deployed') {

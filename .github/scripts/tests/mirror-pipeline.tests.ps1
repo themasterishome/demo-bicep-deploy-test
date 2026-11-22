@@ -492,9 +492,9 @@ Assert-Equal 'a | ::warning::b | c | d' (ConvertTo-OneLine ("a`r::warning::b" + 
 
 Write-Host '--- the deploy workflow rules'
 $applyEnv = 'mirror-${{ matrix.tier }}-${{ matrix.scope }}'
-$applyIf = "    if: $($script:PipelineSwitch) && inputs.apply && needs.plan.result == 'success' && github.run_attempt == '1'`n"
+$applyIf = "    if: $($script:PipelineSwitch) && inputs.apply && needs.units.outputs.deployable == 'true' && needs.plan.result == 'success' && github.run_attempt == '1'`n"
 $applyStep = "    steps:`n      - name: Check the plan is still current`n        env:`n          RUN_COMMIT: `${{ github.sha }}`n          PLANNED: `${{ needs.plan.outputs.planned }}`n        run: gh api repos/x/git/ref/heads/master`n      - uses: ./.github/actions/setup-bicep`n      - name: Give the deployment action the checked Bicep`n        run: x`n      - uses: azure/login@$sha`n      - uses: azure/bicep-deploy@$sha`n        with:`n          type: deploymentStack`n          operation: create`n          action-on-unmanage-resources: `${{ matrix.unmanage }}`n          action-on-unmanage-resourcegroups: detach`n          action-on-unmanage-managementgroup: detach`n          action-on-unmanage-managementgroups: detach`n          deny-settings-mode: none`n      - name: Check the deployment action used the checked Bicep`n        run: x`n"
-$goodDeploy = "on:`n  workflow_dispatch:`n    inputs: {}`njobs:`n  units:`n    permissions:`n      contents: read`n  plan:`n    needs: units`n    environment:`n      name: mirror-reader-dispatch`n    permissions:`n      id-token: write`n  apply:`n    needs: [ units, plan ]`n$applyIf    environment: $applyEnv`n    permissions:`n      id-token: write`n$applyStep"
+$goodDeploy = "on:`n  workflow_dispatch:`n    inputs: {}`njobs:`n  units:`n    permissions:`n      contents: read`n    outputs:`n      deployable: `${{ steps.units.outputs.deployable }}`n    steps:`n      - id: units`n        env:`n          APPLY: `${{ inputs.apply }}`n  plan:`n    needs: units`n    environment:`n      name: mirror-reader-dispatch`n    permissions:`n      id-token: write`n  apply:`n    needs: [ units, plan ]`n$applyIf    environment: $applyEnv`n    permissions:`n      id-token: write`n$applyStep"
 function Test-DeployRules([string]$Text) { return @(Test-WorkflowHygiene @{ 'mirror-deploy-unit.yml' = $Text } | Where-Object { $_ -notlike '*runner check*' -and $_ -notlike '*pipeline switch*' -and $_ -notlike '*Check the Bicep inputs*' -and $_ -notlike '*run step*' }) }
 $e = @(Test-DeployRules $goodDeploy)
 Assert-Equal 0 $e.Count "a deploy workflow that starts only with Run workflow, with the apply as its only production and privileged job, passes ($($e -join '; '))"
@@ -517,6 +517,16 @@ $e = @(Test-DeployRules $goodDeploy.Replace(" && github.run_attempt == '1'", '')
 Assert-Contains $e '*the apply job must run only on the first attempt of a run*' 'an apply that a re-run could start is refused'
 $e = @(Test-DeployRules $goodDeploy.Replace('      - name: Check the plan is still current', '      - name: Another step'))
 Assert-Contains $e '*the apply job must check that the plan is still current before the Azure sign-in*' 'an apply without the check of the plan is refused'
+$e = @(Test-DeployRules $goodDeploy.Replace("          APPLY: `${{ inputs.apply }}", "          APPLY: 'false'"))
+Assert-Contains $e '*the units job must give the helper APPLY*' 'a units job that does not pass the apply input is refused'
+$e = @(Test-DeployRules $goodDeploy.Replace("      deployable: `${{ steps.units.outputs.deployable }}", ''))
+Assert-Contains $e '*the units job must give the helper APPLY*' 'a units job that does not expose deployable is refused'
+$e = @(Test-DeployRules $goodDeploy)
+Assert-True (@($e | Where-Object { $_ -like '*units job must give*' -or $_ -like '*apply on and the units job*' }).Count -eq 0) 'the deploy workflow as written passes the rules of the apply input'
+$e = @(Test-DeployRules $goodDeploy.Replace(" && inputs.apply &&", ' &&'))
+Assert-Contains $e '*the apply job must run only when the run has apply on and the units job found the unit enabled*' 'an apply whose condition does not read the apply input is refused'
+$e = @(Test-DeployRules $goodDeploy.Replace(" && needs.units.outputs.deployable == 'true'", ''))
+Assert-Contains $e '*the apply job must run only when the run has apply on and the units job found the unit enabled*' 'an apply that does not wait for an enabled unit is refused'
 $e = @(Test-DeployRules $goodDeploy.Replace('      - name: Give the deployment action the checked Bicep', '      - name: Another step'))
 Assert-Contains $e '*the apply job must give azure/bicep-deploy the hash-checked Bicep*' 'an apply that lets the action download its own Bicep is refused'
 $e = @(Test-DeployRules $goodDeploy.Replace('      - name: Check the deployment action used the checked Bicep', '      - name: Another step'))
@@ -638,7 +648,7 @@ exit $LASTEXITCODE
     foreach ($k in $Answers.Keys) { [IO.File]::WriteAllText((Join-Path $ans $k), $Answers[$k]) }
     $out = Join-Path $ans 'output.txt'; Set-Content -LiteralPath $out -Value ''
     $all = @{ TEST_REPO = $g; TEST_ANSWERS = $ans; GITHUB_OUTPUT = $out; GITHUB_STEP_SUMMARY = (Join-Path $ans 'summary.md'); GITHUB_REPOSITORY = 'org/repo'; GITHUB_REF = 'refs/heads/master'; GITHUB_ACTOR = 'it-user-one'
-              UNIT = ''; SELECT = ''; FAIL_ON_CHANGES = ''; OUTCOME = '' }
+              UNIT = ''; SELECT = ''; APPLY = ''; FAIL_ON_CHANGES = ''; OUTCOME = '' }
     foreach ($k in $Vars.Keys) { $all[$k] = $Vars[$k] }
     $prevVars = @{}
     foreach ($k in $all.Keys) { $prevVars[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $all[$k]) }
@@ -703,7 +713,7 @@ exit $LASTEXITCODE
   $o5b = $o5.Clone(); $o5b['APPLY'] = 'False'
   Invoke-TestMode 'Units' $o5b 'a unit that is not enabled is refused when APPLY is not exactly false' 1 'the unit rg-demo-routing is not enabled'
   $o5c = $o5.Clone(); $o5c['APPLY'] = 'false'
-  Invoke-TestMode 'Units' $o5c 'a plan only of a unit that is not enabled gets its row and says it cannot deploy' 0 @('matrix=[{"unit":"rg-demo-routing"', 'The unit rg-demo-routing is not enabled, so this run plans it and cannot deploy it.')
+  Invoke-TestMode 'Units' $o5c 'a plan only of a unit that is not enabled gets its row and says it cannot deploy' 0 @('matrix=[{"unit":"rg-demo-routing"', 'The unit rg-demo-routing is not enabled, so this run plans it and cannot deploy it.', 'deployable=false')
   $o6a = $one.Clone(); $o6a['UNIT'] = 'rg-demo-identities-deploy-excluded'; $o6a['APPLY'] = 'false'
   Invoke-TestMode 'Units' $o6a 'the unit of a deploy-excluded file is refused for a plan only too' 1 'is the unit of a deploy-excluded file, and such a unit is never deployed'
   $o6 = $one.Clone(); $o6['UNIT'] = 'rg-demo-identities-deploy-excluded'
