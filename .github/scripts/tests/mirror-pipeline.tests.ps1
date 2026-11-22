@@ -519,6 +519,10 @@ $e = @(Test-DeployRules $goodDeploy.Replace('      - name: Check the plan is sti
 Assert-Contains $e '*the apply job must check that the plan is still current before the Azure sign-in*' 'an apply without the check of the plan is refused'
 $e = @(Test-DeployRules $goodDeploy.Replace("          APPLY: `${{ inputs.apply }}", "          APPLY: 'false'"))
 Assert-Contains $e '*the units job must give the helper APPLY*' 'a units job that does not pass the apply input is refused'
+$e = @(Test-DeployRules $goodDeploy.Replace('      - id: units', '      - id: other'))
+Assert-Contains $e '*the units job must give the helper APPLY*' 'APPLY in a step other than the one with id units is refused'
+$e = @(Test-DeployRules $goodDeploy.Replace("    outputs:`n      deployable:", "    steps:`n      - env:`n          deployable:"))
+Assert-Contains $e '*the units job must give the helper APPLY*' 'deployable in a step env and not in the job outputs is refused'
 $e = @(Test-DeployRules $goodDeploy.Replace("      deployable: `${{ steps.units.outputs.deployable }}", ''))
 Assert-Contains $e '*the units job must give the helper APPLY*' 'a units job that does not expose deployable is refused'
 $e = @(Test-DeployRules $goodDeploy)
@@ -700,6 +704,9 @@ exit $LASTEXITCODE
   $one = @{ SELECT = 'unit'; UNIT = 'pilot-empty-rg'; CHANGE_REF = 'CHG0012345'; REASON = 'Pilot.'; STARTED_BY = 'it-user-one' }
   $rowJson = 'matrix=[{"unit":"pilot-empty-rg","tier":"production","scope":"' + $pilot.subscription + '","stack":"mirror-pilot-empty-rg","stackScope":"resourceGroup","subscriptionId":"' + $subId + '","resourceGroup":"' + $pilot.resourceGroup + '","managementGroup":"","location":"' + $units.deploymentLocation + '","template":"pipelines/pilot/empty-rg.bicep","parameters":"","unmanage":"detach"}]'
   Invoke-TestMode 'Units' $one 'Run workflow gets the row of the unit it names, and the summary keeps the change ticket and the reason' 0 @($rowJson, ('Change ticket ' + $tick + 'CHG0012345' + $tick + '. Reason: ' + $tick + 'Pilot.' + $tick))
+  $o1a = $one.Clone(); $o1a['APPLY'] = 'true'
+  Invoke-TestMode 'Units' $o1a 'an enabled unit with apply on is deployable' 0 @('matrix=[{"unit":"pilot-empty-rg"', 'deployable=true')
+  Invoke-TestMode 'Units' $one 'an enabled unit is deployable whatever APPLY says' 0 'deployable=true'
   $o2 = $one.Clone(); $o2['REASON'] = "x`n# heading [l](http://x)"
   Invoke-TestMode 'Units' $o2 'a reason with a line break stays one line in a code span' 0 ('Reason: ' + $tick + 'x | # heading [l](http://x)' + $tick)
   $o3 = $one.Clone(); $o3['UNIT'] = 'no-such-unit'
