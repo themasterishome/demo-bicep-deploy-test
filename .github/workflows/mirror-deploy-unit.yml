@@ -127,6 +127,7 @@ jobs:
           CHANGE_REF: ${{ inputs.changeRef }}
           REASON: ${{ inputs.reason }}
           STARTED_BY: ${{ github.actor }}
+          APPLY: ${{ inputs.apply }}
         run: |
           & ./.github/scripts/mirror-pipeline.ps1 -Mode Units
           exit $LASTEXITCODE
