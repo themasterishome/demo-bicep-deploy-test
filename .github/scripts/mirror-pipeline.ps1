@@ -1371,8 +1371,12 @@ function Invoke-UnitsMode {
     $u = Find-UnitDef $units $name
     if ($null -eq $u) { Stop-Check "the unit '$name' is not exactly one unit in deploy/units.json. A unit name is written with the same case as in the file" }
     if (Test-DeployExcludedUnit $u) { Stop-Check "the unit $name is the unit of a deploy-excluded file, and such a unit is never deployed. Its resources are written by hand, or moved to the routine file of the group first" }
-    if ((Get-Prop $u 'enabled') -isnot [bool] -or -not (Get-Prop $u 'enabled')) { Stop-Check "the unit $name is not enabled in deploy/units.json. A unit is enabled in a code pull request before its first deployment" }
+    # A plan only (APPLY false) reads and writes nothing, so it runs for a disabled unit too. A run that may deploy
+    # needs the unit enabled.
+    $enabled = (Get-Prop $u 'enabled') -is [bool] -and (Get-Prop $u 'enabled')
+    if (-not $enabled -and (Get-EnvValue 'APPLY') -cne 'false') { Stop-Check "the unit $name is not enabled in deploy/units.json. A unit is enabled in a code pull request before its first deployment. A run with apply off plans a disabled unit" }
     $pick = @($u)
+    if (-not $enabled) { $notes += "The unit $name is not enabled, so this run plans it and cannot deploy it." }
     # The change ticket and the reason of Run workflow, for the record of the run.
     $notes += "Change ticket $(ConvertTo-CodeSpan (Get-EnvValue 'CHANGE_REF')). Reason: $(ConvertTo-CodeSpan (Get-EnvValue 'REASON')). Started by $(ConvertTo-CodeSpan (Get-EnvValue 'STARTED_BY'))."
   } elseif ($select -ceq 'deployed') {

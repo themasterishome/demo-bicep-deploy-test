@@ -698,6 +698,14 @@ exit $LASTEXITCODE
   Invoke-TestMode 'Units' $o4 'a unit name in another case is refused' 1 'is not exactly one unit'
   $o5 = $one.Clone(); $o5['UNIT'] = 'rg-demo-routing'
   Invoke-TestMode 'Units' $o5 'a unit that is not enabled is refused' 1 'the unit rg-demo-routing is not enabled'
+  $o5a = $o5.Clone(); $o5a['APPLY'] = 'true'
+  Invoke-TestMode 'Units' $o5a 'a unit that is not enabled is refused for a run with apply on' 1 'the unit rg-demo-routing is not enabled'
+  $o5b = $o5.Clone(); $o5b['APPLY'] = 'False'
+  Invoke-TestMode 'Units' $o5b 'a unit that is not enabled is refused when APPLY is not exactly false' 1 'the unit rg-demo-routing is not enabled'
+  $o5c = $o5.Clone(); $o5c['APPLY'] = 'false'
+  Invoke-TestMode 'Units' $o5c 'a plan only of a unit that is not enabled gets its row and says it cannot deploy' 0 @('matrix=[{"unit":"rg-demo-routing"', 'The unit rg-demo-routing is not enabled, so this run plans it and cannot deploy it.')
+  $o6a = $one.Clone(); $o6a['UNIT'] = 'rg-demo-identities-deploy-excluded'; $o6a['APPLY'] = 'false'
+  Invoke-TestMode 'Units' $o6a 'the unit of a deploy-excluded file is refused for a plan only too' 1 'is the unit of a deploy-excluded file, and such a unit is never deployed'
   $o6 = $one.Clone(); $o6['UNIT'] = 'rg-demo-identities-deploy-excluded'
   Invoke-TestMode 'Units' $o6 'the unit of a deploy-excluded file is refused for a deployment' 1 'is the unit of a deploy-excluded file, and such a unit is never deployed'
   Invoke-TestMode 'Units' @{ SELECT = 'everything' } 'an unknown selection is refused' 2 "SELECT 'everything' is not unit, deployed or pullRequest"
