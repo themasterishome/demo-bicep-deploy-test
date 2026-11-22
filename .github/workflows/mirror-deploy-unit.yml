@@ -312,7 +312,6 @@ jobs:
       - name: Pin and check the Bicep CLI
         uses: ./.github/actions/setup-bicep
       - name: Give the deployment action the checked Bicep
-        if: false
         # azure/bicep-deploy compiles the unit with its own copy of Bicep. It looks in the runner's tool cache for
         # the version of its bicep-version input first, and downloads that version without a hash check only when
         # the cache has none. The step puts the binary that the step above checked into the tool cache under that
