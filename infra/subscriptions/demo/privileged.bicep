@@ -45,3 +45,25 @@ resource roleDefinition_demo_reader_plus 'Microsoft.Authorization/roleDefinition
     ]
   }
 }
+
+// The Role Based Access Control Administrator of the deploy identity id-mirror-deploy-demo, with the condition that limits which roles it may assign.
+// A deployment writes the assignment as it is declared, so the condition must stay with it, or Azure removes it.
+resource roleAssignment_deployIdentityCondition 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: 'ffa17cf3-49f5-47e6-b1b5-ec2221a215b4'
+  properties: {
+    principalId: '0d43c706-ffc6-4320-b895-90a49fad6a25'
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'f58310d9-a9f6-439a-9e8d-f62e7b41a168')
+  }
+}
+
+// The User Access Administrator of the govern identity id-mirror-govern-demo, with the condition that limits which roles it may assign.
+// A deployment writes the assignment as it is declared, so the condition must stay with it, or Azure removes it.
+resource roleAssignment_governIdentityCondition 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: 'ceb0f226-35c2-4a9c-b64e-c7f2a0a72e26'
+  properties: {
+    principalId: '624a20b2-4a7b-41ab-a228-bab53009c5f2'
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9')
+  }
+}
