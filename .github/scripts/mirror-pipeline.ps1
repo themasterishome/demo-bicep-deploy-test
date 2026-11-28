@@ -1232,7 +1232,7 @@ function Test-UnitRules($UnitsDoc) {
     }
     if (Test-DeployExcludedUnit $u) {
       foreach ($f in @('enabled', 'deployed', 'stackDeletes')) {
-        if ((Get-Prop $u $f) -eq $true) { $errors += "deploy/units.json: ${name}: $f is true, and the unit of a deploy-excluded file is never deployed. Its resources are written by hand, or moved to the routine file of the group first" }
+        if ((Get-Prop $u $f) -eq $true) { $errors += "deploy/units.json: ${name}: $f is true, and the unit of a deploy-excluded file is never deployed. A resource that IT decides to deploy is moved to the routine file of its group first" }
       }
     }
   }
@@ -1377,7 +1377,7 @@ function Invoke-UnitsMode {
     $name = Get-EnvValue 'UNIT'
     $u = Find-UnitDef $units $name
     if ($null -eq $u) { Stop-Check "the unit '$name' is not exactly one unit in deploy/units.json. A unit name is written with the same case as in the file" }
-    if (Test-DeployExcludedUnit $u) { Stop-Check "the unit $name is the unit of a deploy-excluded file, and such a unit is never deployed. Its resources are written by hand, or moved to the routine file of the group first" }
+    if (Test-DeployExcludedUnit $u) { Stop-Check "the unit $name is the unit of a deploy-excluded file, and such a unit is never deployed. A resource that IT decides to deploy is moved to the routine file of its group first" }
     # A plan only (APPLY false) reads and writes nothing, so it runs for a disabled unit too. A run that may deploy
     # needs the unit enabled.
     $enabled = (Get-Prop $u 'enabled') -is [bool] -and (Get-Prop $u 'enabled')
