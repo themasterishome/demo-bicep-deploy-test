@@ -8,7 +8,7 @@ This file is written by adoption/adoption.py from saved previews and is never ed
 
 | NoChange | Modify | Ignore | Create | Delete |
 |---|---|---|---|---|
-| 2 | 0 | 0 | 0 | 0 |
+| 4 | 0 | 0 | 0 | 0 |
 
 Each count is the number of resources with that result in the plain preview (what-if) of the unit's template. A stack preview lists only the resources the template declares, so the Ignore records do not appear in it. The scope of the unit is subscription 77488719-1168-4d53-af9a-f5c3bc9291d7.
 
@@ -18,7 +18,7 @@ Every record of this unit is NoChange, so there is nothing to explain.
 
 The records come from the read-only preview of the demo units, preview file `demo-privileged.json`. The gate judged them offline with scripts/deploy-unit.ps1 and deploy/boundaries.json, and its result for the unit is PASS.
 
-The files of the unit the previews were taken from, each with the SHA256 of its text (line endings left out). The plan of the unit's first run compares them with the files of its commit and fails when one differs, because this evidence then belongs to another version of the unit.
+The files of the unit the previews were taken from. The template has the hash that Bicep writes into its compiled template, which holds every module the template calls. The parameters file has the SHA256 of its text (line endings left out). The plan of the unit's first run computes both from the files of its commit and fails when one differs, because this evidence then belongs to another version of the unit.
 
-- `infra/subscriptions/demo/privileged.bicep` compiled template hash `1697409714283808001`
+- `infra/subscriptions/demo/privileged.bicep` compiled template hash `2113791887482179645`
 - `infra/subscriptions/demo/privileged.bicepparam` SHA256 `079c0b7f0390814dda77748e9982e23e3e0783486373cd7fb87269c225b90c91`
