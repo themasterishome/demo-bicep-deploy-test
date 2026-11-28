@@ -54,6 +54,8 @@ resource roleAssignment_deployIdentityCondition 'Microsoft.Authorization/roleAss
     principalId: '0d43c706-ffc6-4320-b895-90a49fad6a25'
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'f58310d9-a9f6-439a-9e8d-f62e7b41a168')
+    condition: '''((!(ActionMatches{'Microsoft.Authorization/roleAssignments/write'})) OR (@Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {acdd72a7-3385-48ef-bd42-f606fba81ae7})) AND ((!(ActionMatches{'Microsoft.Authorization/roleAssignments/delete'})) OR (@Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {acdd72a7-3385-48ef-bd42-f606fba81ae7}))'''
+    conditionVersion: '2.0'
   }
 }
 
@@ -65,5 +67,7 @@ resource roleAssignment_governIdentityCondition 'Microsoft.Authorization/roleAss
     principalId: '624a20b2-4a7b-41ab-a228-bab53009c5f2'
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9')
+    condition: '''((!(ActionMatches{'Microsoft.Authorization/roleAssignments/write'})) OR (@Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAllValues:GuidNotEquals {00482a5a-887f-4fb3-b363-3b7fe8e74483, b86a8fe4-44ce-4948-aee5-eccb2c155cd7, 4633458b-17de-408a-b874-0445c86b69e6, db79e9a7-68ee-4b58-9aeb-b90e7c24fcba, 8b54135c-b56d-4d72-a534-26097cfdc8d8, f25e0fa2-a7c8-4377-a976-54943a77a395, e40ec5ca-96e0-45a2-b4ff-59039f2c2b59, f1a07417-d97a-45cb-824c-7a7467783830})) AND ((!(ActionMatches{'Microsoft.Authorization/roleAssignments/delete'})) OR (@Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAllValues:GuidNotEquals {00482a5a-887f-4fb3-b363-3b7fe8e74483, b86a8fe4-44ce-4948-aee5-eccb2c155cd7, 4633458b-17de-408a-b874-0445c86b69e6, db79e9a7-68ee-4b58-9aeb-b90e7c24fcba, 8b54135c-b56d-4d72-a534-26097cfdc8d8, f25e0fa2-a7c8-4377-a976-54943a77a395, e40ec5ca-96e0-45a2-b4ff-59039f2c2b59, f1a07417-d97a-45cb-824c-7a7467783830}))'''
+    conditionVersion: '2.0'
   }
 }
